@@ -44,10 +44,11 @@ import requests
 import json
 import base64
 import hashlib
+import threading
 import time
 import uuid
+from urllib.parse import urlparse
 from azure.core.credentials import AccessToken
-from notebookutils import mssparkutils
 
 class Scopes:
     """
@@ -130,6 +131,10 @@ class KeyVaultCertificateCredential:
     CLIENT_ASSERTION_TYPE = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
     ASSERTION_LIFETIME_SECONDS = 600  # Entra ID recommends 5-10 minutes at most
     REFRESH_MARGIN_SECONDS = 300  # Request a new access token when the current one has less than this left
+    REQUEST_TIMEOUT_SECONDS = 30  # Timeout for each call to Entra ID and Key Vault
+
+    # Key Vault DNS suffixes in the public and sovereign clouds. The Key Vault token is only sent to these hosts.
+    AKV_DNS_SUFFIXES = (".vault.azure.net", ".vault.azure.cn", ".vault.usgovcloudapi.net", ".vault.microsoftazure.de")
 
     def __init__(self, tenant_id, client_id, akv_url, certificate_name, scope=None, certificate_version=None):
         """
@@ -138,7 +143,8 @@ class KeyVaultCertificateCredential:
         Parameters:
             tenant_id (str): Tenant ID for Azure authentication.
             client_id (str): Client ID of the app registration.
-            akv_url (str): Azure Key Vault URL.
+            akv_url (str): Azure Key Vault URL, in the form https://{key_vault_name}.vault.azure.net/.
+                Must use https and a Key Vault host name, as the Key Vault token is sent to it.
             certificate_name (str): Name of the certificate in the Azure Key Vault.
             scope (str): Optional. Default scope for get_access_token(), in the form {resource}/.default. See Scopes.
                 Not needed when the credential is passed to semantic link or an Azure SDK client.
@@ -147,13 +153,35 @@ class KeyVaultCertificateCredential:
         self.tenant_id = tenant_id
         self.client_id = client_id
         self.akv_url = akv_url.rstrip("/")
+        self._akv_host = self._validate_akv_url(self.akv_url)
         self.certificate_name = certificate_name
         self.scope = scope
         self.certificate_version = certificate_version
         self.token_endpoint = f"https://login.microsoftonline.com/{self.tenant_id}/oauth2/v2.0/token"
 
-        # Cached AccessTokens, keyed by scope
+        # Cached AccessTokens, keyed by the sorted, de-duplicated scopes. The lock stops concurrent callers
+        # each requesting a new token when the cached one expires.
         self._tokens = {}
+        self._tokens_lock = threading.Lock()
+
+    @classmethod
+    def _validate_akv_url(cls, akv_url):
+        """
+        Checks the Key Vault URL uses https and a Key Vault host name, as the Key Vault token is sent to it.
+
+        Parameters:
+            akv_url (str): Azure Key Vault URL.
+
+        Returns:
+            str: The Key Vault host name, in lower case.
+        """
+        parsed = urlparse(akv_url)
+        host = (parsed.hostname or "").lower()
+
+        if parsed.scheme != "https" or parsed.username or parsed.password or not host.endswith(cls.AKV_DNS_SUFFIXES):
+            raise ValueError(f"akv_url must be a Key Vault URL such as https://{{key_vault_name}}.vault.azure.net/, not {akv_url}")
+
+        return host
 
     def get_access_token(self, scope=None):
         """
@@ -174,16 +202,23 @@ class KeyVaultCertificateCredential:
 
         return self.get_token(scope).token
 
-    def get_token(self, *scopes, **kwargs):
+    def get_token(self, *scopes, claims=None, tenant_id=None, enable_cae=False, **kwargs):
         """
         Returns an access token for the given scopes. Implements azure.core.credentials.TokenCredential.
 
         Semantic link (sempy) functions and Azure SDK clients call this when the credential is passed to
-        them. Tokens are cached per scope and reused until they are within 5 minutes of expiring.
-        Other keyword arguments, such as claims and tenant_id, are accepted but ignored.
+        them. Tokens are cached per set of scopes, in any order, and reused until they are within 5 minutes
+        of expiring.
 
         Parameters:
             scopes (str): Scopes to request the access token for, in the form {resource}/.default.
+            claims (str): Optional. Additional claims required in the token, such as from an API's claims challenge.
+                A new token is always requested when claims are given, and it replaces the cached one.
+            tenant_id (str): Optional. Tenant to request the token from. Only the tenant the credential was created
+                with is supported, so a ValueError is raised for any other tenant.
+            enable_cae (bool): Optional. Accepted for compatibility but ignored, as continuous access evaluation
+                isn't requested.
+            kwargs: Other keyword arguments are accepted for compatibility but ignored.
 
         Returns:
             azure.core.credentials.AccessToken: The access token and its expiry time (seconds since epoch).
@@ -191,21 +226,43 @@ class KeyVaultCertificateCredential:
         if not scopes:
             raise ValueError("At least one scope is required, see Scopes.")
 
-        scope = " ".join(scopes)
-        token = self._tokens.get(scope)
+        if tenant_id and tenant_id.lower() != self.tenant_id.lower():
+            raise ValueError(f"Tokens can only be requested from tenant {self.tenant_id}, not {tenant_id}.")
 
-        if token is None or time.time() >= token.expires_on - self.REFRESH_MARGIN_SECONDS:
-            token = self._request_access_token(scope)
-            self._tokens[scope] = token
+        # Order doesn't matter to Entra ID, so get_token(a, b) and get_token(b, a) share a cached token
+        cache_key = tuple(sorted(set(scopes)))
+
+        # Return a valid cached token without waiting for the lock
+        if not claims:
+            token = self._tokens.get(cache_key)
+            if self._is_valid(token):
+                return token
+
+        with self._tokens_lock:
+            # Check again, as another caller may have got a new token while this one waited for the lock
+            if not claims:
+                token = self._tokens.get(cache_key)
+                if self._is_valid(token):
+                    return token
+
+            token = self._request_access_token(" ".join(cache_key), claims)
+            self._tokens[cache_key] = token
 
         return token
 
-    def _request_access_token(self, scope):
+    def _is_valid(self, token):
+        """
+        Returns whether a cached token exists and has more than REFRESH_MARGIN_SECONDS left before it expires.
+        """
+        return token is not None and time.time() < token.expires_on - self.REFRESH_MARGIN_SECONDS
+
+    def _request_access_token(self, scope, claims=None):
         """
         Exchanges a newly signed client assertion for an access token.
 
         Parameters:
-            scope (str): Scope to request the access token for.
+            scope (str): Scope to request the access token for. Multiple scopes are separated by spaces.
+            claims (str): Optional. Additional claims required in the token, as a JSON string.
 
         Returns:
             azure.core.credentials.AccessToken: The access token and its expiry time (seconds since epoch).
@@ -213,20 +270,27 @@ class KeyVaultCertificateCredential:
         # Build a new assertion each time, as they're only valid for a few minutes
         client_assertion = self._build_client_assertion()
 
-        response = requests.post(self.token_endpoint, data={
+        data = {
             "client_id": self.client_id,
             "scope": scope,
             "grant_type": "client_credentials",
             "client_assertion_type": self.CLIENT_ASSERTION_TYPE,
             "client_assertion": client_assertion
-        })
+        }
+        if claims:
+            data["claims"] = claims
+
+        # Take the time before the request, so the expiry time errs on the early side
+        now = int(time.time())
+
+        response = requests.post(self.token_endpoint, data=data, timeout=self.REQUEST_TIMEOUT_SECONDS)
 
         if response.status_code != 200:
             raise Exception(f"Failed to get access token for {self.client_id} with scope {scope}. {self._describe_error(response)}")
 
         token_response = response.json()
 
-        return AccessToken(token_response["access_token"], int(time.time()) + int(token_response["expires_in"]))
+        return AccessToken(token_response["access_token"], now + int(token_response["expires_in"]))
 
     def _build_client_assertion(self):
         """
@@ -237,7 +301,10 @@ class KeyVaultCertificateCredential:
         Returns:
             str: The signed client assertion.
         """
-        key_id, certificate_der = self._get_certificate()
+        # Get the Key Vault token once, for both the certificate and sign requests
+        akv_headers = self._akv_headers()
+
+        key_id, certificate_der = self._get_certificate(akv_headers)
         now = int(time.time())
 
         header = {
@@ -260,13 +327,16 @@ class KeyVaultCertificateCredential:
         signing_input = f"{self._base64url(json.dumps(header).encode())}.{self._base64url(json.dumps(claims).encode())}"
         digest = hashlib.sha256(signing_input.encode("ascii")).digest()
 
-        signature = self._sign_digest(key_id, digest)
+        signature = self._sign_digest(key_id, digest, akv_headers)
 
         return f"{signing_input}.{signature}"
 
-    def _get_certificate(self):
+    def _get_certificate(self, akv_headers):
         """
         Retrieves the public part of the certificate from Azure Key Vault.
+
+        Parameters:
+            akv_headers (dict): Headers for calling Azure Key Vault, from _akv_headers().
 
         Returns:
             tuple: The key identifier (URL including version) to sign with, and the certificate's DER encoded bytes.
@@ -275,7 +345,12 @@ class KeyVaultCertificateCredential:
         if self.certificate_version:
             url += f"/{self.certificate_version}"
 
-        response = requests.get(url, headers=self._akv_headers(), params={"api-version": self.AKV_API_VERSION})
+        response = requests.get(
+            url,
+            headers=akv_headers,
+            params={"api-version": self.AKV_API_VERSION},
+            timeout=self.REQUEST_TIMEOUT_SECONDS
+        )
 
         if response.status_code != 200:
             raise Exception(f"Failed to get certificate {self.certificate_name} from key vault. {self._describe_error(response)}")
@@ -284,22 +359,31 @@ class KeyVaultCertificateCredential:
 
         return certificate["kid"], base64.b64decode(certificate["cer"])
 
-    def _sign_digest(self, key_id, digest):
+    def _sign_digest(self, key_id, digest, akv_headers):
         """
         Signs a SHA-256 digest with the certificate's private key using the Azure Key Vault sign operation.
 
         Parameters:
             key_id (str): The key identifier returned with the certificate.
             digest (bytes): The SHA-256 digest to sign.
+            akv_headers (dict): Headers for calling Azure Key Vault, from _akv_headers().
 
         Returns:
             str: The base64url encoded signature.
         """
+        # The key identifier comes from the certificate response, so check it's in the same key vault
+        # before sending the Key Vault token to it
+        parsed_key_id = urlparse(key_id)
+        if (parsed_key_id.scheme != "https" or parsed_key_id.username or parsed_key_id.password
+                or (parsed_key_id.hostname or "").lower() != self._akv_host or parsed_key_id.port not in (None, 443)):
+            raise Exception(f"Key identifier for certificate {self.certificate_name} is not in key vault {self.akv_url}.")
+
         response = requests.post(
             f"{key_id}/sign",
-            headers=self._akv_headers(),
+            headers=akv_headers,
             params={"api-version": self.AKV_API_VERSION},
-            json={"alg": "PS256", "value": self._base64url(digest)}
+            json={"alg": "PS256", "value": self._base64url(digest)},
+            timeout=self.REQUEST_TIMEOUT_SECONDS
         )
 
         if response.status_code != 200:
@@ -310,8 +394,16 @@ class KeyVaultCertificateCredential:
     def _akv_headers(self):
         """
         Returns headers for calling Azure Key Vault as the identity running the notebook.
+
+        notebookutils is imported here rather than at the top of the module, so the module (and Scopes)
+        can be imported outside a Fabric notebook.
         """
-        akv_cred = mssparkutils.credentials.getToken('keyvault')
+        try:
+            import notebookutils
+        except ImportError as e:
+            raise ImportError("notebookutils is not available. KeyVaultCertificateCredential must be used in a Fabric notebook.") from e
+
+        akv_cred = notebookutils.credentials.getToken('keyvault')
 
         return {
             "Authorization": f"Bearer {akv_cred}",
@@ -333,6 +425,10 @@ class KeyVaultCertificateCredential:
         try:
             body = response.json()
         except ValueError:
+            return f"Status code: {response.status_code}"
+
+        # Only summarise the documented error formats. Leave out anything else, such as a JSON list or string
+        if not isinstance(body, dict) or body.get("error") is None:
             return f"Status code: {response.status_code}"
 
         error = body.get("error")
