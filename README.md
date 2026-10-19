@@ -555,7 +555,7 @@ for subject, path in reports.items():
 | `MessageNotFoundError: No matching messages found.` | No email in the Inbox matches the exact subject and sender. Check both, or try `only_search_inbox=False`. |
 | `get_attachment_ids_and_names` returns an empty list | The email has no file attachments. Inline images are left out unless you pass `include_inline=True`, and attached emails and cloud links are always left out. |
 | `Attachment ... is a #microsoft.graph.itemAttachment` | `download_attachment` was given the ID of an attached email, not a file. |
-| `ModuleNotFoundError: No module named 'notebookutils'` when requesting a token | The code is running outside Fabric. `KeyVaultCertificateCredential` only works in Fabric (or Synapse) notebooks. |
+| `ImportError: notebookutils is not available. KeyVaultCertificateCredential must be used in a Fabric notebook.` | The code is running outside Fabric. `KeyVaultCertificateCredential` only works in Fabric (or Synapse) notebooks. |
 
 ## Upgrading from 0.3.x
 
