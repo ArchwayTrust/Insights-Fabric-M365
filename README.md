@@ -624,6 +624,19 @@ python -m pyflakes fabric_python_helper tests setup.py
 
 The [Tests workflow](.github/workflows/tests.yml) runs the same checks on Python 3.10, 3.11 and 3.12, and builds the package, for every pull request into `main` and every push to `main`. It doesn't publish anything.
 
+#### Requiring the tests to pass before merging
+
+On its own, the Tests workflow only reports a result: GitHub still lets a pull request with failing tests be merged. To block that, add a ruleset on `main` once the workflow has run at least once (GitHub only lists a check after it has reported):
+
+1. On GitHub, go to **Settings** > **Rules** > **Rulesets** > **New ruleset** > **New branch ruleset**.
+2. Name it, for example `Protect main`, and set **Enforcement status** to **Active**.
+3. Under **Target branches**, select **Add target** > **Include default branch**.
+4. Turn on **Require a pull request before merging**.
+5. Turn on **Require status checks to pass**, select **Add checks**, and add `test (3.10)`, `test (3.11)` and `test (3.12)`.
+6. Turn on **Block force pushes**, then select **Create**.
+
+If the Python versions in `tests.yml` change, update the required checks to match, or pull requests will wait for a check that never runs.
+
 The tests can't show that the real services accept the requests, so test a new version in Fabric before releasing it (see [Testing a wheel in Fabric](#testing-a-wheel-in-fabric-before-publishing)). Get a token, find a known email and list its attachments.
 
 ### Versioning
@@ -693,7 +706,9 @@ If a step fails, nothing after it runs. PyPI never accepts the same version twic
 The workflow uploads to PyPI with [Trusted Publishing](https://docs.pypi.org/trusted-publishers/), so no PyPI API token is stored in GitHub. PyPI only accepts uploads from this repository's `release.yml` workflow running in the `pypi` environment. Set it up once:
 
 1. On PyPI, open the `fabric-python-helper` project, then **Manage** > **Publishing** > **Add a new publisher** > **GitHub**. Enter owner `ArchwayTrust`, repository `Insights-Fabric-PythonHelper`, workflow `release.yml` and environment `pypi`.
-2. On GitHub, go to **Settings** > **Environments** > **New environment** and create `pypi`. Optionally add required reviewers, so each upload to PyPI waits for an approval.
+2. On GitHub, go to **Settings** > **Environments** > **New environment** and create `pypi`. Then, in the environment:
+   - Under **Deployment branches and tags**, choose **Selected branches and tags**, select **Add deployment branch or tag rule**, set **Ref type** to **Tag** and enter the pattern `v*`. Only release tags can then publish, even if the workflow is started some other way.
+   - Optionally, turn on **Required reviewers** and add the people who can approve a release, so each upload to PyPI waits for one of them.
 3. After the first release published this way, delete the old `PYPI_API_TOKEN` repository secret and revoke that token on PyPI.
 
 ### Publishing to PyPI manually
