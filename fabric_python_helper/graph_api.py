@@ -3,6 +3,15 @@ import json
 import base64
 from .auth import Scopes
 
+
+class MessageNotFoundError(Exception):
+    """
+    Raised when a search finds no emails matching the given criteria.
+
+    Subclasses Exception, so existing code that catches Exception still works.
+    """
+
+
 class Emails:
     """
     A class to interact with Microsoft Graph API for managing emails in a mailbox.
@@ -12,28 +21,31 @@ class Emails:
         - azure.identity.ClientSecretCredential, with the client secret read from Azure Key Vault.
 
     The app needs access to the mailbox. Use Exchange RBAC for Applications to limit it to specific mailboxes, assigning:
-        - Application Mail.ReadWrite to search, download attachments from and delete emails.
+        - Application Mail.Read (or Mail.ReadWrite) to search emails and download attachments.
+        - Application Mail.ReadWrite to delete emails.
         - Application Mail.Send to send emails.
-    Don't grant Mail.ReadWrite or Mail.Send as Entra ID API permissions, as those apply to every mailbox in the tenant.
+    Don't grant Mail.Read, Mail.ReadWrite or Mail.Send as Entra ID API permissions, as those apply to every mailbox in the tenant.
 
     Attributes:
         credential (TokenCredential): Credential used to get Microsoft Graph access tokens.
-        mailbox (str): Email address of the mailbox to use, unless a method is given a different one.
+        mailbox (str or None): Email address of the default mailbox, used unless a method is given a different one.
+                               Optional if every call passes shared_mailbox_email.
     """
 
     GRAPH_URL = "https://graph.microsoft.com/v1.0"
 
-    def __init__(self, credential, mailbox):
+    # Seconds to wait for Microsoft Graph to connect or send data before giving up, so a stalled request doesn't hang the notebook
+    REQUEST_TIMEOUT_SECONDS = 30
+
+    def __init__(self, credential, mailbox=None):
         """
-        Initializes the Emails class for a mailbox.
+        Initializes the Emails class, optionally with a default mailbox.
 
         Parameters:
             credential (TokenCredential): Credential used to get Microsoft Graph access tokens.
-            mailbox (str): Email address of the mailbox to use, unless a method is given a different one.
+            mailbox (str): Optional. Email address of the default mailbox, used unless a method is given a different one.
+                           Can be left out if every call passes shared_mailbox_email.
         """
-        if not mailbox:
-            raise ValueError("A mailbox email address is required.")
-
         self.credential = credential
         self.mailbox = mailbox
 
@@ -54,8 +66,33 @@ class Emails:
     def _mailbox_url(self, shared_mailbox_email=None):
         """
         Returns the Microsoft Graph URL for the given mailbox, or for the default mailbox if none is given.
+
+        Raises:
+            ValueError: If no mailbox is given and there is no default mailbox.
         """
-        return f"{self.GRAPH_URL}/users/{shared_mailbox_email or self.mailbox}"
+        mailbox = shared_mailbox_email or self.mailbox
+        if not mailbox:
+            raise ValueError("No mailbox given. Pass shared_mailbox_email or set a default mailbox when creating Emails.")
+
+        return f"{self.GRAPH_URL}/users/{mailbox}"
+
+    @staticmethod
+    def _graph_error(response):
+        """
+        Returns the error code and message from a Microsoft Graph error response.
+
+        Either value is None if the response body isn't a Graph error, such as an empty or non-JSON body.
+        """
+        try:
+            body = response.json()
+        except ValueError:
+            return None, None
+
+        error = body.get('error') if isinstance(body, dict) else None
+        if not isinstance(error, dict):
+            return None, None
+
+        return error.get('code'), error.get('message')
 
     def search_message_by_subject_and_sender(self, subject, sender_email, only_search_inbox=True, only_return_latest=True, shared_mailbox_email=None):
         """
@@ -75,7 +112,8 @@ class Emails:
             str or list: The ID of the latest email or a list of emails that match the search criteria.
 
         Raises:
-            Exception: If no matching messages are found.
+            MessageNotFoundError: If no matching messages are found.
+            Exception: If the Microsoft Graph request fails.
         """
         mailbox_url = self._mailbox_url(shared_mailbox_email)
         endpoint = f"{mailbox_url}/mailFolders/Inbox/messages" if only_search_inbox else f"{mailbox_url}/messages"
@@ -92,7 +130,7 @@ class Emails:
         messages = []
         while endpoint:
             # Get headers for each page, so a token expiring part way through is refreshed
-            response = requests.get(endpoint, headers=self._headers(), params=query_parameters)
+            response = requests.get(endpoint, headers=self._headers(), params=query_parameters, timeout=self.REQUEST_TIMEOUT_SECONDS)
             if response.status_code != 200:
                 # Handle unsuccessful API call
                 raise Exception(f"Error searching message by subject. Status code: {response.status_code}, Response: {response.text}")
@@ -112,45 +150,57 @@ class Emails:
             else:
                 return sorted_messages
 
-        raise Exception("No matching messages found.")
+        raise MessageNotFoundError("No matching messages found.")
 
-    def get_attachment_ids_and_names(self, message_id, shared_mailbox_email=None):
+    def get_attachment_ids_and_names(self, message_id, shared_mailbox_email=None, include_inline=False):
         """
-        Retrieves a list of attachment IDs and names for a specified email message.
+        Retrieves a list of file attachment IDs and names for a specified email message.
 
-        This method uses the Microsoft Graph API to fetch all attachments for a given
-        email message. It returns a list of tuples, each containing the ID and name of
-        an attachment.
+        This method uses the Microsoft Graph API to fetch the attachments for a given
+        email message, handling pagination. It returns a list of tuples, each containing
+        the ID and name of a file attachment that can be passed to download_attachment.
+
+        Only file attachments are returned. Item attachments (attached emails, events or contacts)
+        and reference attachments (links to cloud files, such as OneDrive) are skipped, as they
+        can't be downloaded. Inline attachments, such as images in an email signature, are also
+        skipped unless include_inline is True.
 
         Parameters:
             message_id (str): The ID of the email message whose attachments are to be retrieved.
             shared_mailbox_email (str): Optional. The email address of a different mailbox to retrieve attachments from.
+            include_inline (bool): Defaults to False. If True, inline file attachments are also returned.
 
         Returns:
-            list of tuple: A list of tuples, where each tuple contains the ID and name of an attachment.
+            list of tuple: A list of tuples, where each tuple contains the ID and name of a file attachment.
+                           An empty list means the email has no downloadable attachments.
+
+        Raises:
+            requests.HTTPError: If the Microsoft Graph request fails.
         """
         # Constructing the URL for the Microsoft Graph API attachments endpoint
-        url = f'{self._mailbox_url(shared_mailbox_email)}/messages/{message_id}/attachments'
-
-        # Performing a GET request to retrieve the attachments
-        response = requests.get(url, headers=self._headers())
+        endpoint = f'{self._mailbox_url(shared_mailbox_email)}/messages/{message_id}/attachments'
 
         # Initializing an empty list to store attachment information
         attachments_info = []
-
-        # Checking the response status code
-        if response.status_code == 200:
-            # Parsing the JSON response to extract attachment data
-            attachments = response.json()
-
-            # Extracting attachment IDs and names and adding them to the list
-            attachments_info = [
-                (attachment['id'], attachment['name'])
-                for attachment in attachments.get('value', [])
-            ]
-        else:
-            # Raising an exception if the API call was unsuccessful
+        while endpoint:
+            # Performing a GET request to retrieve a page of attachments, raising if unsuccessful
+            response = requests.get(endpoint, headers=self._headers(), timeout=self.REQUEST_TIMEOUT_SECONDS)
             response.raise_for_status()
+
+            data = response.json()
+            for attachment in data.get('value', []):
+                # Skip attached emails and links to cloud files, as only file attachments have content to download
+                if attachment.get('@odata.type') != '#microsoft.graph.fileAttachment':
+                    continue
+
+                # Skip inline attachments, such as signature logos, unless asked for
+                if attachment.get('isInline') and not include_inline:
+                    continue
+
+                attachments_info.append((attachment['id'], attachment['name']))
+
+            # Update the endpoint for the next page, if any
+            endpoint = data.get('@odata.nextLink')
 
         return attachments_info
 
@@ -175,7 +225,7 @@ class Emails:
         attachment_url = f'{self._mailbox_url(shared_mailbox_email)}/messages/{message_id}/attachments/{attachment_id}'
 
         # Making a GET request to fetch the attachment and check success
-        attachment_response = requests.get(attachment_url, headers=self._headers())
+        attachment_response = requests.get(attachment_url, headers=self._headers(), timeout=self.REQUEST_TIMEOUT_SECONDS)
         attachment_response.raise_for_status()
 
         # Extracting the attachment content from the response
@@ -198,6 +248,8 @@ class Emails:
         email message from the mailbox. It uses the mailbox and the message's ID
         to identify the specific email to be deleted.
 
+        Requires the app to have Application Mail.ReadWrite on the mailbox.
+
         Parameters:
             message_id (str): The ID of the message to be deleted.
             shared_mailbox_email (str): Optional. The email address of a different mailbox to delete the email from.
@@ -209,7 +261,7 @@ class Emails:
         delete_url = f'{self._mailbox_url(shared_mailbox_email)}/messages/{message_id}'
 
         # Sending the DELETE request
-        response = requests.delete(delete_url, headers=self._headers())
+        response = requests.delete(delete_url, headers=self._headers(), timeout=self.REQUEST_TIMEOUT_SECONDS)
 
         # Check if the request was successful
         if response.status_code == 204:
@@ -251,7 +303,7 @@ class Emails:
         }
 
         # Post the email.
-        response = requests.post(url, headers=self._headers(), data=json.dumps(email))
+        response = requests.post(url, headers=self._headers(), data=json.dumps(email), timeout=self.REQUEST_TIMEOUT_SECONDS)
 
         if response.status_code == 202:
             print("Email sent successfully!")
@@ -263,26 +315,37 @@ class Emails:
         """
         Checks if an email message exists in the mailbox.
 
+        Only a 404 with the Graph error code ErrorItemNotFound means the message doesn't exist.
+        Other errors are raised rather than reported as a missing message, such as a mailbox that
+        doesn't exist or can't be reached (404 ErrorInvalidUser or MailboxNotEnabledForRESTAPI),
+        a malformed message ID (400) or no access to the mailbox (403).
+
         Parameters:
             message_id (str): The ID of the message to be checked.
             shared_mailbox_email (str): Optional. The email address of a different mailbox to check the message in.
 
         Returns:
-            bool: True if the message exists, False if it doesn't. Raises an exception for other errors, such as no access to the mailbox.
+            bool: True if the message exists, False if it doesn't.
+
+        Raises:
+            Exception: If the check fails for any other reason. The message includes the status code and Graph error.
         """
         # Constructing the URL for the Microsoft Graph API message endpoint
-        message_url = f'{self._mailbox_url(shared_mailbox_email)}/messages/{message_id}/'
+        message_url = f'{self._mailbox_url(shared_mailbox_email)}/messages/{message_id}'
 
-        try:
-            # Making a GET request to the Graph API
-            response = requests.get(message_url, headers=self._headers())
+        # Making a GET request to the Graph API, only selecting the ID to keep the response small
+        response = requests.get(message_url, headers=self._headers(), params={'$select': 'id'}, timeout=self.REQUEST_TIMEOUT_SECONDS)
 
-            # Only a 404 means the message doesn't exist, other errors (such as 403) are raised
-            if response.status_code == 404:
-                return False
-            response.raise_for_status()
+        if response.ok:
             return True
-        except Exception as e:
-            # Log any exceptions
-            raise Exception(f"Failed to check for message existence. Error: {e}") from None
 
+        error_code, error_message = self._graph_error(response)
+
+        # The mailbox was found, but the message wasn't
+        if response.status_code == 404 and error_code == 'ErrorItemNotFound':
+            return False
+
+        raise Exception(
+            f"Failed to check for message existence. Status code: {response.status_code}, "
+            f"Error code: {error_code}, Message: {error_message or response.text}"
+        )

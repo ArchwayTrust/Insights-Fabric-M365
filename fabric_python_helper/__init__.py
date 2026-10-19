@@ -1,6 +1,7 @@
 from .auth import KeyVaultCertificateCredential
 from .auth import Scopes
 from .graph_api import Emails
+from .graph_api import MessageNotFoundError
 
 __version__="0.4.0"
 __author__="Ben Dobbs"
