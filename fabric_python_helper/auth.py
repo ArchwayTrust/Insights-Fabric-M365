@@ -25,6 +25,21 @@ Tokens for the identity running the notebook:
     notebookutils.credentials.getToken() returns tokens for the user or workspace identity running the
     notebook, but only for the storage, pbi, keyvault and kusto audiences. Use this module when you need
     another API, such as Graph or SharePoint, or need to act as a separate app.
+
+Semantic link and Azure SDK clients:
+    KeyVaultCertificateCredential implements azure.core.credentials.TokenCredential, so it can be passed as
+    the credential to semantic link (sempy and sempy_labs) functions and Azure SDK clients. They request
+    the scopes they need, so no scope is needed when creating the credential:
+        fabric.refresh_dataset("Sales", workspace="Finance", credential=credential)
+
+Client secrets:
+    This module only covers certificates. For a client secret use azure.identity.ClientSecretCredential,
+    which is already in the Fabric runtime, with the secret read from Key Vault. It has the same get_token
+    method, so it can be used anywhere this credential can:
+        secret = notebookutils.credentials.getSecret(akv_url, secret_name)
+        credential = ClientSecretCredential(tenant_id, client_id, secret)
+    Certificates are preferred: the private key never leaves the key vault, whereas a secret is read into
+    the notebook.
 """
 import requests
 import json
@@ -32,6 +47,7 @@ import base64
 import hashlib
 import time
 import uuid
+from azure.core.credentials import AccessToken
 from notebookutils import mssparkutils
 
 class Scopes:
@@ -83,6 +99,9 @@ class KeyVaultCertificateCredential:
     is built in the notebook, Key Vault signs it, and the signed assertion is exchanged with
     Microsoft Entra ID for an access token using the client credentials flow.
 
+    Implements azure.core.credentials.TokenCredential, so it can also be passed as the credential to
+    semantic link (sempy) functions and Azure SDK clients.
+
     Requires:
         - An app registration with the certificate's public key (.cer) uploaded under Certificates & secrets.
         - A certificate in the key vault with an RSA key. Ideally make the private key non-exportable.
@@ -91,18 +110,21 @@ class KeyVaultCertificateCredential:
         - The service principal to have access to the API being called, see Scopes.
 
     Example:
+        # Calling an API directly
         credential = KeyVaultCertificateCredential(tenant_id, client_id, akv_url, "Certificate Name", Scopes.GRAPH)
         headers = {"Authorization": f"Bearer {credential.get_access_token()}"}
+
+        # As the credential for semantic link, which requests the scopes it needs
+        credential = KeyVaultCertificateCredential(tenant_id, client_id, akv_url, "Certificate Name")
+        fabric.refresh_dataset("Sales", workspace="Finance", credential=credential)
 
     Attributes:
         tenant_id (str): Tenant ID for Azure authentication.
         client_id (str): Client ID of the app registration.
         akv_url (str): Azure Key Vault URL, in the form https://{key_vault_name}.vault.azure.net/.
         certificate_name (str): Name of the certificate in the Azure Key Vault.
-        scope (str): Scope to request the access token for, see Scopes.
+        scope (str): Default scope for get_access_token(), see Scopes. None if only used through get_token().
         certificate_version (str): Version of the certificate to sign with. None uses the latest version.
-        access_token (str): The current access token, or None if one hasn't been requested yet.
-        expires_at (float): Time (seconds since epoch) at which the current access token expires.
     """
 
     AKV_API_VERSION = "7.4"
@@ -110,7 +132,7 @@ class KeyVaultCertificateCredential:
     ASSERTION_LIFETIME_SECONDS = 600  # Entra ID recommends 5-10 minutes at most
     REFRESH_MARGIN_SECONDS = 300  # Request a new access token when the current one has less than this left
 
-    def __init__(self, tenant_id, client_id, akv_url, certificate_name, scope, certificate_version=None):
+    def __init__(self, tenant_id, client_id, akv_url, certificate_name, scope=None, certificate_version=None):
         """
         Initializes the credential. No calls are made until an access token is requested.
 
@@ -119,7 +141,8 @@ class KeyVaultCertificateCredential:
             client_id (str): Client ID of the app registration.
             akv_url (str): Azure Key Vault URL.
             certificate_name (str): Name of the certificate in the Azure Key Vault.
-            scope (str): Scope to request the access token for, in the form {resource}/.default. See Scopes.
+            scope (str): Optional. Default scope for get_access_token(), in the form {resource}/.default. See Scopes.
+                Not needed when the credential is passed to semantic link or an Azure SDK client.
             certificate_version (str): Optional. Version of the certificate to sign with. Defaults to the latest version.
         """
         self.tenant_id = tenant_id
@@ -130,45 +153,81 @@ class KeyVaultCertificateCredential:
         self.certificate_version = certificate_version
         self.token_endpoint = f"https://login.microsoftonline.com/{self.tenant_id}/oauth2/v2.0/token"
 
-        self.access_token = None
-        self.expires_at = 0
+        # Cached AccessTokens, keyed by scope
+        self._tokens = {}
 
-    def get_access_token(self):
+    def get_access_token(self, scope=None):
         """
-        Returns an access token for the configured scope.
+        Returns an access token string, for calling an API directly.
 
         The token is cached and reused until it is within 5 minutes of expiring, so this can be
         called before every request.
 
+        Parameters:
+            scope (str): Optional. Scope to request the access token for. Defaults to the scope the credential was created with.
+
         Returns:
             str: An access token.
         """
-        if self.access_token is None or time.time() >= self.expires_at - self.REFRESH_MARGIN_SECONDS:
-            self._request_access_token()
+        scope = scope or self.scope
+        if scope is None:
+            raise ValueError("No scope given. Pass one here or when creating the credential, see Scopes.")
 
-        return self.access_token
+        return self.get_token(scope).token
 
-    def _request_access_token(self):
+    def get_token(self, *scopes, **kwargs):
         """
-        Exchanges a newly signed client assertion for an access token and caches it.
+        Returns an access token for the given scopes. Implements azure.core.credentials.TokenCredential.
+
+        Semantic link (sempy) functions and Azure SDK clients call this when the credential is passed to
+        them. Tokens are cached per scope and reused until they are within 5 minutes of expiring.
+        Other keyword arguments, such as claims and tenant_id, are accepted but ignored.
+
+        Parameters:
+            scopes (str): Scopes to request the access token for, in the form {resource}/.default.
+
+        Returns:
+            azure.core.credentials.AccessToken: The access token and its expiry time (seconds since epoch).
+        """
+        if not scopes:
+            raise ValueError("At least one scope is required, see Scopes.")
+
+        scope = " ".join(scopes)
+        token = self._tokens.get(scope)
+
+        if token is None or time.time() >= token.expires_on - self.REFRESH_MARGIN_SECONDS:
+            token = self._request_access_token(scope)
+            self._tokens[scope] = token
+
+        return token
+
+    def _request_access_token(self, scope):
+        """
+        Exchanges a newly signed client assertion for an access token.
+
+        Parameters:
+            scope (str): Scope to request the access token for.
+
+        Returns:
+            azure.core.credentials.AccessToken: The access token and its expiry time (seconds since epoch).
         """
         # Build a new assertion each time, as they're only valid for a few minutes
         client_assertion = self._build_client_assertion()
 
         response = requests.post(self.token_endpoint, data={
             "client_id": self.client_id,
-            "scope": self.scope,
+            "scope": scope,
             "grant_type": "client_credentials",
             "client_assertion_type": self.CLIENT_ASSERTION_TYPE,
             "client_assertion": client_assertion
         })
 
         if response.status_code != 200:
-            raise Exception(f"Failed to get access token for {self.client_id}. {self._describe_error(response)}")
+            raise Exception(f"Failed to get access token for {self.client_id} with scope {scope}. {self._describe_error(response)}")
 
         token_response = response.json()
-        self.access_token = token_response["access_token"]
-        self.expires_at = time.time() + int(token_response["expires_in"])
+
+        return AccessToken(token_response["access_token"], int(time.time()) + int(token_response["expires_in"]))
 
     def _build_client_assertion(self):
         """

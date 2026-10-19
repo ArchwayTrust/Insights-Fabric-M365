@@ -1,9 +1,6 @@
 from .auth import KeyVaultCertificateCredential
 from .auth import Scopes
 from .graph_api import Emails
-from .pbi_admin import AccessTokens
-from .pbi_admin import Dataflows
-from .pbi_admin import SemanticModels
 
 __version__="0.2.8"
 __author__="Ben Dobbs"

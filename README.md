@@ -1,41 +1,6 @@
 # Fabric Python Helper
 Collection of useful python code for automation in Microsoft Fabric.
 
-## PBI Admin
-In Fabric notebook run:
-```
-from fabric_python_helper import pbi_admin as pbi
-```
-
-
-### Access Tokens
-Can be initiated directly:
-```
-access_token = pbi.AccessTokens().get_token_as_fabric_notebook_owner()
-```
-
-### Dataflows
-
-```
-access_token = pbi.AccessTokens().get_token_as_fabric_notebook_owner()
-workspace_id = "7509f..."
-dataflow_id = "46aed9..."
-
-dataflow = pbi.Dataflows(workspace_id, dataflow_id, access_token)
-dataflow.refresh_dataflow(expected_duration=60, loop_interval=20, wait_for_completion=True)
-```
-
-
-### Semantic Models
-```
-access_token = pbi.AccessTokens().get_token_as_fabric_notebook_owner()
-semantic_model_id = "d0c24..."
-
-semantic_model = pbi.SemanticModels(semantic_model_id, access_token)
-semantic_model.refresh_semantic_model(expected_duration=60, loop_interval=20, wait_for_completion=True)
-```
-
-
 ## GraphAPI
 Requires an app registration with delegated User.Read, Mail.ReadWrite, Mail.ReadWrite.Shared, Mail.Send and offline_access scopes. The public client flow must also be enabled.
 Requires an azure key vault which the notebook owner has permissions to update and read secrets on.
