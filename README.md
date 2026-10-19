@@ -5,7 +5,7 @@ Python helpers for automation in Microsoft Fabric notebooks.
 - **`fabric_python_helper.auth`** gets app-only access tokens for Microsoft APIs (Microsoft Graph, Power BI, Fabric, OneLake and others) as a service principal, using a certificate held in Azure Key Vault. Key Vault signs each request, so the certificate's private key never leaves the key vault.
 - **`fabric_python_helper.graph_api`** finds emails in a mailbox, downloads their attachments, deletes them and sends emails, using Microsoft Graph.
 
-The package is built for Fabric notebooks. It uses `notebookutils` to call Key Vault as the identity running the notebook, so it won't run outside Fabric (or Synapse).
+The package is built for Fabric notebooks. `KeyVaultCertificateCredential` uses `notebookutils` to call Key Vault as the identity running the notebook, so it only works in Fabric (or Synapse) notebooks. The package itself can be imported anywhere.
 
 ## Contents
 
@@ -51,7 +51,7 @@ Always pin a version. 0.4.0 has breaking changes from 0.3.x, see [Upgrading from
 
 ## Quick start
 
-Read the latest report email from a mailbox, save its attachment to a lakehouse and delete the email:
+Read the latest report email from a mailbox, save its CSV attachment to a lakehouse and delete the email:
 
 ```python
 from fabric_python_helper.auth import KeyVaultCertificateCredential
@@ -67,7 +67,14 @@ credential = KeyVaultCertificateCredential(
 mailbox = Emails(credential, "reports@contoso.com")
 
 message_id = mailbox.search_message_by_subject_and_sender("Daily Sales Report", "noreply@supplier.com")
-attachment_id, file_name = mailbox.get_attachment_ids_and_names(message_id)[0]
+
+csv_files = [(attachment_id, file_name)
+             for attachment_id, file_name in mailbox.get_attachment_ids_and_names(message_id)
+             if file_name.lower().endswith(".csv")]
+if not csv_files:
+    raise RuntimeError("The latest Daily Sales Report email has no CSV attachment.")
+
+attachment_id, file_name = csv_files[0]
 csv_text = mailbox.download_attachment(message_id, attachment_id)
 
 lakehouse = "abfss://<workspace>@onelake.dfs.fabric.microsoft.com/<lakehouse>.Lakehouse"
@@ -196,7 +203,7 @@ credential = KeyVaultCertificateCredential(
 | --- | --- | --- |
 | `tenant_id` | Yes | Directory (tenant) ID. |
 | `client_id` | Yes | Application (client) ID of the app registration. |
-| `akv_url` | Yes | Key Vault URL, `https://<key-vault-name>.vault.azure.net/`. |
+| `akv_url` | Yes | Key Vault URL, `https://<key-vault-name>.vault.azure.net/` (or the sovereign cloud equivalent). Anything that isn't an `https://` Key Vault URL raises `ValueError`. |
 | `certificate_name` | Yes | Name of the certificate in Key Vault. |
 | `scope` | No | Default scope for `get_access_token()`. Not needed if you always pass a scope, or only use the credential with semantic link or Azure SDK clients. |
 | `certificate_version` | No | Certificate version to sign with. Defaults to the latest version. See [Renewing the certificate](#renewing-the-certificate). |
@@ -260,6 +267,8 @@ for path in workspace.get_paths("<lakehouse-name>.Lakehouse/Files"):
     print(path.name)
 ```
 
+If a client passes `claims` to `get_token` (for example after a Continuous Access Evaluation challenge), a new token is requested rather than the cached one returned. Asking for a token in a different `tenant_id` from the credential's raises `ValueError`.
+
 ### Scopes
 
 Tokens are requested with the client credentials flow, so a scope is always an API's resource URI followed by `/.default`. `/.default` means "every permission this app has been granted on that API". Apps can't request individual permissions such as `Mail.Read`.
@@ -316,7 +325,7 @@ To avoid any failures between steps 1 and 2, first pin the current version with 
 
 ## Emails
 
-`fabric_python_helper.graph_api.Emails` works with one mailbox at a time using Microsoft Graph, authenticating as the app rather than as a user.
+`fabric_python_helper.graph_api.Emails` works with mailboxes using Microsoft Graph, authenticating as the app rather than as a user.
 
 ### Giving the app access to a mailbox
 
@@ -336,7 +345,7 @@ New-ServicePrincipal -AppId $appId -ObjectId $objectId -DisplayName "<app-name>"
 $mbx = Get-Mailbox -Identity "reports@contoso.com"
 New-ManagementScope -Name "<app-name> mailboxes" -RecipientRestrictionFilter "GUID -eq '$($mbx.GUID)'"
 
-# 3. Assign the role, limited to that scope
+# 3. Assign the role, limited to that scope. Use "Application Mail.Read" instead if the app never deletes emails.
 New-ManagementRoleAssignment -App $objectId -Role "Application Mail.ReadWrite" -CustomResourceScope "<app-name> mailboxes"
 
 # Only if the app needs to send email
@@ -372,11 +381,11 @@ mailbox = Emails(credential, "reports@contoso.com")
 | Parameter | Description |
 | --- | --- |
 | `credential` | A `KeyVaultCertificateCredential`, a `ClientSecretCredential`, or any other credential with a `get_token` method. |
-| `mailbox` | Email address of the mailbox to use. |
+| `mailbox` | Optional. Email address of the default mailbox to use. |
 
 A token is requested from the credential for each call, and the credential caches it, so one instance can be used for the whole notebook.
 
-Every method also takes an optional `shared_mailbox_email` argument to work with a different mailbox for that call. The app needs access to that mailbox too.
+Every method also takes an optional `shared_mailbox_email` argument to work with a different mailbox for that call. The app needs access to that mailbox too. If you always pass `shared_mailbox_email`, you can leave out `mailbox`, as in `Emails(credential)`. A call with neither raises `ValueError`.
 
 ### Finding an email
 
@@ -397,14 +406,14 @@ message_id = mailbox.search_message_by_subject_and_sender(
 
 With `only_return_latest=True` it returns the message ID as a string. With `False` it returns a list of messages, newest first, each a dictionary with `id`, `subject`, `from`, `receivedDateTime`, `parentFolderId` and `hasAttachments`.
 
-If nothing matches it raises an exception with the message `No matching messages found.` Use this to handle emails that don't always arrive:
+If nothing matches it raises `MessageNotFoundError`, with the message `No matching messages found.` Use this to handle emails that don't always arrive:
 
 ```python
+from fabric_python_helper.graph_api import MessageNotFoundError
+
 try:
     message_id = mailbox.search_message_by_subject_and_sender("Weekly Exceptions", "noreply@supplier.com")
-except Exception as e:
-    if str(e) != "No matching messages found.":
-        raise
+except MessageNotFoundError:
     message_id = None
     print("No exceptions report this week.")
 ```
@@ -422,12 +431,14 @@ for message in reversed(messages):
 
 ### Downloading attachments
 
-`get_attachment_ids_and_names` returns a list of `(attachment_id, file_name)` tuples:
+`get_attachment_ids_and_names` returns a list of `(attachment_id, file_name)` tuples, one for each file attached to the email:
 
 ```python
 attachments = mailbox.get_attachment_ids_and_names(message_id)
-# [('AAMkAD...', 'sales.csv'), ('AAMkAD...', 'logo.png')]
+# [('AAMkAD...', 'sales.csv'), ('AAMkAD...', 'summary.xlsx')]
 ```
+
+Inline images, such as logos in an email signature, are left out unless you pass `include_inline=True`. Attached emails and links to cloud files are always left out, as they can't be downloaded. An empty list means the email has nothing to download, so check for it rather than taking the first item.
 
 `download_attachment` returns the attachment's content. By default it's decoded as UTF-8 text, which suits CSV and text files:
 
@@ -456,7 +467,7 @@ with open(f"/lakehouse/default/Files/Sales/{file_name}", "wb") as f:
     f.write(content)
 ```
 
-Only file attachments can be downloaded. Attached emails and links to cloud files raise an exception.
+Only file attachments can be downloaded. Passing the ID of an attached email or a link to a cloud file (from somewhere other than `get_attachment_ids_and_names`) raises an exception.
 
 ### Deleting an email
 
@@ -480,7 +491,7 @@ The email is sent from the mailbox as plain text and saved in its Sent Items. Th
 
 ### Full example
 
-A notebook that loads three daily reports from a shared mailbox, run from a pipeline. Missing reports are skipped rather than failing the run.
+A notebook that loads three daily reports from a shared mailbox, run from a pipeline. Missing reports are skipped rather than failing the run, and an email without a CSV attachment is left in the mailbox for someone to look at.
 
 ```python
 # Parameters cell
@@ -495,7 +506,7 @@ LAKEHOUSE = "abfss://<workspace>@onelake.dfs.fabric.microsoft.com/<lakehouse>.La
 
 ```python
 from fabric_python_helper.auth import KeyVaultCertificateCredential
-from fabric_python_helper.graph_api import Emails
+from fabric_python_helper.graph_api import Emails, MessageNotFoundError
 
 credential = KeyVaultCertificateCredential(TENANT_ID, CLIENT_ID, KEY_VAULT, CERTIFICATE_NAME)
 mailbox = Emails(credential, MAILBOX)
@@ -509,13 +520,18 @@ reports = {
 for subject, path in reports.items():
     try:
         message_id = mailbox.search_message_by_subject_and_sender(subject, SENDER)
-    except Exception as e:
-        if str(e) != "No matching messages found.":
-            raise
+    except MessageNotFoundError:
         print(f"No email for '{subject}', skipping.")
         continue
 
-    attachment_id, file_name = mailbox.get_attachment_ids_and_names(message_id)[0]
+    csv_files = [(attachment_id, file_name)
+                 for attachment_id, file_name in mailbox.get_attachment_ids_and_names(message_id)
+                 if file_name.lower().endswith(".csv")]
+    if not csv_files:
+        print(f"No CSV attachment on '{subject}', skipping.")
+        continue
+
+    attachment_id, file_name = csv_files[0]
     content = mailbox.download_attachment(message_id, attachment_id)
     notebookutils.fs.put(f"{LAKEHOUSE}/{path}", content, overwrite=True)
     mailbox.delete_email(message_id)
@@ -528,15 +544,18 @@ for subject, path in reports.items():
 | --- | --- |
 | `Failed to get certificate ... Status code: 403, Forbidden` | The identity running the notebook can't read the certificate. Assign Key Vault Reader on the certificate, or the certificate **Get** access policy. |
 | `Failed to get certificate ... Status code: 404` | The certificate name or Key Vault URL is wrong. |
+| `ValueError` when creating `KeyVaultCertificateCredential` | `akv_url` isn't an `https://` Key Vault URL, such as `https://<key-vault-name>.vault.azure.net/`. |
 | `Failed to sign client assertion ... Forbidden ... keys/sign/action` | The identity running the notebook can't sign with the key. Assign Key Vault Crypto User on the key, or the key **Sign** access policy. |
 | `AADSTS700027` (certificate not registered on application) | The certificate version used to sign hasn't been uploaded to the app registration. This usually happens after a renewal, see [Renewing the certificate](#renewing-the-certificate). |
 | `AADSTS700016` (application not found in the directory) | The client ID or tenant ID is wrong. |
 | `AADSTS7000215` (invalid client secret) | Client secret only: the secret is wrong or has expired. |
 | Graph `403` with `ErrorAccessDenied` | The app has no Exchange role for this mailbox. Check `Test-ServicePrincipalAuthorization`, or wait up to 2 hours after a change. |
 | Graph `404` for the mailbox | The mailbox address is wrong, or the mailbox doesn't exist. |
-| `No matching messages found.` | No email in the Inbox matches the exact subject and sender. Check both, or try `only_search_inbox=False`. |
-| `Attachment ... is a #microsoft.graph.itemAttachment` | The attachment is an attached email, not a file. |
-| `ModuleNotFoundError: No module named 'notebookutils'` | The code is running outside Fabric. The package only works in Fabric (or Synapse) notebooks. |
+| `ValueError` from an `Emails` method | No mailbox was given: pass one to `Emails(credential, mailbox)` or `shared_mailbox_email` to the call. |
+| `MessageNotFoundError: No matching messages found.` | No email in the Inbox matches the exact subject and sender. Check both, or try `only_search_inbox=False`. |
+| `get_attachment_ids_and_names` returns an empty list | The email has no file attachments. Inline images are left out unless you pass `include_inline=True`, and attached emails and cloud links are always left out. |
+| `Attachment ... is a #microsoft.graph.itemAttachment` | `download_attachment` was given the ID of an attached email, not a file. |
+| `ModuleNotFoundError: No module named 'notebookutils'` when requesting a token | The code is running outside Fabric. `KeyVaultCertificateCredential` only works in Fabric (or Synapse) notebooks. |
 
 ## Upgrading from 0.3.x
 
@@ -547,6 +566,8 @@ for subject, path in reports.items():
 Before:
 
 ```python
+import fabric_python_helper.graph_api as gr
+
 email_account = gr.Emails(tennant_id, client_id, akv_url, refresh_secret_name)
 email_account.connect()
 ```
@@ -555,14 +576,26 @@ After:
 
 ```python
 from fabric_python_helper.auth import KeyVaultCertificateCredential
+from fabric_python_helper.graph_api import Emails
+
+tenant_id = "<tenant-id>"
+client_id = "<client-id>"
+akv_url = "https://<key-vault-name>.vault.azure.net/"
+certificate_name = "<certificate-name>"
+shared_mailbox = "reports@contoso.com"
 
 credential = KeyVaultCertificateCredential(tenant_id, client_id, akv_url, certificate_name)
-email_account = gr.Emails(credential, shared_mailbox)
+email_account = Emails(credential, shared_mailbox)
 ```
 
 The other method calls, including `shared_mailbox_email=`, are unchanged. `connect()`, `get_initial_tokens()` and `get_user()` have been removed.
 
-Notebooks that didn't pass `shared_mailbox_email` read the signed-in user's own mailbox. They now need the mailbox passed explicitly, and the app needs access to it in Exchange.
+Notebooks that didn't pass `shared_mailbox_email` read the signed-in user's own mailbox. They now need the mailbox passed to `Emails`, or `shared_mailbox_email` passed to every call, and the app needs access to it in Exchange.
+
+Two behaviour changes to check:
+
+- `search_message_by_subject_and_sender` raises `MessageNotFoundError` when nothing matches. It's a subclass of `Exception` with the same message, so existing handling still works, but `except MessageNotFoundError:` is clearer than comparing `str(e)`.
+- `get_attachment_ids_and_names` now only returns file attachments. Inline images (such as signature logos) are left out unless you pass `include_inline=True`, and attached emails and cloud links are always left out. Code that took the first attachment by position should pick it by name instead.
 
 Once every notebook has moved over, delete the refresh token secret from Key Vault and disable **Allow public client flows** on the old app registration (or delete it).
 
@@ -581,10 +614,7 @@ Once every notebook has moved over, delete the refresh token secret from Key Vau
 
 ### Versioning
 
-The version number is in two places, which must match:
-
-- `setup.py`: `version="0.4.0"`
-- `fabric_python_helper/__init__.py`: `__version__="0.4.0"`
+The version number is only set in `fabric_python_helper/__init__.py`, as `__version__="0.4.0"`. `setup.py` reads it from there, so there's nothing else to keep in sync. Check it with `python setup.py --version`.
 
 Versions follow [semantic versioning](https://semver.org/). While the major version is 0, increase the minor version (0.4.0 to 0.5.0) for breaking changes, and the patch version (0.4.0 to 0.4.1) for fixes. PyPI never accepts the same version twice, even if it's deleted.
 
@@ -628,7 +658,7 @@ Or add it to an environment under **Custom libraries** > **Upload**.
 
 This is the normal route. The workflow in `.github/workflows/python_publish_package.yml` runs when a release is published. It builds the package, uploads it to PyPI, and attaches the wheel and source distribution to the release.
 
-1. Update the version in both places, commit and push to `main`.
+1. Update `__version__` in `fabric_python_helper/__init__.py`, commit and push to `main`.
 2. On GitHub, go to **Releases** > **Draft a new release**.
 3. Create a tag matching the version, for example `v0.4.0`, targeting `main`.
 4. Add release notes, then select **Publish release**.
@@ -664,7 +694,7 @@ Update the version in each Fabric environment that uses the package (**Public li
 
 ### Release checklist
 
-1. Update the version in `setup.py` and `fabric_python_helper/__init__.py`.
+1. Update `__version__` in `fabric_python_helper/__init__.py`.
 2. Update this README, including [Upgrading](#upgrading-from-03x) for breaking changes.
 3. Build, run `twine check`, and test the wheel in Fabric.
 4. Commit and push to `main`.
