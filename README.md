@@ -612,6 +612,20 @@ Once every notebook has moved over, delete the refresh token secret from Key Vau
 
 ## Building and publishing
 
+### Running the tests
+
+The tests mock Microsoft Entra ID, Key Vault and Graph, and replace `notebookutils`, so they run anywhere without credentials. From the repository root:
+
+```powershell
+python -m pip install -e .[test]
+python -m pytest
+python -m pyflakes fabric_python_helper tests setup.py
+```
+
+The [Tests workflow](.github/workflows/tests.yml) runs the same checks on Python 3.10, 3.11 and 3.12, and builds the package, for every pull request into `main` and every push to `main`. It doesn't publish anything.
+
+The tests can't show that the real services accept the requests, so test a new version in Fabric before releasing it (see [Testing a wheel in Fabric](#testing-a-wheel-in-fabric-before-publishing)). Get a token, find a known email and list its attachments.
+
 ### Versioning
 
 The version number is only set in `fabric_python_helper/__init__.py`, as `__version__="0.4.0"`. `setup.py` reads it from there, so there's nothing else to keep in sync. Check it with `python setup.py --version`.
@@ -656,17 +670,31 @@ Or add it to an environment under **Custom libraries** > **Upload**.
 
 ### Publishing to PyPI with a GitHub release
 
-This is the normal route. The workflow in `.github/workflows/python_publish_package.yml` runs when a release is published. It builds the package, uploads it to PyPI, and attaches the wheel and source distribution to the release.
+This is the normal route. Merging to `main` never publishes anything; only publishing a GitHub release does. The [Release workflow](.github/workflows/release.yml) then:
 
-1. Update `__version__` in `fabric_python_helper/__init__.py`, commit and push to `main`.
+1. Runs the tests.
+2. Checks the release tag matches `__version__` (tag `v0.4.1` for `__version__="0.4.1"`), and stops if it doesn't.
+3. Builds the package and runs `twine check`.
+4. Publishes it to PyPI.
+5. Attaches the wheel and source distribution to the GitHub release.
+
+To release:
+
+1. Update `__version__` in `fabric_python_helper/__init__.py`, merge it into `main` through a pull request.
 2. On GitHub, go to **Releases** > **Draft a new release**.
-3. Create a tag matching the version, for example `v0.4.0`, targeting `main`.
+3. Create a tag matching the version, for example `v0.4.1`, targeting `main`.
 4. Add release notes, then select **Publish release**.
 5. Check the workflow run under **Actions**, and that the new version appears on [PyPI](https://pypi.org/project/fabric-python-helper/).
 
-The workflow needs a repository secret called `PYPI_API_TOKEN`, containing a PyPI API token scoped to this project (PyPI > **Account settings** > **API tokens**).
+If a step fails, nothing after it runs. PyPI never accepts the same version twice, so a release whose version is already on PyPI fails at the publish step rather than silently uploading nothing. To fix a failed release, delete the GitHub release and its tag, fix the problem, and publish the release again.
 
-The upload uses `--skip-existing`. If you forget to change the version, the workflow still succeeds but nothing new reaches PyPI. Always check the version on PyPI after releasing.
+#### Trusted Publishing setup
+
+The workflow uploads to PyPI with [Trusted Publishing](https://docs.pypi.org/trusted-publishers/), so no PyPI API token is stored in GitHub. PyPI only accepts uploads from this repository's `release.yml` workflow running in the `pypi` environment. Set it up once:
+
+1. On PyPI, open the `fabric-python-helper` project, then **Manage** > **Publishing** > **Add a new publisher** > **GitHub**. Enter owner `ArchwayTrust`, repository `Insights-Fabric-PythonHelper`, workflow `release.yml` and environment `pypi`.
+2. On GitHub, go to **Settings** > **Environments** > **New environment** and create `pypi`. Optionally add required reviewers, so each upload to PyPI waits for an approval.
+3. After the first release published this way, delete the old `PYPI_API_TOKEN` repository secret and revoke that token on PyPI.
 
 ### Publishing to PyPI manually
 
@@ -696,10 +724,10 @@ Update the version in each Fabric environment that uses the package (**Public li
 
 1. Update `__version__` in `fabric_python_helper/__init__.py`.
 2. Update this README, including [Upgrading](#upgrading-from-03x) for breaking changes.
-3. Build, run `twine check`, and test the wheel in Fabric.
-4. Commit and push to `main`.
+3. Build, run the tests and `twine check`, and test the wheel in Fabric.
+4. Merge into `main` through a pull request, once the Tests workflow passes.
 5. Publish a GitHub release tagged `v<version>`.
-6. Confirm the version on PyPI.
+6. Confirm the Release workflow succeeded and the version is on PyPI.
 7. Update and publish the Fabric environments.
 
 ## Licence

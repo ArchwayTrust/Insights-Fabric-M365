@@ -3,6 +3,8 @@ from .auth import Scopes
 from .graph_api import Emails
 from .graph_api import MessageNotFoundError
 
+__all__ = ["KeyVaultCertificateCredential", "Scopes", "Emails", "MessageNotFoundError"]
+
 __version__="0.4.0"
 __author__="Ben Dobbs"
 __author_email__="bdobbs@archwaytrust.co.uk"

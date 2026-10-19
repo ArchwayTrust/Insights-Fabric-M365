@@ -1,0 +1,93 @@
+name: Release
+
+# Publishing a GitHub release tagged v<version> runs the tests, then publishes to PyPI and attaches
+# the wheel and source distribution to the release. Nothing is published from a push or pull request.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    uses: ./.github/workflows/tests.yml
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+
+    - name: Install build tools
+      run: |
+        python -m pip install --upgrade pip
+        pip install build twine setuptools
+
+    - name: Check the release tag matches __version__
+      run: |
+        VERSION=$(python setup.py --version | tail -n 1)
+        TAG="${GITHUB_REF_NAME#v}"
+        if [ "$TAG" != "$VERSION" ]; then
+          echo "::error::Release tag $GITHUB_REF_NAME doesn't match __version__ $VERSION in fabric_python_helper/__init__.py"
+          exit 1
+        fi
+
+    - name: Build and check package
+      run: |
+        python -m build
+        python -m twine check --strict dist/*
+
+    - name: Save package
+      uses: actions/upload-artifact@v4
+      with:
+        name: dist
+        path: dist/
+        if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+
+    # PyPI only accepts uploads from this workflow and environment (Trusted Publishing), so no API token is stored
+    environment:
+      name: pypi
+      url: https://pypi.org/project/fabric-python-helper/
+    permissions:
+      id-token: write
+
+    steps:
+    - name: Download package
+      uses: actions/download-artifact@v4
+      with:
+        name: dist
+        path: dist/
+
+    - name: Publish to PyPI
+      uses: pypa/gh-action-pypi-publish@release/v1
+
+  release-assets:
+    needs: publish
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+    - name: Download package
+      uses: actions/download-artifact@v4
+      with:
+        name: dist
+        path: dist/
+
+    - name: Attach package to the GitHub release
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: gh release upload "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY"

@@ -19,10 +19,15 @@ setup(
     name='fabric_python_helper',
     version=read_version(),
     packages=find_packages(),
+    python_requires=">=3.10",
     install_requires=[
         "azure-core",
         "requests"
     ],
+    extras_require={
+        # pip install -e .[test], then run pytest
+        "test": ["pytest", "pyflakes", "setuptools"]
+    },
     author="Ben Dobbs",
     author_email="bdobbs@archwaytrust.co.uk",
     description="Collection of useful python code for automation in Microsoft Fabric.",
