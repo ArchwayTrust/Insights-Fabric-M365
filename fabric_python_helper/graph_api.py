@@ -31,6 +31,9 @@ class Emails:
             credential (TokenCredential): Credential used to get Microsoft Graph access tokens.
             mailbox (str): Email address of the mailbox to use, unless a method is given a different one.
         """
+        if not mailbox:
+            raise ValueError("A mailbox email address is required.")
+
         self.credential = credential
         self.mailbox = mailbox
 
@@ -74,12 +77,8 @@ class Emails:
         Raises:
             Exception: If no matching messages are found.
         """
-        headers = self._headers()
-
-        if only_search_inbox:
-            endpoint = f"{self._mailbox_url(shared_mailbox_email)}/mailFolders/Inbox/messages"
-        else:
-            endpoint = f"{self._mailbox_url(shared_mailbox_email)}/messages"
+        mailbox_url = self._mailbox_url(shared_mailbox_email)
+        endpoint = f"{mailbox_url}/mailFolders/Inbox/messages" if only_search_inbox else f"{mailbox_url}/messages"
 
         # Single quotes are escaped by doubling them in OData string literals
         subject_literal = subject.replace("'", "''")
@@ -92,10 +91,11 @@ class Emails:
 
         messages = []
         while endpoint:
-            response = requests.get(endpoint, headers=headers, params=query_parameters)
+            # Get headers for each page, so a token expiring part way through is refreshed
+            response = requests.get(endpoint, headers=self._headers(), params=query_parameters)
             if response.status_code != 200:
                 # Handle unsuccessful API call
-                raise Exception(f"Error searching message by subject: {response.json()}")
+                raise Exception(f"Error searching message by subject. Status code: {response.status_code}, Response: {response.text}")
 
             data = response.json()
             messages.extend(data.get('value', []))
@@ -180,6 +180,11 @@ class Emails:
 
         # Extracting the attachment content from the response
         attachment = attachment_response.json()
+
+        # Only file attachments have content. Attached emails and links to cloud files don't.
+        if "contentBytes" not in attachment:
+            raise Exception(f"Attachment {attachment.get('name')} is a {attachment.get('@odata.type')}, only file attachments can be downloaded.")
+
         attachment_content = base64.b64decode(attachment["contentBytes"])
 
         # Returning the attachment content based on its type
@@ -263,7 +268,7 @@ class Emails:
             shared_mailbox_email (str): Optional. The email address of a different mailbox to check the message in.
 
         Returns:
-            bool: True if the message exists, False otherwise.
+            bool: True if the message exists, False if it doesn't. Raises an exception for other errors, such as no access to the mailbox.
         """
         # Constructing the URL for the Microsoft Graph API message endpoint
         message_url = f'{self._mailbox_url(shared_mailbox_email)}/messages/{message_id}/'
@@ -272,11 +277,11 @@ class Emails:
             # Making a GET request to the Graph API
             response = requests.get(message_url, headers=self._headers())
 
-            # If the status code is 200, the message exists
-            if response.status_code == 200:
-                return True
-            else:
+            # Only a 404 means the message doesn't exist, other errors (such as 403) are raised
+            if response.status_code == 404:
                 return False
+            response.raise_for_status()
+            return True
         except Exception as e:
             # Log any exceptions
             raise Exception(f"Failed to check for message existence. Error: {e}") from None

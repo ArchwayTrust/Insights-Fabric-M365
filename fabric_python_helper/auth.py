@@ -11,8 +11,7 @@ Scopes and audiences:
     been granted on that API. An app can't request individual delegated scopes such as Mail.Read.
 
     Common scopes are in the Scopes class, with where to give the service principal access to each.
-    A credential gets tokens for one scope, so create one per API. They can share the same app
-    registration and certificate.
+    One credential can get tokens for any number of APIs, as tokens are cached per scope.
 
     Some APIs use a scope specific to your tenant or environment:
         SharePoint REST API: https://{tenant}.sharepoint.com/.default
@@ -28,8 +27,8 @@ Tokens for the identity running the notebook:
 
 Semantic link and Azure SDK clients:
     KeyVaultCertificateCredential implements azure.core.credentials.TokenCredential, so it can be passed as
-    the credential to semantic link (sempy and sempy_labs) functions and Azure SDK clients. They request
-    the scopes they need, so no scope is needed when creating the credential:
+    the credential to semantic link (sempy) functions and Azure SDK clients. They request the scopes they
+    need, so no scope is needed when creating the credential:
         fabric.refresh_dataset("Sales", workspace="Finance", credential=credential)
 
 Client secrets:
@@ -52,7 +51,7 @@ from notebookutils import mssparkutils
 
 class Scopes:
     """
-    Scopes for common Microsoft APIs, for use with KeyVaultCertificateCredential.
+    Scopes for common Microsoft APIs, for use with KeyVaultCertificateCredential or any other credential.
 
     The comment above each says where to give the service principal access. Entra ID issues a token
     whether or not that access exists, but the API rejects requests made without it.
