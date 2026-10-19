@@ -1,3 +1,5 @@
+from .auth import KeyVaultCertificateCredential
+from .auth import Scopes
 from .graph_api import Emails
 from .pbi_admin import AccessTokens
 from .pbi_admin import Dataflows

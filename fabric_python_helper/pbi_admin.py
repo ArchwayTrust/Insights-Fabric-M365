@@ -4,6 +4,7 @@ import requests
 import json
 import time
 from notebookutils import mssparkutils
+from .auth import KeyVaultCertificateCredential, Scopes
 
 class AccessTokens:
     def __init__(self):
@@ -61,6 +62,34 @@ class AccessTokens:
         except Exception as e:
             # Log and re-raise any exceptions that occur
             self.logger.error(f"Error in as_service_principal: {str(e)}")
+            raise
+
+    def get_token_as_service_principal_with_certificate(self, tenant_id, client_id, akv_url, certificate_name, certificate_version=None):
+        """
+        Authenticates as a service principal using a certificate held in Azure Key Vault.
+
+        Key Vault signs the client assertion, so the certificate's private key never leaves the key vault.
+        See fabric_python_helper.auth.KeyVaultCertificateCredential for the permissions required.
+
+        Parameters:
+            tenant_id (str): Azure tenant ID.
+            client_id (str): Azure client ID.
+            akv_url (str): Azure Key Vault URL.
+            certificate_name (str): Name of the certificate in Azure Key Vault.
+            certificate_version (str): Optional. Version of the certificate to sign with. Defaults to the latest version.
+
+        Returns:
+            str: An access token for Power BI API.
+
+        Raises:
+            Exception: If the authentication fails or any other error occurs.
+        """
+        try:
+            credential = KeyVaultCertificateCredential(tenant_id, client_id, akv_url, certificate_name, Scopes.POWER_BI, certificate_version)
+            return credential.get_access_token()
+        except Exception as e:
+            # Log and re-raise any exceptions that occur
+            self.logger.error(f"Error in get_token_as_service_principal_with_certificate: {str(e)}")
             raise
 
     def get_token_as_fabric_notebook_owner(self):
