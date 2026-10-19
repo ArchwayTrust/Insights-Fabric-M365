@@ -6,7 +6,6 @@ setup(
     packages=find_packages(),
     install_requires=[
         "azure-core",
-        "msal",
         "requests"
     ],
     author="Ben Dobbs",

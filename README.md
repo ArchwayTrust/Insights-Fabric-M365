@@ -2,39 +2,37 @@
 Collection of useful python code for automation in Microsoft Fabric.
 
 ## GraphAPI
-Requires an app registration with delegated User.Read, Mail.ReadWrite, Mail.ReadWrite.Shared, Mail.Send and offline_access scopes. The public client flow must also be enabled.
-Requires an azure key vault which the notebook owner has permissions to update and read secrets on.
+Authenticates as an app registration (service principal), using either a certificate held in Azure Key Vault (recommended) or a client secret. See `fabric_python_helper/auth.py` for what the certificate and key vault need.
+
+The app needs access to the mailbox. Use Exchange RBAC for Applications to limit it to specific mailboxes, assigning `Application Mail.ReadWrite` (search, download attachments, delete) and `Application Mail.Send` (send emails). Don't grant Mail permissions as Entra ID API permissions, as those apply to every mailbox in the tenant.
 
 In Fabric notebook run:
 ```
 from fabric_python_helper import graph_api as gr
+from fabric_python_helper.auth import KeyVaultCertificateCredential
 ```
 ### Emails
-Create an instance for an email account:
+Create an instance for a mailbox, authenticating with a certificate:
 ```
-tennant_id = "23...."
+tenant_id = "23...."
 client_id = "00df..."
 akv_url = "https://name.vault.azure.net/"
-refresh_secret_name = "Secret Name"
+certificate_name = "Certificate Name"
 
-email_account = gr.Emails(tennant_id, client_id, akv_url, refresh_secret_name)
-
-```
-#### Initial Authentication
-
-On first run you will need to authenticate, this is using device flow authentication:
-
-```
-email_account.get_initial_tokens()
+credential = KeyVaultCertificateCredential(tenant_id, client_id, akv_url, certificate_name)
+email_account = gr.Emails(credential, "mailbox@address.com")
 ```
 
-It will give you a link and device code which you need to follow and authenticate with.
+Or with a client secret:
+```
+from azure.identity import ClientSecretCredential
 
-#### Connect to Graph API
+client_secret = notebookutils.credentials.getSecret(akv_url, "Secret Name")
+credential = ClientSecretCredential(tenant_id, client_id, client_secret)
+email_account = gr.Emails(credential, "mailbox@address.com")
 ```
-email_account.connect()
-```
-This retrieves an access token for the current session (lasts an hour) and replaces the refresh token in the key vault. Currently unclear as to whether this resets the expiry period.
+
+Each method also takes an optional `shared_mailbox_email` to use a different mailbox.
 
 #### Find the message id (currently returns first email only)
 ```
