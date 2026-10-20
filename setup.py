@@ -22,11 +22,14 @@ setup(
     python_requires=">=3.10",
     install_requires=[
         "azure-core",
+        "pandas",
         "requests"
     ],
     extras_require={
+        # PemCertificateCredential only. msal is already in the Fabric runtime.
+        "msal": ["msal"],
         # pip install -e .[test], then run pytest
-        "test": ["pytest", "pyflakes", "setuptools"]
+        "test": ["pytest", "pytest-cov", "pyflakes", "setuptools", "msal"]
     },
     author="Ben Dobbs",
     author_email="bdobbs@archwaytrust.co.uk",

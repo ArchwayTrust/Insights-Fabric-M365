@@ -1,0 +1,407 @@
+"""
+The SharePoint module's helpers: naming, input validation, lookups, user and group resolution, the property bag
+and navigation URL matching. Requests go to the in-memory FakeTenant.
+"""
+import threading
+import time
+
+import pandas as pd
+import pytest
+import requests
+
+from fabric_python_helper.sharepoint import _common, _graph, _groups, _navigation, _sharepoint
+from fabric_python_helper.sharepoint import build_group_name, sanitise_for_group_name
+from fabric_python_helper.sharepoint._groups import GroupResolutionError, UserResolutionError
+
+from sharepoint_fake import GRAPH, FakeTenant, graph_error, response
+
+TOKEN = "token"
+SITE = "https://contoso.sharepoint.com/sites/maths"
+
+
+@pytest.fixture
+def tenant(monkeypatch):
+    monkeypatch.setattr(time, "sleep", lambda seconds: None)
+    return FakeTenant().install(monkeypatch)
+
+
+# Group naming
+
+def test_sanitise_keeps_only_letters_and_digits():
+    assert sanitise_for_group_name("Policy Documents & PE-KS3") == "PolicyDocumentsPEKS3"
+
+
+def test_build_group_name_with_and_without_site_name():
+    assert build_group_name("SP", "https://x.sharepoint.com/sites/finance-team/", "Policy Docs", "Auto-Read") == (
+        "SP-financeteam-PolicyDocs-Auto-Read"
+    )
+    assert build_group_name("SP", SITE, "Policy Docs", "Auto-Read", include_site_name=False) == "SP-PolicyDocs-Auto-Read"
+
+
+@pytest.mark.parametrize("display_name, nickname", [
+    ("BAA-Sharepoint-MATH-Auto-Read", "baasharepointmathautoread"),
+    ("---", "group"),
+    ("A" * 100, "a" * 64),
+])
+def test_mail_nickname_is_graph_valid(display_name, nickname):
+    assert _groups._build_mail_nickname(display_name) == nickname
+
+
+def test_odata_escape_doubles_single_quotes():
+    assert _groups._odata_escape("O'Neil's") == "O''Neil''s"
+
+
+def test_group_name_collisions_are_reported_both_ways():
+    prefixes = {
+        (SITE, "PE-KS3"): "BAA-Sharepoint",
+        (SITE, "PEKS3"): "BAA-Sharepoint",
+        (SITE, "ENG"): "BAA-Sharepoint",
+    }
+
+    collisions = _groups._find_group_name_collisions(prefixes, include_site_name=False)
+
+    assert collisions == {(SITE, "PEKS3"): (SITE, "PE-KS3"), (SITE, "PE-KS3"): (SITE, "PEKS3")}
+
+
+def test_site_name_separates_otherwise_colliding_codes():
+    other_site = "https://contoso.sharepoint.com/sites/science"
+    prefixes = {(SITE, "ENG"): "SP", (other_site, "ENG"): "SP"}
+
+    assert _groups._find_group_name_collisions(prefixes, include_site_name=True) == {}
+    assert len(_groups._find_group_name_collisions(prefixes, include_site_name=False)) == 2
+
+
+def test_collisions_are_logged_as_warning_rows():
+    log = _common._ThreadSafeLog()
+    _groups._log_group_name_collisions({(SITE, "A-1"): (SITE, "A1")}, log)
+
+    [row] = log.to_list()
+    assert row["action"] == "group_name_collision"
+    assert row["document_library"] == "A-1"
+
+
+# Validation
+
+def test_required_columns_must_be_present():
+    with pytest.raises(ValueError, match="missing required columns"):
+        _common._validate_required_columns(pd.DataFrame({"site_url": [SITE]}), {"site_url", "library_code"})
+
+
+def test_required_columns_must_not_be_null():
+    df = pd.DataFrame({"site_url": [SITE, None]})
+    with pytest.raises(ValueError, match="1 null value"):
+        _common._validate_required_columns(df, {"site_url"})
+
+
+def test_required_columns_are_cast_to_strings_on_a_copy():
+    df = pd.DataFrame({"library_code": [101, 102]})
+
+    validated = _common._validate_required_columns(df, {"library_code"})
+
+    assert list(validated["library_code"]) == ["101", "102"]
+    assert list(df["library_code"]) == [101, 102]
+
+
+@pytest.mark.parametrize("url", ["contoso.sharepoint.com/sites/maths", "ftp://contoso.sharepoint.com/x", "https://"])
+def test_malformed_site_urls_are_rejected(url):
+    with pytest.raises(ValueError, match="Malformed site_url"):
+        _common._validate_site_urls([url])
+
+
+@pytest.mark.parametrize("max_workers", [1, 4])
+def test_run_parallel_logs_failures_and_carries_on(max_workers):
+    done = []
+    lock = threading.Lock()
+
+    def work(name, *, action_log):
+        if name == "bad":
+            raise RuntimeError("boom")
+        with lock:
+            done.append(name)
+
+    log = _common._ThreadSafeLog()
+    _common._run_parallel(work, [("a",), ("bad",), ("b",)], max_workers, log)
+
+    assert sorted(done) == ["a", "b"]
+    assert [(r["action"], r["status"]) for r in log.to_list()] == [("error", "boom")]
+
+
+def test_empty_action_log_has_the_standard_columns():
+    df = _common._action_log_to_dataframe(_common._ThreadSafeLog())
+
+    assert list(df.columns) == _common.ACTION_LOG_COLUMNS
+    assert df.empty
+
+
+# Libraries
+
+def test_lists_are_keyed_by_display_name_and_slug_with_slug_winning(tenant):
+    site = tenant.add_site("/sites/maths")
+    slt = site.add_list("SLT")
+    titled_slt = site.add_list("SLT", slug="OldLeadership")  # display name equals another library's slug
+    spaced = site.add_list("Year 7 & 8", slug="Y7 & 8")
+
+    lists = _graph._list_existing_lists(TOKEN, site.id)
+
+    assert lists["slt"]["id"] == slt["id"]
+    assert lists["oldleadership"]["id"] == titled_slt["id"]
+    assert lists["y7 & 8"]["id"] == spaced["id"]  # slug is percent-decoded
+    assert lists["year 7 & 8"]["id"] == spaced["id"]
+
+
+def test_lists_follow_pages(tenant):
+    site = tenant.add_site("/sites/maths")
+    for code in ("A", "B", "C", "D", "E"):
+        site.add_list(code)
+    tenant.list_page_size = 2
+
+    assert sorted(_graph._list_existing_lists(TOKEN, site.id)) == ["a", "b", "c", "d", "e"]
+
+
+def test_missing_library_raises(tenant):
+    site = tenant.add_site("/sites/maths")
+    with pytest.raises(ValueError, match="Library 'ENG' not found"):
+        _graph._get_list_id(TOKEN, site.id, "ENG")
+
+
+def test_ensure_library_creates_with_code_then_sets_display_name(tenant):
+    site = tenant.add_site("/sites/maths")
+
+    lib = _graph._ensure_document_library(TOKEN, site.id, "ENG", "English")
+
+    created = site.lists[lib["id"]]
+    assert (created["slug"], created["displayName"]) == ("ENG", "English")
+
+
+# Groups and members
+
+def test_duplicate_group_names_are_refused(tenant):
+    tenant.add_group("SP-ENG-Auto-Read")
+    tenant.add_group("SP-ENG-Auto-Read")
+
+    with pytest.raises(ValueError, match="Multiple Entra groups share displayName"):
+        _groups._find_group_by_name(TOKEN, "SP-ENG-Auto-Read")
+
+
+def test_prefix_lookup_returns_all_matches_and_unique_lookup_refuses_duplicates(tenant):
+    tenant.add_group("SP-ENG-Auto-Read")
+    tenant.add_group("SP-ENG-Manual-Read")
+    tenant.add_group("SP-ENG-Manual-Read")
+    tenant.add_group("SP-MATH-Auto-Read")
+
+    groups = _groups._find_groups_by_name_prefix(TOKEN, "SP-ENG-")
+
+    assert sorted(groups) == ["SP-ENG-Auto-Read", "SP-ENG-Manual-Read"]
+    assert _groups._get_unique_group(groups, "SP-ENG-Auto-Read")["displayName"] == "SP-ENG-Auto-Read"
+    assert _groups._get_unique_group(groups, "SP-ENG-Auto-Owner") is None
+    with pytest.raises(ValueError):
+        _groups._get_unique_group(groups, "SP-ENG-Manual-Read")
+
+
+def test_group_members_are_keyed_by_kind(tenant):
+    group = tenant.add_group("SP-ENG-Auto-Read")
+    user = tenant.add_user("Jo.Smith@contoso.com")
+    nested = tenant.add_group("All Staff")
+    service_principal = tenant.add_service_principal()
+    group["members"] = {user["id"]: user, nested["id"]: nested, service_principal["id"]: service_principal}
+
+    members = _groups._get_group_members(TOKEN, group["id"])
+
+    assert members == {
+        "jo.smith@contoso.com": user["id"],
+        f"group:{nested['id']}": nested["id"],
+        f"objectid:{service_principal['id']}": service_principal["id"],
+    }
+
+
+def test_adding_an_existing_member_is_success(tenant):
+    group = tenant.add_group("SP-ENG-Auto-Read")
+    user = tenant.add_user("jo@contoso.com")
+
+    _groups._add_group_member(TOKEN, group["id"], user["id"])
+    _groups._add_group_member(TOKEN, group["id"], user["id"])
+
+    assert list(group["members"]) == [user["id"]]
+
+
+def test_adding_to_a_new_group_waits_for_replication(tenant, monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+    group = tenant.add_group("SP-ENG-Auto-Read")
+    user = tenant.add_user("jo@contoso.com")
+    tenant.fail("POST", r"/members/\$ref$", graph_error(404, "Request_ResourceNotFound"), times=2)
+
+    _groups._add_group_member(TOKEN, group["id"], user["id"], is_new_group=True)
+
+    assert user["id"] in group["members"]
+    assert sleeps == [5.0, 10.0]
+
+
+def test_adding_to_an_existing_group_does_not_wait(tenant):
+    tenant.fail("POST", r"/members/\$ref$", graph_error(404, "Request_ResourceNotFound"))
+    with pytest.raises(requests.HTTPError):
+        _groups._add_group_member(TOKEN, "missing-group", "user")
+
+
+def test_emptying_a_group_removes_every_kind_of_member(tenant):
+    group = tenant.add_group("SP-ENG-Auto-Read")
+    user = tenant.add_user("jo@contoso.com")
+    service_principal = tenant.add_service_principal()
+    group["members"] = {user["id"]: user, service_principal["id"]: service_principal}
+
+    assert _groups._empty_group_members(TOKEN, group["id"]) == 2
+    assert group["members"] == {}
+
+
+# Users
+
+def test_user_resolves_directly_by_upn(tenant):
+    user = tenant.add_user("Jo.Smith@contoso.com")
+
+    assert _groups._resolve_user_with_fallback(TOKEN, "jo.smith@contoso.com") == (user["id"], "jo.smith@contoso.com")
+
+
+def test_user_resolves_by_mail_when_the_upn_differs(tenant):
+    user = tenant.add_user("jsmith@contoso.onmicrosoft.com", mail="jo.smith@contoso.com")
+
+    assert _groups._resolve_user_with_fallback(TOKEN, "jo.smith@contoso.com") == (
+        user["id"], "jsmith@contoso.onmicrosoft.com"
+    )
+
+
+def test_user_resolves_by_proxy_address(tenant):
+    user = tenant.add_user("jsmith@contoso.com", proxy_addresses=["jo.smith@oldschool.org"])
+
+    oid, upn = _groups._resolve_user_with_fallback(TOKEN, "Jo.Smith@OldSchool.org")
+
+    assert (oid, upn) == (user["id"], "jsmith@contoso.com")
+
+
+def test_unknown_user_raises_a_resolution_error(tenant):
+    with pytest.raises(UserResolutionError, match="not found by UPN, mail, or proxyAddresses"):
+        _groups._resolve_user_with_fallback(TOKEN, "nobody@contoso.com")
+
+
+def test_malformed_user_is_reported_as_malformed(tenant):
+    with pytest.raises(UserResolutionError, match="malformed") as raised:
+        _groups._resolve_user_with_fallback(TOKEN, "jo smith@contoso.com")
+
+    assert raised.value.user_principal_name == "jo smith@contoso.com"
+
+
+def test_empty_user_raises_without_calling_graph(tenant):
+    with pytest.raises(UserResolutionError, match="empty"):
+        _groups._resolve_user_with_fallback(TOKEN, "  ")
+
+    assert tenant.calls == []
+
+
+def test_user_lookup_api_failures_are_raised(tenant):
+    tenant.fail("GET", r"/users/", graph_error(403, "Authorization_RequestDenied"))
+
+    with pytest.raises(requests.HTTPError):
+        _groups._resolve_user_with_fallback(TOKEN, "jo@contoso.com")
+
+
+def test_user_lookup_quotes_are_escaped(tenant):
+    user = tenant.add_user("oneil@contoso.com", mail="o'neil@contoso.com")
+
+    assert _groups._resolve_user_with_fallback(TOKEN, "o'neil@contoso.com")[0] == user["id"]
+
+
+# Nestable groups
+
+def test_nestable_group_resolves_by_object_id_or_name(tenant):
+    group = tenant.add_group("All Staff")
+
+    assert _groups._resolve_nestable_group(TOKEN, group["id"])["id"] == group["id"]
+    assert _groups._resolve_nestable_group(TOKEN, " All Staff ")["id"] == group["id"]
+
+
+@pytest.mark.parametrize("setup, reference, reason", [
+    (lambda t: None, "", "empty group reference"),
+    (lambda t: None, "00000000-0000-0000-0000-000000000000", "no group has this object ID"),
+    (lambda t: None, "Nobody", "no group has this display name"),
+    (lambda t: [t.add_group("Dup"), t.add_group("Dup")], "Dup", "shared by more than one group"),
+    (lambda t: t.add_group("Team", group_types=["Unified"]), "Team", "not a security group"),
+    (lambda t: t.add_group("List", security_enabled=False), "List", "not a security group"),
+])
+def test_unresolvable_nestable_groups(tenant, setup, reference, reason):
+    setup(tenant)
+
+    with pytest.raises(GroupResolutionError, match=reason):
+        _groups._resolve_nestable_group(TOKEN, reference)
+
+
+# SharePoint principals and role assignments
+
+def test_new_group_principal_waits_for_replication(tenant, monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+    site = tenant.add_site("/sites/maths")
+    group = tenant.add_group("SP-ENG-Auto-Read")
+    tenant.fail("POST", r"/web/ensureuser$", response(400), times=1)
+
+    principal_id = _sharepoint._resolve_group_principal_id(
+        TOKEN, site.url, f"c:0t.c|tenant|{group['id']}", is_new_group=True,
+    )
+
+    assert principal_id == site.principals[f"c:0t.c|tenant|{group['id']}"]
+    assert sleeps == [5.0]
+
+
+def test_existing_group_principal_failure_is_raised(tenant):
+    site = tenant.add_site("/sites/maths")
+
+    with pytest.raises(requests.HTTPError):
+        _sharepoint._resolve_group_principal_id(TOKEN, site.url, "c:0t.c|tenant|missing")
+
+
+def test_unknown_role_is_rejected():
+    with pytest.raises(ValueError, match="Unknown permission 'edit'"):
+        _sharepoint._get_role_definition_id(TOKEN, SITE, "edit")
+
+
+def test_removing_a_missing_role_assignment_is_not_an_error(tenant):
+    site = tenant.add_site("/sites/maths")
+    lst = site.add_list("ENG", unique=True)
+
+    assert _sharepoint._remove_library_role_assignment(TOKEN, site.url, lst["id"], 99) is False
+
+
+# Property bag
+
+def test_property_bag_values_are_xml_escaped_and_read_back(tenant):
+    site = tenant.add_site("/sites/maths")
+    lst = site.add_list("ENG")
+
+    _sharepoint._set_library_properties(TOKEN, site.url, lst["id"], {"SourceSystem": "A & B <c>", "SourceId": "42"})
+
+    [(_, _, kwargs)] = tenant.calls
+    assert b"A &amp; B &lt;c&gt;" in kwargs["data"]
+    assert _sharepoint._get_library_properties(TOKEN, site.url, lst["id"], ["SourceSystem", "SourceId", "Other"]) == {
+        "SourceSystem": "A & B <c>", "SourceId": "42", "Other": None,
+    }
+
+
+def test_property_bag_csom_errors_are_raised(tenant):
+    site = tenant.add_site("/sites/maths")
+
+    with pytest.raises(ValueError, match="List does not exist"):
+        _sharepoint._set_library_properties(TOKEN, site.url, "0f0f0f0f-0000-0000-0000-000000000000", {"SourceId": "1"})
+
+
+# Navigation URLs
+
+@pytest.mark.parametrize("value", [
+    "https://contoso.sharepoint.com/sites/maths/Demo%20Library%20%26%20Test",
+    "/sites/maths/Demo Library & Test/",
+    "/sites/maths/Demo%2520Library%2520%2526%2520Test",
+    "/SITES/MATHS/demo library & test",
+])
+def test_navigation_urls_normalise_to_one_key(value):
+    assert _navigation._normalise_nav_url(value) == "/sites/maths/demo library & test"
+
+
+def test_graph_base_url_matches_the_fake():
+    assert _common.GRAPH_BASE_URL == GRAPH
