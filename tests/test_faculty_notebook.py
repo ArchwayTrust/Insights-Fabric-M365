@@ -22,8 +22,8 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-import fabric_python_helper.auth
-from fabric_python_helper.auth import Scopes
+import alt_fabric_m365.auth
+from alt_fabric_m365.auth import Scopes
 
 from conftest import FakeAzure
 from sharepoint_fake import APP_ID, HOST, ROLE_DEFINITIONS, FakeTenant
@@ -159,8 +159,8 @@ def tenant(monkeypatch):
 def azure(monkeypatch):
     """Entra ID and Key Vault, for the notebook's KeyVaultCertificateCredential."""
     fake = FakeAzure(object_id=APP_ID)
-    monkeypatch.setattr(fabric_python_helper.auth.requests, "get", fake.get)
-    monkeypatch.setattr(fabric_python_helper.auth.requests, "post", fake.post)
+    monkeypatch.setattr(alt_fabric_m365.auth.requests, "get", fake.get)
+    monkeypatch.setattr(alt_fabric_m365.auth.requests, "post", fake.post)
     return fake
 
 
@@ -212,7 +212,7 @@ def spark():
 
 def seed_existing_libraries(tenant):
     """Libraries that earlier runs created: the deleted faculty's, and the moved faculty's on its old hub."""
-    from fabric_python_helper.sharepoint import SharePointLibraryManager
+    from alt_fabric_m365.sharepoint import SharePointLibraryManager
 
     class Credential:
         def get_token(self, *scopes, **kwargs):
@@ -355,7 +355,7 @@ def test_notebook_has_no_undefined_names():
 def test_notebook_only_uses_the_public_package_api():
     source = NOTEBOOK.read_text(encoding="utf-8")
 
-    imported = re.findall(r"from fabric_python_helper[\w.]* import \(?([^)]*?)\)?\n(?!\s)", source, re.S)
+    imported = re.findall(r"from alt_fabric_m365[\w.]* import \(?([^)]*?)\)?\n(?!\s)", source, re.S)
     names = {name.strip() for group in imported for name in group.replace("\n", ",").split(",") if name.strip()}
 
     assert names and not any(name.startswith("_") for name in names)

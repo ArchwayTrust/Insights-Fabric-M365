@@ -1,4 +1,4 @@
-NOTICE for Fabric-PythonHelper
+NOTICE for alt-fabric-m365
 
 This product includes software developed by Ben Dobbs and third-party software components listed below.
 
@@ -8,10 +8,6 @@ The following components are provided under the Apache License 2.0. See project 
 
 Requests
 - Project: https://github.com/psf/requests
-- License: Apache License 2.0
-
-Microsoft Authentication Library (MSAL) for Python
-- Project: https://github.com/AzureAD/microsoft-authentication-library-for-python
 - License: Apache License 2.0
 
 ------------------------------------------------------------------------------

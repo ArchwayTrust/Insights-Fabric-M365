@@ -1,6 +1,6 @@
 # Manage Faculty Sharepoint Libraries notebook
 
-The **Manage Faculty Sharepoint Libraries** notebook gives each faculty its own SharePoint document library on its academy's hub site, and keeps the library's permissions in line with the curated faculty tables. It used to carry about 4,100 lines of core code in one cell. That code now lives in this package, as [`fabric_python_helper.sharepoint`](../fabric_python_helper/sharepoint), and the notebook imports it.
+The **Manage Faculty Sharepoint Libraries** notebook gives each faculty its own SharePoint document library on its academy's hub site, and keeps the library's permissions in line with the curated faculty tables. It used to carry about 4,100 lines of core code in one cell. That code now lives in this package, as [`alt_fabric_m365.sharepoint`](../alt_fabric_m365/sharepoint), and the notebook imports it.
 
 The notebook's final state is [`examples/Manage Faculty Sharepoint Libraries.Notebook/notebook-content.py`](../examples/Manage%20Faculty%20Sharepoint%20Libraries.Notebook/notebook-content.py), in the format Fabric's Git integration uses. It is 1,160 lines, down from 5,341.
 
@@ -14,8 +14,8 @@ The notebook's final state is [`examples/Manage Faculty Sharepoint Libraries.Not
 
 ## Moving the notebook over
 
-1. **Release version 0.5.0** of the package (see [Publishing to PyPI with a GitHub release](../README.md#publishing-to-pypi-with-a-github-release)), or upload the wheel to test it first (see [Testing a wheel in Fabric](../README.md#testing-a-wheel-in-fabric-before-publishing)).
-2. **Add the package to the notebook's environment.** In the Fabric environment the notebook and its pipeline use, add `fabric_python_helper` version `0.5.0` under **Public libraries** and publish the environment. The current notebook has no environment attached (`"environment": {}` in its metadata), so attach one under **Environment** in the notebook toolbar. Its dependencies, including `pandas`, are already in the Fabric runtime.
+1. **Release version 0.6.0** of the package (see [Publishing to PyPI with a GitHub release](../README.md#publishing-to-pypi-with-a-github-release)), or upload the wheel to test it first (see [Testing a wheel in Fabric](../README.md#testing-a-wheel-in-fabric-before-publishing)).
+2. **Add the package to the notebook's environment.** In the Fabric environment the notebook and its pipeline use, add `alt-fabric-m365` version `0.6.0` under **Public libraries** and publish the environment. The current notebook has no environment attached (`"environment": {}` in its metadata), so attach one under **Environment** in the notebook toolbar. Its dependencies, including `pandas`, are already in the Fabric runtime.
 3. **Put the app's certificate in Key Vault.** The notebook now authenticates with the package's `KeyVaultCertificateCredential`: Key Vault signs each request with the certificate's private key, which never leaves the key vault, instead of the notebook reading the key from two secrets. For the existing app registration (`CLIENT_ID`), follow steps 2 to 4 of [Setting up a certificate](../README.md#setting-up-a-certificate): create a certificate in the `KEY_VAULT` key vault, upload it to the app registration with `--append` (so the current certificate keeps working until you remove it), and give the identity that runs the notebook, interactively and in the pipeline, **Get** on the certificate and **Sign** on its key. Then set the `CERTIFICATE_NAME` parameter to the certificate's name if it isn't `Systems-SPLibrary-Cert`.
 4. **Replace the notebook's content** with the example file. With Git integration, copy it over the notebook's `notebook-content.py` and commit; otherwise make the edits listed in [What changed in the notebook](#what-changed-in-the-notebook) by hand. Nothing else (tables, the pipeline, the app registration's API permissions) needs to change.
 5. **Dry run it.** Run the notebook with `DRY_RUN = True` and `RUN_SMOKE_TEST = True`. The imports cell prints the package version. Compare the action log rows for this run (in `it.sharepoint_action_log`, by `run_id`) with those of a recent dry run from the old notebook: they should match, apart from the [behaviour changes](#what-changed-in-behaviour). Membership sync's dry run reads each Auto group's owners: `group_owner_added (dry run)` rows are ownerless groups (how the notebook created them), which the live run adopts automatically, and `group_not_owned` rows are groups with an owner who isn't the app. Add the app's service principal as a co-owner of those, or the live run will leave them alone. Manual groups are checked the same way when their faculty next goes through the create pass.
@@ -66,11 +66,11 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
-# The library manager lives in fabric_python_helper (pinned in the attached
+# The library manager lives in alt_fabric_m365 (pinned in the attached
 # environment): https://github.com/ArchwayTrust/Insights-Fabric-PythonHelper
-import fabric_python_helper
-from fabric_python_helper.auth import KeyVaultCertificateCredential
-from fabric_python_helper.sharepoint import (
+import alt_fabric_m365
+from alt_fabric_m365.auth import KeyVaultCertificateCredential
+from alt_fabric_m365.sharepoint import (
     ACTION_LOG_COLUMNS,
     FATAL_ACTIONS,
     WARNING_ACTIONS,
@@ -78,7 +78,7 @@ from fabric_python_helper.sharepoint import (
     sanitise_for_group_name,
 )
 
-print(f"fabric_python_helper {fabric_python_helper.__version__}")
+print(f"alt_fabric_m365 {alt_fabric_m365.__version__}")
 ```
 
 **Core Setup.** The manager takes a credential rather than the tenant, client ID and certificate. It's the package's `KeyVaultCertificateCredential`, created without a scope: the manager asks it for a Graph token and a SharePoint token, and it caches each until shortly before it expires. This replaces the notebook's own MSAL code, which read the private key from Key Vault secrets into the notebook. The other arguments are unchanged.
@@ -158,14 +158,14 @@ Membership sync and the SLT passes run over every faculty on every run, so work 
 
 | Section of the old core cell | Now in |
 | --- | --- |
-| Constants, thread-safe action log, shared validation helpers | [`sharepoint/_common.py`](../fabric_python_helper/sharepoint/_common.py) |
-| Resilient HTTP wrapper | [`sharepoint/_http.py`](../fabric_python_helper/sharepoint/_http.py) |
-| Authentication (`_build_msal_app`, `_token_from_app`, `_validate_and_normalise_certificate`) | Replaced by the package's existing [`auth.KeyVaultCertificateCredential`](../fabric_python_helper/auth.py) |
-| Graph API helpers, OneDrive shortcut helpers | [`sharepoint/_graph.py`](../fabric_python_helper/sharepoint/_graph.py) |
-| Entra ID security group management, group-name collisions | [`sharepoint/_groups.py`](../fabric_python_helper/sharepoint/_groups.py) |
-| SharePoint REST: permissions, property bag, site sharing settings | [`sharepoint/_sharepoint.py`](../fabric_python_helper/sharepoint/_sharepoint.py) |
-| Site navigation (quick launch) | [`sharepoint/_navigation.py`](../fabric_python_helper/sharepoint/_navigation.py) |
-| `SharePointLibraryManager` | [`sharepoint/manager.py`](../fabric_python_helper/sharepoint/manager.py) |
+| Constants, thread-safe action log, shared validation helpers | [`sharepoint/_common.py`](../alt_fabric_m365/sharepoint/_common.py) |
+| Resilient HTTP wrapper | [`sharepoint/_http.py`](../alt_fabric_m365/sharepoint/_http.py) |
+| Authentication (`_build_msal_app`, `_token_from_app`, `_validate_and_normalise_certificate`) | Replaced by the package's existing [`auth.KeyVaultCertificateCredential`](../alt_fabric_m365/auth.py) |
+| Graph API helpers, OneDrive shortcut helpers | [`sharepoint/_graph.py`](../alt_fabric_m365/sharepoint/_graph.py) |
+| Entra ID security group management, group-name collisions | [`sharepoint/_groups.py`](../alt_fabric_m365/sharepoint/_groups.py) |
+| SharePoint REST: permissions, property bag, site sharing settings | [`sharepoint/_sharepoint.py`](../alt_fabric_m365/sharepoint/_sharepoint.py) |
+| Site navigation (quick launch) | [`sharepoint/_navigation.py`](../alt_fabric_m365/sharepoint/_navigation.py) |
+| `SharePointLibraryManager` | [`sharepoint/manager.py`](../alt_fabric_m365/sharepoint/manager.py) |
 
 Function names are unchanged, so a fix made to another copy of this code can be found and applied here, except that `_build_group_name` and `_sanitise_for_group_name` are now public, without the underscore.
 
@@ -184,7 +184,7 @@ The suite went from 102 to 323 tests. It passes on Python 3.10, 3.11, 3.12 and 3
 | [`test_sharepoint_manager.py`](../tests/test_sharepoint_manager.py) | 79 | Every operation end to end: creating libraries with groups, metadata and navigation, and again changing nothing; renaming; dry runs making no writes; manual-only (SLT) libraries; colliding codes; one failing library not stopping others; parallel runs. Membership sync adding users and aliases, removing stale members, keeping service principals, emptying roles without creating groups, the removal guardrail, unresolved users blocking removals, nested groups, OneDrive shortcuts, `add_failed` and `remove_failed`. Unlink keeping Manual groups; retire removing access but not membership; grants being additive and idempotent; site sharing lockdown, including a write that doesn't stick. Authenticating with the real `KeyVaultCertificateCredential` (Entra ID and Key Vault faked): one Graph and one SharePoint token, each sent only to its own API |
 | [`test_faculty_notebook.py`](../tests/test_faculty_notebook.py) | 10 | Runs the example notebook cell by cell, as Fabric does, with Spark SQL run on SQLite over small faculty tables and the real `KeyVaultCertificateCredential`, and checks a live run, a second run, a dry run, a failed run and a widened scope (below). Also checks the notebook has no undefined names and uses only the package's public API |
 
-Line and branch coverage of `fabric_python_helper.sharepoint` is 97%. Most of what's left is handling for rarer failures, such as a site's prefetch failing part way through a rename.
+Line and branch coverage of `alt_fabric_m365.sharepoint` is 97%. Most of what's left is handling for rarer failures, such as a site's prefetch failing part way through a rename.
 
 The notebook test's scenarios, against a pilot scope of `BAA` and `MATH%`:
 

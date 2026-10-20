@@ -36,7 +36,7 @@ jobs:
         VERSION=$(python setup.py --version | tail -n 1)
         TAG="${GITHUB_REF_NAME#v}"
         if [ "$TAG" != "$VERSION" ]; then
-          echo "::error::Release tag $GITHUB_REF_NAME doesn't match __version__ $VERSION in fabric_python_helper/__init__.py"
+          echo "::error::Release tag $GITHUB_REF_NAME doesn't match __version__ $VERSION in alt_fabric_m365/__init__.py"
           exit 1
         fi
 
@@ -59,7 +59,7 @@ jobs:
     # PyPI only accepts uploads from this workflow and environment (Trusted Publishing), so no API token is stored
     environment:
       name: pypi
-      url: https://pypi.org/project/fabric-python-helper/
+      url: https://pypi.org/project/alt-fabric-m365/
     permissions:
       id-token: write
 

@@ -11,9 +11,9 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-import fabric_python_helper.auth
-import fabric_python_helper.sharepoint
-from fabric_python_helper.sharepoint import SharePointLibraryManager, sanitise_for_group_name
+import alt_fabric_m365.auth
+import alt_fabric_m365.sharepoint
+from alt_fabric_m365.sharepoint import SharePointLibraryManager, sanitise_for_group_name
 
 from sharepoint_fake import APP_ID, HOST, FakeTenant
 
@@ -99,9 +99,9 @@ def setting(monkeypatch):
         def get_token(self, *scopes, **kwargs):
             return types.SimpleNamespace(token="t")
 
-    monkeypatch.setattr(fabric_python_helper.auth, "KeyVaultCertificateCredential", Credential)
+    monkeypatch.setattr(alt_fabric_m365.auth, "KeyVaultCertificateCredential", Credential)
     monkeypatch.setattr(
-        fabric_python_helper.sharepoint, "SharePointLibraryManager",
+        alt_fabric_m365.sharepoint, "SharePointLibraryManager",
         lambda *args, **kwargs: SharePointLibraryManager(*args, service_principal_id=APP_ID, **kwargs),
     )
 

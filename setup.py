@@ -8,17 +8,17 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 def read_version():
     # Read __version__ from the package without importing it, as importing needs the package's dependencies
-    with open(os.path.join(HERE, 'fabric_python_helper', '__init__.py'), encoding='utf-8') as f:
+    with open(os.path.join(HERE, 'alt_fabric_m365', '__init__.py'), encoding='utf-8') as f:
         match = re.search(r'^__version__\s*=\s*[\'"]([^\'"]+)[\'"]', f.read(), re.MULTILINE)
     if not match:
-        raise RuntimeError("Unable to find __version__ in fabric_python_helper/__init__.py.")
+        raise RuntimeError("Unable to find __version__ in alt_fabric_m365/__init__.py.")
     return match.group(1)
 
 
 setup(
-    name='fabric_python_helper',
+    name='alt-fabric-m365',
     version=read_version(),
-    packages=find_packages(),
+    packages=find_packages(include=["alt_fabric_m365", "alt_fabric_m365.*"]),
     python_requires=">=3.10",
     install_requires=[
         "azure-core",

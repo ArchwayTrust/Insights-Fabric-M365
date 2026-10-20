@@ -17,7 +17,7 @@ class Emails:
     A class to interact with Microsoft Graph API for managing emails in a mailbox.
 
     Authenticates as an app registration (service principal), using a credential with a get_token method:
-        - fabric_python_helper.auth.KeyVaultCertificateCredential, which keeps the certificate's private key in Azure Key Vault (recommended).
+        - alt_fabric_m365.auth.KeyVaultCertificateCredential, which keeps the certificate's private key in Azure Key Vault (recommended).
         - azure.identity.ClientSecretCredential, with the client secret read from Azure Key Vault.
 
     The app needs access to the mailbox. Use Exchange RBAC for Applications to limit it to specific mailboxes, assigning:
