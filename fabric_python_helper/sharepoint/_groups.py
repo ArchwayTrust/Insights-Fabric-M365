@@ -499,10 +499,12 @@ def _find_group_name_collisions(
     collisions: dict[tuple, tuple] = {}
     for site_url, library_code in group_prefixes:
         prefix = group_prefixes[(site_url, library_code)]
+        # Lowercase, as Graph matches group names case-insensitively: codes
+        # differing only in case would otherwise share groups unnoticed.
         if include_site_name:
-            key = (prefix, _extract_site_name(site_url), sanitise_for_group_name(library_code))
+            key = (prefix.lower(), _extract_site_name(site_url).lower(), sanitise_for_group_name(library_code).lower())
         else:
-            key = (prefix, sanitise_for_group_name(library_code))
+            key = (prefix.lower(), sanitise_for_group_name(library_code).lower())
         other = seen.get(key)
         if other is not None and other != (site_url, library_code):
             collisions[(site_url, library_code)] = other

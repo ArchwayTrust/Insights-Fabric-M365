@@ -72,6 +72,7 @@ class FakeSpark:
             "sharepoint_faculty_membership", self.db, index=False)
         self.db.execute("CREATE TABLE sharepoint_sync_state (process TEXT, last_processed_ts TEXT, updated_at TEXT)")
         self.saved = {}  # table name -> list of DataFrames appended
+        self.after_query = None  # called with each SELECT, e.g. to add rows mid-run
 
     def _translate(self, query):
         query = re.sub(r"\b\w+\.\w+\.it\.(\w+)", r"\1", query)
@@ -81,12 +82,20 @@ class FakeSpark:
         query = self._translate(query)
         if re.match(r"\s*CREATE (SCHEMA|TABLE)", query):
             return None
-        merge = re.match(r"\s*MERGE INTO .*?'([^']+)' AS process,\s*'([^']+)' AS last_processed_ts", query, re.S)
+        merge = re.match(r"\s*MERGE INTO .*?'((?:[^']|'')+)' AS process,\s*'([^']+)' AS last_processed_ts", query, re.S)
         if merge:
-            self.db.execute("DELETE FROM sharepoint_sync_state WHERE process = ?", (merge.group(1),))
-            self.db.execute("INSERT INTO sharepoint_sync_state VALUES (?, ?, datetime('now'))", merge.groups())
+            process = merge.group(1).replace("''", "'")
+            self.db.execute("DELETE FROM sharepoint_sync_state WHERE process = ?", (process,))
+            self.db.execute("INSERT INTO sharepoint_sync_state VALUES (?, ?, datetime('now'))", (process, merge.group(2)))
             return None
-        return FakeSparkFrame(pd.read_sql_query(query, self.db))
+        frame = FakeSparkFrame(pd.read_sql_query(query, self.db))
+        if self.after_query:
+            self.after_query(query)
+        return frame
+
+    def add_faculties(self, faculties):
+        pd.DataFrame(faculties, columns=FACULTY_COLUMNS).to_sql(
+            "sharepoint_faculty_list", self.db, index=False, if_exists="append")
 
     def createDataFrame(self, pdf):
         return types.SimpleNamespace(write=FakeWriter(self, pdf.copy()))
@@ -346,3 +355,38 @@ def test_notebook_only_uses_the_public_package_api():
     assert names and not any(name.startswith("_") for name in names)
     assert "mgr._" not in source
     assert "def _request_with_retry" not in source
+
+
+def test_quoted_scope_values_reach_the_watermark_safely(tenant, run_notebook, spark):
+    seed_existing_libraries(tenant)
+
+    run_notebook(spark, ACADEMY_FILTER="BAA,O'X")
+
+    assert spark.watermark() == {"faculty_sharepoint_sync|BAA,O'X|MATH%": "2026-10-01 09:00:00.000000"}
+
+
+def test_rows_landing_mid_run_are_left_for_the_next_run(tenant, run_notebook, spark):
+    seed_existing_libraries(tenant)
+    late = [
+        faculty("F8", "MATHNEW", "New Maths", changed="2026-10-02 09:00:00"),
+        # Newer, and a move: without a shared upper bound the retire pass would see it and advance the
+        # watermark past F8, which the create pass had already missed
+        faculty("F9", "MATHGONE", "Gone Maths", previous_hub=OLD_HUB, changed="2026-10-03 09:00:00"),
+    ]
+
+    def land_after_the_create_read(query):
+        if "AS library_display_name" in query and "TRUE AS manual_read" in query:
+            spark.after_query = None
+            spark.add_faculties(late)
+
+    spark.after_query = land_after_the_create_read
+    run_notebook(spark)
+
+    hub = tenant.sites[HUB.lower()]
+    assert hub.list_by_slug("MATHNEW") is None
+    assert spark.watermark() == {"faculty_sharepoint_sync|BAA|MATH%": "2026-10-01 09:00:00.000000"}
+
+    run_notebook(spark)
+
+    assert hub.list_by_slug("MATHNEW")["displayName"] == "New Maths"
+    assert spark.watermark() == {"faculty_sharepoint_sync|BAA|MATH%": "2026-10-03 09:00:00.000000"}

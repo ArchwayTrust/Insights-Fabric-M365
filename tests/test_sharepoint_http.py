@@ -74,7 +74,7 @@ def test_success_returns_immediately_with_default_timeout(sleeps):
     assert resp.status_code == 200
     assert request.call_count == 1
     assert request.call_args.kwargs["timeout"] == _http.DEFAULT_TIMEOUT
-    assert "allow_redirects" not in request.call_args.kwargs
+    assert request.call_args.kwargs["allow_redirects"] is False
     assert sleeps == []
 
 
@@ -164,3 +164,28 @@ def test_redirect_from_https_to_http_is_refused():
     with patch_request(return_value=response(301, headers={"Location": "http://contoso.sharepoint.com/sites/x"})):
         with pytest.raises(requests.HTTPError, match="Refusing"):
             _request_with_retry("POST", URL)
+
+
+@pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
+def test_get_redirect_on_the_same_host_is_followed(status):
+    target = "https://contoso.sharepoint.com/sites/renamed/_api/web"
+    with patch_request(side_effect=[response(status, headers={"Location": target}), response(200, {})]) as request:
+        assert _request_with_retry("GET", URL).status_code == 200
+
+    assert request.call_args_list[1].args == ("GET", target)
+
+
+@pytest.mark.parametrize("location", ["https://evil.example.com/x", "http://contoso.sharepoint.com/sites/x"])
+def test_get_redirect_to_another_host_or_to_http_is_refused(location):
+    with patch_request(return_value=response(302, headers={"Location": location})) as request:
+        with pytest.raises(requests.HTTPError, match="Refusing"):
+            _request_with_retry("GET", URL)
+
+    assert request.call_count == 1
+
+
+def test_303_is_not_followed_for_post():
+    with patch_request(return_value=response(303, headers={"Location": "/sites/x"})) as request:
+        assert _request_with_retry("POST", URL).status_code == 303
+
+    assert request.call_count == 1

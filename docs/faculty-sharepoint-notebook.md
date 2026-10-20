@@ -39,17 +39,17 @@ Cells are listed in order. **Changed** marks the cells that differ from the prev
 | 10-11 | *Core Setup* | Creates a `KeyVaultCertificateCredential` for the app's certificate, and the `SharePointLibraryManager` from the parameters | **Changed** |
 | 12 | Run context | Run ID, `persist_action_log` (appends each operation's log to the audit table), the rollout scope predicate `scoped()`, the reserved SLT code and the shared eligibility predicate `eligible()` | **Changed** |
 | 13-18 | *Smoke Test* | Only with `RUN_SMOKE_TEST`: against the IT site's demo library, reads metadata, creates the library, checks its navigation link, locks down sharing and checks it, and syncs four test members | **Changed** (cells 16 and 17) |
-| 19-20 | *Real Data*, watermark | Creates the sync state table if needed and reads this scope's watermark | |
+| 19-20 | *Real Data*, watermark | Creates the sync state table if needed, reads this scope's watermark, and reads the newest change as the upper bound for this run's incremental passes | **Changed** |
 | 21-23 | *Site Sharing Lockdown* | Every in-scope hub, every run | |
 | 24-26 | *SLT Libraries* | One SLT library per hub, with Manual groups only. Reports faculties whose code collides with the SLT code, and hubs shared by two academies | **Changed** (cell 25) |
-| 27-29 | *Create/Modify Libraries* | Faculties new or changed since the watermark | |
-| 30-32 | *Unlink Deleted Faculties* | Faculties deleted at source since the watermark | |
-| 33-35 | *Retire Moved Libraries* | Faculties whose hub changed since the watermark: retires the copy on the old hub | |
+| 27-29 | *Create/Modify Libraries* | Faculties new or changed since the watermark | **Changed** (bounded by the run's upper watermark) |
+| 30-32 | *Unlink Deleted Faculties* | Faculties deleted at source since the watermark | **Changed** (bounded by the run's upper watermark) |
+| 33-35 | *Retire Moved Libraries* | Faculties whose hub changed since the watermark: retires the copy on the old hub | **Changed** (bounded by the run's upper watermark) |
 | 36-38 | *SLT Access to Faculty Libraries* | Grants each academy's SLT groups Contribute and Read on every faculty library, every run | **Changed** (cell 37) |
 | 39-41 | *Update Memberships* | Full membership sync for every in-scope faculty, including the all-staff nested groups | |
 | 42-43 | *Unresolved Users* | Appends users that couldn't be resolved to the unresolved users table, with academy and subject | |
 | 44-45 | *Run Outcome* | Shows warnings, and fails the run if any action failed | |
-| 46 | Watermark | Advances the watermark, only after a clean run that wasn't a dry run | |
+| 46 | Watermark | Advances the watermark, only after a clean run that wasn't a dry run | **Changed** (escaped process key) |
 
 The cell that held the core code, and its *Core Code* heading, have been removed.
 
@@ -101,6 +101,11 @@ mgr = SharePointLibraryManager(
 
 **Run context.** `FATAL_ACTIONS` and `WARNING_ACTIONS` are imported rather than defined here, as the package defines the action names. They hold the same values. `SLT_CODE_KEY` uses the now public `sanitise_for_group_name`. `FACULTY_CODE_FILTER` is now quote-escaped before it goes into the SQL, as `ACADEMY_FILTER` already was.
 
+**Watermark.** Two fixes from review, each covered by a notebook test:
+
+- The create, unlink and retire passes each read the faculty list separately. A row landing between two reads could be missed by an earlier pass, yet still be covered by the watermark advanced from a later pass. The watermark cell now reads the newest `last_changed_ts` once, as `HIGH_WATERMARK`, and all three passes only take rows up to it. Rows newer than that are left for the next run.
+- The watermark key contains the rollout filters, so a `'` in a filter broke the watermark's lookup and its `MERGE`. Both now use `SYNC_PROCESS_LITERAL`, the quote-escaped key.
+
 **Smoke test.** The navigation and sharing checks read the site through the manager instead of calling private functions with its token:
 
 | Before | After |
@@ -119,9 +124,9 @@ The core code moved over unchanged. A script compared every function and constan
 | Fix | Effect on the notebook |
 | --- | --- |
 | Group lookups put their `$filter` straight into the URL, so a group name containing `&`, `#` or `+` broke the query. | An `all_staff_security_group` such as `Maths & Science Staff` failed every run with an `error` row. It now resolves. |
-| One group lookup matched names case-sensitively, the other didn't (as Graph doesn't). | A group whose name differed only in case was missed by membership sync, which created a duplicate. Now it's reused. |
+| One group lookup matched names case-sensitively, the other didn't (as Graph doesn't). The group-name collision check now also ignores case, so codes such as `PE-KS3` and `peks3` are reported instead of sharing groups. | A group whose name differed only in case was missed by membership sync, which created a duplicate. Now it's reused. |
 | `site_url` was only checked to be http or https, and the SharePoint token is sent to it. | A `site_url` that isn't `https://` on `SHAREPOINT_HOSTNAME` now raises a `ValueError` for that operation, before any request. All hub URLs should already be on that host. |
-| Redirects from https to http were followed, with the token. | Now refused, like redirects to another host. |
+| Redirects from https to http were followed, with the token, and GET redirects weren't checked at all. | Every redirect hop, for every method, must stay on the same host and on https. Requests to SharePoint and Graph aren't redirected elsewhere in normal use. |
 | A user principal name containing `/` could change the path of the Graph user lookup. | The `/` is now encoded. Valid UPNs are sent exactly as before. |
 | `get_library_metadata` returned `NaN` instead of `None` for unset values under pandas 3. | No effect under the current runtime's pandas 2. |
 
@@ -146,14 +151,14 @@ The old core cell said it was an inlined copy of `SharePointLibraryPermissions` 
 
 All tests run without credentials or a Fabric workspace: [`tests/sharepoint_fake.py`](../tests/sharepoint_fake.py) is an in-memory fake of the Graph and SharePoint REST endpoints the manager calls. It replaces `requests.request`, so the real request building, retries and response handling all run, and it keeps state (groups, members, libraries, role assignments, navigation, sharing settings), so tests check what an operation actually changed and that running it again changes nothing. Like the real services, it parses query strings out of the URL, which is how the `&` bug above was caught.
 
-The suite went from 102 to 264 tests. It passes on Python 3.10, 3.11, 3.12 and 3.13, and with pandas 2 and pandas 3.
+The suite went from 102 to 277 tests. It passes on Python 3.10, 3.11, 3.12 and 3.13, and with pandas 2 and pandas 3.
 
 | File | Tests | Covers |
 | --- | --- | --- |
-| [`test_sharepoint_http.py`](../tests/test_sharepoint_http.py) | 23 | `Retry-After` in seconds and as a date (with clamping, NaN and past dates); retries on 429, 5xx, connection errors and timeouts, with backoff and jitter; redirects for POST keep the method; cross-host, https-to-http and looping redirects are refused |
-| [`test_sharepoint_helpers.py`](../tests/test_sharepoint_helpers.py) | 65 | Group naming, mail nicknames and collisions; DataFrame and URL validation; parallel runs logging failures without stopping; library lookup by slug and display name, with paging; duplicate and case-differing group names; member keys for users, groups and service principals; replication waits; user resolution by UPN, mail and proxy address, malformed and unknown users; nestable group resolution; property bag XML escaping and errors; navigation URL normalisation |
+| [`test_sharepoint_http.py`](../tests/test_sharepoint_http.py) | 31 | `Retry-After` in seconds and as a date (with clamping, NaN and past dates); retries on 429, 5xx, connection errors and timeouts, with backoff and jitter; redirects for POST keep the method; cross-host, https-to-http and looping redirects are refused |
+| [`test_sharepoint_helpers.py`](../tests/test_sharepoint_helpers.py) | 68 | Group naming, mail nicknames and collisions; DataFrame and URL validation; parallel runs logging failures without stopping; library lookup by slug and display name, with paging; duplicate and case-differing group names; member keys for users, groups and service principals; replication waits; user resolution by UPN, mail and proxy address, malformed and unknown users; nestable group resolution; property bag XML escaping and errors; navigation URL normalisation |
 | [`test_sharepoint_manager.py`](../tests/test_sharepoint_manager.py) | 63 | Every operation end to end: creating libraries with groups, metadata and navigation, and again changing nothing; renaming; dry runs making no writes; manual-only (SLT) libraries; colliding codes; one failing library not stopping others; parallel runs. Membership sync adding users and aliases, removing stale members, keeping service principals, emptying roles without creating groups, the removal guardrail, unresolved users blocking removals, nested groups, OneDrive shortcuts, `add_failed` and `remove_failed`. Unlink keeping Manual groups; retire removing access but not membership; grants being additive and idempotent; site sharing lockdown, including a write that doesn't stick. Authenticating with the real `KeyVaultCertificateCredential` (Entra ID and Key Vault faked): one Graph and one SharePoint token, each sent only to its own API |
-| [`test_faculty_notebook.py`](../tests/test_faculty_notebook.py) | 8 | Runs the example notebook cell by cell, as Fabric does, with Spark SQL run on SQLite over small faculty tables and the real `KeyVaultCertificateCredential`, and checks a live run, a second run, a dry run, a failed run and a widened scope (below). Also checks the notebook has no undefined names and uses only the package's public API |
+| [`test_faculty_notebook.py`](../tests/test_faculty_notebook.py) | 10 | Runs the example notebook cell by cell, as Fabric does, with Spark SQL run on SQLite over small faculty tables and the real `KeyVaultCertificateCredential`, and checks a live run, a second run, a dry run, a failed run and a widened scope (below). Also checks the notebook has no undefined names and uses only the package's public API |
 
 Line and branch coverage of `fabric_python_helper.sharepoint` is 97%. Most of what's left is handling for rarer failures, such as a site's prefetch failing part way through a rename.
 
@@ -163,6 +168,8 @@ The notebook test's scenarios, against a pilot scope of `BAA` and `MATH%`:
 - **Second run.** Finds no new watermark events and makes no membership changes.
 - **Dry run.** Makes no writes to SharePoint or Entra ID and leaves the watermark alone.
 - **Authentication.** The certificate named by `CERTIFICATE_NAME` is read from the key vault and signs the assertions, and the run uses one Graph and one SharePoint token.
+- **Rows landing mid-run.** A new faculty and a newer move added after the create read are both left for the next run, which picks them up.
+- **Quoted scope values.** A `'` in `ACADEMY_FILTER` reaches the watermark lookup and `MERGE` safely.
 - **Failed run.** A failed member addition makes the run outcome cell raise, and the watermark isn't advanced.
 - **Widened scope.** Changing the filters starts a new watermark and replays events for the newly in-scope faculties, and the faculty coded `SLT` is reported and skipped.
 

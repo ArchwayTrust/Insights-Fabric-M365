@@ -513,9 +513,12 @@ SYNC_PROCESS_NAME = (
     f"faculty_sharepoint_sync|{','.join(ACADEMY_CODES) or '*'}|{FACULTY_CODE_FILTER or '*'}"
 )
 
+# The filters are free text, so quote-escape the key wherever it is a SQL literal.
+SYNC_PROCESS_LITERAL = SYNC_PROCESS_NAME.replace("'", "''")
+
 wm_rows = spark.sql(f"""
     SELECT last_processed_ts FROM {sync_state_table}
-    WHERE process = '{SYNC_PROCESS_NAME}'
+    WHERE process = '{SYNC_PROCESS_LITERAL}'
 """).collect()
 
 WATERMARK = (
@@ -525,7 +528,23 @@ WATERMARK = (
 )
 WATERMARK_LITERAL = WATERMARK.strftime("%Y-%m-%d %H:%M:%S.%f")
 
-print(f"Run {RUN_ID}: processing changes newer than {WATERMARK_LITERAL} (DRY_RUN={DRY_RUN}).")
+# Upper bound for the create, unlink and retire passes, read once before any
+# of them. Each pass reads the faculty list separately, so without a shared
+# bound a row landing between two reads could be missed by the earlier pass
+# yet covered by the watermark advanced from a later one. Rows newer than
+# this are left for the next run.
+hw_rows = spark.sql(f"SELECT MAX(last_changed_ts) AS max_ts FROM {curated_faculty_list}").collect()
+HIGH_WATERMARK = (
+    hw_rows[0]["max_ts"]
+    if hw_rows and hw_rows[0]["max_ts"] is not None
+    else WATERMARK
+)
+HIGH_WATERMARK_LITERAL = HIGH_WATERMARK.strftime("%Y-%m-%d %H:%M:%S.%f")
+
+print(
+    f"Run {RUN_ID}: processing changes newer than {WATERMARK_LITERAL}, "
+    f"up to {HIGH_WATERMARK_LITERAL} (DRY_RUN={DRY_RUN})."
+)
 
 # METADATA ********************
 
@@ -714,6 +733,7 @@ df_library_changes = spark.sql(f"""
     WHERE
         COALESCE(f.deleted_in_source, FALSE) = FALSE
         AND f.last_changed_ts > TIMESTAMP'{WATERMARK_LITERAL}'
+        AND f.last_changed_ts <= TIMESTAMP'{HIGH_WATERMARK_LITERAL}'
         AND {eligible('f')}
 """)
 
@@ -770,6 +790,7 @@ df_deleted_in_source = spark.sql(f"""
     WHERE
         COALESCE(f.deleted_in_source, FALSE) = TRUE
         AND f.last_changed_ts > TIMESTAMP'{WATERMARK_LITERAL}'
+        AND f.last_changed_ts <= TIMESTAMP'{HIGH_WATERMARK_LITERAL}'
         AND {eligible('f')}
 """)
 
@@ -824,6 +845,7 @@ df_hub_moves = spark.sql(f"""
         f.previous_hub_url IS NOT NULL
         AND f.previous_hub_url <> f.sharepoint_hub_url
         AND f.last_changed_ts > TIMESTAMP'{WATERMARK_LITERAL}'
+        AND f.last_changed_ts <= TIMESTAMP'{HIGH_WATERMARK_LITERAL}'
         AND {eligible('f')}
 """)
 
@@ -1140,7 +1162,7 @@ else:
             MERGE INTO {sync_state_table} AS t
             USING (
                 SELECT
-                    '{SYNC_PROCESS_NAME}' AS process,
+                    '{SYNC_PROCESS_LITERAL}' AS process,
                     TIMESTAMP'{new_watermark}' AS last_processed_ts
             ) AS s
             ON t.process = s.process

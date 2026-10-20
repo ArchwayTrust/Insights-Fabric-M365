@@ -303,8 +303,11 @@ class FakeTenant:
         flt = query.get("$filter", "")
         m = re.fullmatch(r"displayName eq '((?:[^']|'')*)'", flt)
         if m:
-            name = m.group(1).replace("''", "'")
-            return response(200, {"value": [self._public(g) for g in self.groups.values() if g["displayName"] == name]})
+            # Graph compares display names case-insensitively
+            name = m.group(1).replace("''", "'").lower()
+            return response(200, {"value": [
+                self._public(g) for g in self.groups.values() if g["displayName"].lower() == name
+            ]})
         m = re.fullmatch(r"startswith\(displayName, '((?:[^']|'')*)'\)", flt)
         if m:
             prefix = m.group(1).replace("''", "'").lower()

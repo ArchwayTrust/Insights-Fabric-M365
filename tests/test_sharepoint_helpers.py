@@ -463,3 +463,25 @@ def test_site_urls_must_be_https_on_the_sharepoint_host(url):
 
 def test_site_url_host_check_ignores_case():
     _common._validate_site_urls(["https://Contoso.SharePoint.com/sites/maths"], sharepoint_hostname="contoso.sharepoint.com")
+
+
+@pytest.mark.parametrize("include_site_name", [False, True])
+def test_codes_and_prefixes_differing_only_in_case_collide(include_site_name):
+    prefixes = {
+        (SITE, "PE-KS3"): "BAA-Sharepoint",
+        (SITE, "peks3"): "BAA-Sharepoint",
+        (SITE, "ENG"): "BAA-Sharepoint",
+        (SITE, "eng"): "baa-sharepoint",
+    }
+
+    collisions = _groups._find_group_name_collisions(prefixes, include_site_name=include_site_name)
+
+    assert set(collisions) == set(prefixes)
+
+
+def test_group_names_differing_only_in_case_are_duplicates(tenant):
+    tenant.add_group("SP-ENG-Auto-Read")
+    tenant.add_group("sp-eng-auto-read")
+
+    with pytest.raises(ValueError, match="Multiple Entra groups share displayName"):
+        _groups._find_group_by_name(TOKEN, "SP-ENG-Auto-Read")

@@ -96,24 +96,27 @@ def _request_with_retry(
     last_exception = None
     kwargs.setdefault("timeout", DEFAULT_TIMEOUT)
 
-    # For non-GET methods, disable automatic redirects so we can follow
-    # them ourselves while preserving the HTTP method.  The requests
-    # library follows RFC 7231 and downgrades POST → GET on 301/302,
-    # which breaks SharePoint POST endpoints like ensureuser.
-    preserve_method = method.upper() != "GET"
-    if preserve_method:
-        kwargs.setdefault("allow_redirects", False)
+    # Disable automatic redirects so we can follow them ourselves: every hop
+    # is checked before the bearer token is sent to it, and the HTTP method
+    # is preserved.  The requests library follows RFC 7231 and downgrades
+    # POST → GET on 301/302, which breaks SharePoint POST endpoints like
+    # ensureuser.  303 means "GET the new location", so it is only followed
+    # for GET.
+    kwargs.setdefault("allow_redirects", False)
+    follow_manually = not kwargs["allow_redirects"]
+    redirect_codes = (301, 302, 303, 307, 308) if method.upper() == "GET" else (301, 302, 307, 308)
 
     for attempt in range(max_retries + 1):
         try:
             resp = requests.request(method, url, **kwargs)
 
-            # Handle redirects for POST/PATCH/DELETE — re-issue with
-            # the same method to the new Location.  Redirects to a
-            # different host are refused: silently following one would
-            # send the Authorization bearer token to the new host.
+            # Handle redirects — re-issue with the same method to the new
+            # Location.  Redirects to a different host, or from https to
+            # http, are refused: silently following one would send the
+            # Authorization bearer token there, and a response from it
+            # could steer later requests (e.g. through a nextLink).
             hops = 0
-            while preserve_method and resp.status_code in (301, 302, 307, 308):
+            while follow_manually and resp.status_code in redirect_codes:
                 redirect_url = resp.headers.get("Location")
                 if not redirect_url:
                     break
