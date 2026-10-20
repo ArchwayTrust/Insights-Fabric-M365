@@ -1,0 +1,36 @@
+"""
+Checks on the package itself: the version is set in one place, and the README's examples are valid Python.
+"""
+import ast
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+import fabric_python_helper
+
+ROOT = Path(__file__).resolve().parent.parent
+README = (ROOT / "README.md").read_text(encoding="utf-8")
+PYTHON_BLOCKS = re.findall(r"^```python\n(.*?)^```", README, re.S | re.M)
+
+
+def test_setup_reads_the_package_version():
+    result = subprocess.run([sys.executable, "setup.py", "--version"], cwd=ROOT, capture_output=True, text=True, check=True)
+
+    assert result.stdout.strip().splitlines()[-1] == fabric_python_helper.__version__
+
+
+def test_public_names_are_exported():
+    for name in ("KeyVaultCertificateCredential", "Scopes", "Emails", "MessageNotFoundError"):
+        assert hasattr(fabric_python_helper, name)
+
+
+def test_readme_has_python_examples():
+    assert len(PYTHON_BLOCKS) > 10
+
+
+@pytest.mark.parametrize("block", [b for b in PYTHON_BLOCKS if not b.lstrip().startswith("%")])
+def test_readme_examples_are_valid_python(block):
+    ast.parse(block)
