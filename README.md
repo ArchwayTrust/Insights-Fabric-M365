@@ -1,4 +1,4 @@
-# ALT-Fabric-M365
+# alt-fabric-m365
 
 Python helpers for automation in Microsoft Fabric notebooks, from Archway Learning Trust (ALT).
 

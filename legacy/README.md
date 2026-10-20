@@ -1,4 +1,4 @@
-# fabric-python-helper has been renamed ALT-Fabric-M365
+# fabric-python-helper has been renamed alt-fabric-m365
 
 This package is now published as [`alt-fabric-m365`](https://pypi.org/project/alt-fabric-m365/), and imported as `alt_fabric_m365`. There will be no more releases under this name.
 

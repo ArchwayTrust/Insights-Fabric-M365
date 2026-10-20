@@ -16,7 +16,7 @@ def read_version():
 
 
 setup(
-    name='ALT-Fabric-M365',
+    name='alt-fabric-m365',
     version=read_version(),
     packages=find_packages(include=["alt_fabric_m365", "alt_fabric_m365.*"]),
     python_requires=">=3.10",
