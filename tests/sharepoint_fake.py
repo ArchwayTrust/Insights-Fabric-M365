@@ -115,7 +115,7 @@ class FakeTenant:
     # Setup helpers
 
     def install(self, monkeypatch):
-        from fabric_python_helper.sharepoint import _http
+        from archwaytrust_fabric.sharepoint import _http
         monkeypatch.setattr(_http.requests, "request", self.request)
         return self
 

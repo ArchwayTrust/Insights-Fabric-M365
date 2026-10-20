@@ -7,8 +7,8 @@ from unittest import mock
 
 import pytest
 
-from fabric_python_helper import auth
-from fabric_python_helper.auth import KeyVaultCertificateCredential, Scopes
+from archwaytrust_fabric import auth
+from archwaytrust_fabric.auth import KeyVaultCertificateCredential, Scopes
 
 from conftest import CERT_DER, KID, FakeAzure, make_response
 

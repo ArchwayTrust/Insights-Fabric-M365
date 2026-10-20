@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-import fabric_python_helper
+import archwaytrust_fabric
 
 ROOT = Path(__file__).resolve().parent.parent
 README = (ROOT / "README.md").read_text(encoding="utf-8")
@@ -19,12 +19,12 @@ PYTHON_BLOCKS = re.findall(r"^```python\n(.*?)^```", README, re.S | re.M)
 def test_setup_reads_the_package_version():
     result = subprocess.run([sys.executable, "setup.py", "--version"], cwd=ROOT, capture_output=True, text=True, check=True)
 
-    assert result.stdout.strip().splitlines()[-1] == fabric_python_helper.__version__
+    assert result.stdout.strip().splitlines()[-1] == archwaytrust_fabric.__version__
 
 
 def test_public_names_are_exported():
     for name in ("KeyVaultCertificateCredential", "Scopes", "Emails", "MessageNotFoundError", "SharePointLibraryManager"):
-        assert hasattr(fabric_python_helper, name)
+        assert hasattr(archwaytrust_fabric, name)
 
 
 def test_readme_has_python_examples():

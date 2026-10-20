@@ -9,9 +9,9 @@ import pandas as pd
 import pytest
 import requests
 
-from fabric_python_helper.sharepoint import _common, _graph, _groups, _navigation, _sharepoint
-from fabric_python_helper.sharepoint import build_group_name, sanitise_for_group_name
-from fabric_python_helper.sharepoint._groups import GroupResolutionError, UserResolutionError
+from archwaytrust_fabric.sharepoint import _common, _graph, _groups, _navigation, _sharepoint
+from archwaytrust_fabric.sharepoint import build_group_name, sanitise_for_group_name
+from archwaytrust_fabric.sharepoint._groups import GroupResolutionError, UserResolutionError
 
 from sharepoint_fake import GRAPH, FakeTenant, graph_error, response
 

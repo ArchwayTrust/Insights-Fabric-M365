@@ -9,9 +9,9 @@ import time
 import pandas as pd
 import pytest
 
-import fabric_python_helper
-from fabric_python_helper.auth import Scopes
-from fabric_python_helper.sharepoint import (
+import archwaytrust_fabric
+from archwaytrust_fabric.auth import Scopes
+from archwaytrust_fabric.sharepoint import (
     ACTION_LOG_COLUMNS, FATAL_ACTIONS, WARNING_ACTIONS, SharePointLibraryManager,
 )
 
@@ -91,8 +91,8 @@ def test_constructor_gets_graph_and_sharepoint_tokens_up_front(credential, tenan
 
 
 def test_works_with_key_vault_certificate_credential(fake_notebookutils, tenant, site, monkeypatch):
-    from fabric_python_helper import auth
-    from fabric_python_helper.auth import KeyVaultCertificateCredential
+    from archwaytrust_fabric import auth
+    from archwaytrust_fabric.auth import KeyVaultCertificateCredential
     from conftest import FakeAzure
 
     azure = FakeAzure(object_id=APP_ID)
@@ -126,7 +126,7 @@ def test_constructor_fails_fast_on_bad_credentials():
 
 
 def test_manager_is_exported_from_the_package():
-    assert fabric_python_helper.SharePointLibraryManager is SharePointLibraryManager
+    assert archwaytrust_fabric.SharePointLibraryManager is SharePointLibraryManager
 
 
 def test_action_classes_do_not_overlap():

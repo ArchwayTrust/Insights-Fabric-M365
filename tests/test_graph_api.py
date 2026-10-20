@@ -4,10 +4,10 @@ from unittest import mock
 import pytest
 import requests
 
-import fabric_python_helper
-from fabric_python_helper import graph_api
-from fabric_python_helper.auth import Scopes
-from fabric_python_helper.graph_api import Emails, MessageNotFoundError
+import archwaytrust_fabric
+from archwaytrust_fabric import graph_api
+from archwaytrust_fabric.auth import Scopes
+from archwaytrust_fabric.graph_api import Emails, MessageNotFoundError
 
 from conftest import make_response
 
@@ -115,7 +115,7 @@ def test_search_with_no_match_raises_message_not_found(emails):
 
 
 def test_message_not_found_is_exported_and_still_an_exception():
-    assert fabric_python_helper.MessageNotFoundError is MessageNotFoundError
+    assert archwaytrust_fabric.MessageNotFoundError is MessageNotFoundError
     assert issubclass(MessageNotFoundError, Exception)
 
 
