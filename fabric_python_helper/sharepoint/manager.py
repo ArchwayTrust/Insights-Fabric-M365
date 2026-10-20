@@ -633,7 +633,11 @@ class SharePointLibraryManager:
                     "source_id": None,
                 })
 
-        return pd.DataFrame(results, columns=["site_url", "library_code", "source_system", "source_id"])
+        # object dtype keeps unset values as None — pandas 3 would otherwise
+        # infer a string dtype and turn them into NaN.
+        return pd.DataFrame(
+            results, columns=["site_url", "library_code", "source_system", "source_id"], dtype=object,
+        )
 
     # -------------------------------------------------------------------
     # rename_libraries
