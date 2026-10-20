@@ -631,6 +631,7 @@ pdf_slt_libraries = df_slt_sites.toPandas().assign(
     auto_groups=False,          # outside the dynamic flow — Manual groups only
     manual_read=True,
     manual_contribute=True,
+    app_owned=False,            # the headteacher owns the SLT groups, not the app
 )
 
 # Faculties the reserved-code exclusion in eligible() skips.

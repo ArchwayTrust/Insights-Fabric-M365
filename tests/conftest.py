@@ -77,8 +77,11 @@ class FakeAzure:
     Stands in for Key Vault (certificate GET and sign POST) and the Entra ID token endpoint, recording each call.
     """
 
-    def __init__(self, kid=KID, expires_in=3600, token_status=200, token_body=None, delay=0):
+    def __init__(self, kid=KID, expires_in=3600, token_status=200, token_body=None, delay=0, object_id=None):
         self.kid = kid
+        # With object_id, access tokens are JWT-shaped with that oid claim, as Entra ID issues them
+        self.object_id = object_id
+        self.issued = []
         self.expires_in = expires_in
         self.token_status = token_status
         self.token_body = token_body
@@ -106,4 +109,10 @@ class FakeAzure:
             count = len(self.token_calls)
         if self.token_status != 200:
             return make_response(self.token_status, self.token_body)
-        return make_response(200, {"access_token": f"token-{count}", "expires_in": self.expires_in})
+        token = f"token-{count}"
+        if self.object_id:
+            claims = base64.urlsafe_b64encode(json.dumps({"oid": self.object_id, "n": count}).encode()).decode().rstrip("=")
+            token = f"eyJhbGciOiJub25lIn0.{claims}.sig"
+        with self._lock:
+            self.issued.append(token)
+        return make_response(200, {"access_token": token, "expires_in": self.expires_in})

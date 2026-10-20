@@ -20,7 +20,7 @@ from ._graph import (
 )
 from ._groups import (
     GroupResolutionError, UserResolutionError, _add_group_member, _create_security_group, _empty_group_members,
-    _ensure_security_group, _find_existing_library_collisions, _find_group_by_name, _find_group_name_collisions,
+    _ensure_app_owns_group, _ensure_security_group, _token_object_id, _find_existing_library_collisions, _find_group_by_name, _find_group_name_collisions,
     _find_groups_by_name_prefix,
     _get_group_members, _get_unique_group, _log_group_name_collisions, _remove_group_member,
     _rename_security_group, _resolve_nestable_group, _resolve_user_with_fallback, build_group_name,
@@ -84,6 +84,10 @@ class SharePointLibraryManager:
             missing); unlinking removes the link again.
         navigation_label:
             Title of the navigation label the library links are nested under.
+        service_principal_id:
+            Object ID of the app's service principal, which is made owner of
+            the groups the manager creates.  Read from the Graph token's
+            ``oid`` claim when not given.
     """
 
     def __init__(
@@ -99,6 +103,7 @@ class SharePointLibraryManager:
         allow_mass_removal: bool = False,
         add_to_navigation: bool = False,
         navigation_label: str = "Document Libraries",
+        service_principal_id: str | None = None,
     ):
         # Tokens are requested per use via the properties below.  The
         # credential caches them and requests new ones near expiry, so runs
@@ -121,6 +126,50 @@ class SharePointLibraryManager:
         self.allow_mass_removal = allow_mass_removal
         self.add_to_navigation = add_to_navigation
         self.navigation_label = navigation_label
+        self._service_principal_id = service_principal_id
+
+    @property
+    def service_principal_id(self) -> str:
+        """Object ID of the app's service principal (see the constructor)."""
+        if self._service_principal_id is None:
+            self._service_principal_id = _token_object_id(self._graph_token)
+        return self._service_principal_id
+
+    def _check_group_owner(
+        self, group_id: str, group_name: str, site_url: str, library_code: str,
+        permission: str, action_log: _ThreadSafeLog, *, dry_run: bool = False,
+    ) -> bool:
+        """Return whether an existing group may be granted access or synced.
+
+        Group names are predictable, so a same-named group someone else
+        created must not be adopted (see _ensure_app_owns_group).  A group
+        with no owner gets the app added as owner and is logged.  A dry run
+        only reads the owners, so it reports what a live run would do.
+        """
+        outcome = _ensure_app_owns_group(
+            self._graph_token, group_id, self.service_principal_id, dry_run=dry_run,
+        )
+        if outcome == "adopted":
+            _append_log(
+                action_log, site_url, library_code,
+                "group_owner_added (dry run)" if dry_run else "group_owner_added",
+                "the group has no owner — the app registration would be added as owner" if dry_run
+                else "the group had no owner — the app registration was added as owner",
+                group=group_name, permission=permission,
+            )
+        elif outcome == "not_owned":
+            logger.warning(
+                "Group '%s' is owned by someone other than the app — not used for '%s'",
+                group_name, library_code,
+            )
+            _append_log(
+                action_log, site_url, library_code, "group_not_owned",
+                "the group's owners don't include the app registration, so it may not be the "
+                "automation's group — not granted or synced; check who created it, then add the "
+                "app as an owner or delete it",
+                group=group_name, permission=permission,
+            )
+        return outcome != "not_owned"
 
     @property
     def _graph_token(self) -> str:
@@ -237,6 +286,7 @@ class SharePointLibraryManager:
         auto_groups: bool,
         manual_read: bool,
         manual_contribute: bool,
+        app_owned: bool,
         source_system: str | None,
         source_id: str | None,
         dry_run: bool,
@@ -248,6 +298,10 @@ class SharePointLibraryManager:
         action_log: _ThreadSafeLog,
     ) -> None:
         """Create a single library with its optional Auto and Manual groups.
+
+        With *app_owned*, new groups are created with the app as owner and an
+        existing group is only used if the app owns it.  Without it (groups
+        owned by people, such as the SLT groups), ownership is left alone.
 
         *nav* is None when navigation linking is off (or the site's label
         could not be ensured); otherwise a dict with ``label``, ``node_id``
@@ -349,7 +403,12 @@ class SharePointLibraryManager:
                 else:
                     group_id, is_new = _ensure_security_group(
                         self._graph_token, group_display_name, group_description,
+                        self.service_principal_id if app_owned else None,
                     )
+                    if app_owned and not is_new and not self._check_group_owner(
+                        group_id, group_display_name, site_url, library_code, role_key, action_log,
+                    ):
+                        continue
                     created_groups.append((group_display_name, suffix, role_key, action_name, group_id, is_new))
 
             # Step 5: If any groups were newly created, wait once for Entra ID
@@ -452,6 +511,11 @@ class SharePointLibraryManager:
                                gives a library governed by Manual groups only.
           - manual_read:       Bool — create a Manual-Read group (default False)
           - manual_contribute: Bool — create a Manual-Contribute group (default False)
+          - app_owned:         Bool — the app registration owns the groups (default
+                               True): new groups are created with it as owner, and
+                               an existing group is only granted access if it owns
+                               it (an ownerless group has it added).  False for
+                               groups people own, such as an SLT library's.
           - source_system:     Str — provenance tag stored in the library's root
                                folder property bag (default None)
           - source_id:         Str — source record ID stored in the library's root
@@ -487,6 +551,8 @@ class SharePointLibraryManager:
             df["manual_read"] = False
         if "manual_contribute" not in df.columns:
             df["manual_contribute"] = False
+        if "app_owned" not in df.columns:
+            df["app_owned"] = True
         if "source_system" not in df.columns:
             df["source_system"] = None
         if "source_id" not in df.columns:
@@ -554,6 +620,7 @@ class SharePointLibraryManager:
                 bool(row["auto_groups"]),
                 bool(row["manual_read"]),
                 bool(row["manual_contribute"]),
+                bool(row["app_owned"]),
                 row["source_system"] if pd.notna(row["source_system"]) else None,
                 row["source_id"] if pd.notna(row["source_id"]) else None,
                 dry_run_,
@@ -1600,6 +1667,14 @@ class SharePointLibraryManager:
 
                 if dry_run:
                     if desired_upns or desired_groups:
+                        # Ownership is only read, so the dry run shows groups
+                        # a live run would refuse or adopt.
+                        existing_group = _get_unique_group(existing_groups_by_name, group_display_name)
+                        if existing_group and not self._check_group_owner(
+                            existing_group["id"], group_display_name, site_url, library_code,
+                            role, action_log, dry_run=True,
+                        ):
+                            continue
                         logger.info("[DRY RUN] Would ensure group '%s'", group_display_name)
                         _append_log(
                             action_log, site_url, library_code,
@@ -1641,10 +1716,19 @@ class SharePointLibraryManager:
                 existing_group = _get_unique_group(existing_groups_by_name, group_display_name)
                 if desired_upns or desired_groups:
                     if existing_group:
+                        # Auto groups are the automation's own: never add
+                        # members to, or grant, a same-named group it
+                        # doesn't own.
+                        if not self._check_group_owner(
+                            existing_group["id"], group_display_name, site_url, library_code,
+                            role, action_log,
+                        ):
+                            continue
                         group_id, is_new_group = existing_group["id"], False
                     else:
                         group_id = _create_security_group(
                             self._graph_token, group_display_name, group_description,
+                            self.service_principal_id,
                         )["id"]
                         is_new_group = True
                     created_role_groups.append(

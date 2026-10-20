@@ -54,7 +54,7 @@ FATAL_ACTIONS = frozenset({"error", "add_failed", "remove_failed"})
 WARNING_ACTIONS = frozenset({
     "user_not_found", "removal_guardrail_triggered", "removals_skipped",
     "onedrive_shortcut_failed", "library_not_found", "library_name_conflict",
-    "group_name_collision", "group_not_found",
+    "group_name_collision", "group_not_found", "group_not_owned",
 })
 
 logger = logging.getLogger(__name__)

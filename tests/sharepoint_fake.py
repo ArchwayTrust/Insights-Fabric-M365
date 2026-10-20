@@ -18,6 +18,7 @@ import requests
 
 GRAPH = "https://graph.microsoft.com/v1.0"
 HOST = "contoso.sharepoint.com"
+APP_ID = "aaaaaaaa-0000-0000-0000-00000000a99a"  # the app's service principal object ID
 
 ROLE_DEFINITIONS = {"Read": 1073741826, "Contribute": 1073741827, "Full Control": 1073741829}
 
@@ -126,11 +127,11 @@ class FakeTenant:
         self.users[user["id"]] = user
         return user
 
-    def add_group(self, display_name, security_enabled=True, group_types=()):
+    def add_group(self, display_name, security_enabled=True, group_types=(), owners=()):
         group = {
             "@odata.type": GROUP, "id": str(uuid.uuid4()), "displayName": display_name, "description": "",
             "mailNickname": "x", "securityEnabled": security_enabled, "groupTypes": list(group_types),
-            "members": {},
+            "members": {}, "owners": set(owners),
         }
         self.groups[group["id"]] = group
         return group
@@ -235,7 +236,8 @@ class FakeTenant:
         if path == "/groups" and method == "POST":
             assert body["securityEnabled"] is True and body["mailEnabled"] is False
             assert re.fullmatch(r"[a-z0-9]{1,64}", body["mailNickname"])
-            group = self.add_group(body["displayName"])
+            owners = {ref.rsplit("/", 1)[-1] for ref in body.get("owners@odata.bind", [])}
+            group = self.add_group(body["displayName"], owners=owners)
             group.update(description=body["description"], mailNickname=body["mailNickname"])
             return response(201, self._public(group))
 
@@ -249,6 +251,17 @@ class FakeTenant:
             if method == "PATCH":
                 group.update(body)
                 return response(204)
+
+        m = re.fullmatch(r"/groups/([^/]+)/owners", path)
+        if m and method == "GET":
+            return response(200, {"value": [{"id": owner} for owner in sorted(self.groups[m.group(1)]["owners"])]})
+        m = re.fullmatch(r"/groups/([^/]+)/owners/\$ref", path)
+        if m and method == "POST":
+            owner = body["@odata.id"].rsplit("/", 1)[-1]
+            if owner in self.groups[m.group(1)]["owners"]:
+                return graph_error(400, "Request_BadRequest", "One or more added object references already exist")
+            self.groups[m.group(1)]["owners"].add(owner)
+            return response(204)
 
         m = re.fullmatch(r"/groups/([^/]+)/members", path)
         if m and method == "GET":
@@ -297,7 +310,7 @@ class FakeTenant:
 
     @staticmethod
     def _public(group):
-        return {k: v for k, v in group.items() if k != "members"}
+        return {k: v for k, v in group.items() if k not in ("members", "owners")}
 
     def _find_groups(self, query):
         flt = query.get("$filter", "")

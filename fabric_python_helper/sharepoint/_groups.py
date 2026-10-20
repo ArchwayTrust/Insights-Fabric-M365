@@ -1,6 +1,8 @@
 """
 Entra ID security group and user helpers: naming, lookup, creation, membership and resolution.
 """
+import base64
+import json
 import logging
 import re
 import time
@@ -159,9 +161,14 @@ def _build_mail_nickname(display_name: str) -> str:
 
 
 def _create_security_group(
-    token: str, display_name: str, description: str
+    token: str, display_name: str, description: str, owner_id: str | None = None,
 ) -> dict:
-    """Create an Entra ID security group. Returns the group resource."""
+    """Create an Entra ID security group. Returns the group resource.
+
+    With *owner_id* (the app's service principal object ID), the group is
+    created with the app as its owner, so _ensure_app_owns_group can later
+    tell it apart from a same-named group someone else created.
+    """
     body = {
         "displayName": display_name,
         "description": description,
@@ -169,6 +176,8 @@ def _create_security_group(
         "mailNickname": _build_mail_nickname(display_name),
         "securityEnabled": True,
     }
+    if owner_id is not None:
+        body["owners@odata.bind"] = [f"{GRAPH_BASE_URL}/directoryObjects/{owner_id}"]
     # Not repeated after a failure that may have created the group: a
     # duplicate name would block the library until removed by hand.
     resp = _request_with_retry(
@@ -182,9 +191,12 @@ def _create_security_group(
 
 
 def _ensure_security_group(
-    token: str, display_name: str, description: str
+    token: str, display_name: str, description: str, owner_id: str | None = None,
 ) -> tuple[str, bool]:
     """Ensure a security group exists, creating it if needed.
+
+    *owner_id* is passed to _create_security_group for a new group.  An
+    existing group is returned as is; callers check its owner.
 
     Returns:
         (group_id, newly_created) — *newly_created* is True when the group
@@ -195,8 +207,79 @@ def _ensure_security_group(
     if existing:
         logger.info("Security group '%s' already exists (id=%s)", display_name, existing["id"])
         return existing["id"], False
-    group = _create_security_group(token, display_name, description)
+    group = _create_security_group(token, display_name, description, owner_id)
     return group["id"], True
+
+
+def _get_group_owner_ids(token: str, group_id: str) -> set[str]:
+    """Return the object IDs of a group's owners."""
+    owners: set[str] = set()
+    url: str | None = f"{GRAPH_BASE_URL}/groups/{group_id}/owners?$select=id"
+    while url:
+        resp = _request_with_retry("GET", url, headers=_graph_headers(token))
+        resp.raise_for_status()
+        data = resp.json()
+        owners.update(owner["id"].lower() for owner in data.get("value", []))
+        url = data.get("@odata.nextLink")
+    return owners
+
+
+def _add_group_owner(token: str, group_id: str, owner_id: str) -> None:
+    """Add an owner to a group (already being an owner is success)."""
+    resp = _request_with_retry(
+        "POST", f"{GRAPH_BASE_URL}/groups/{group_id}/owners/$ref",
+        headers=_graph_headers(token),
+        json={"@odata.id": f"{GRAPH_BASE_URL}/directoryObjects/{owner_id}"},
+    )
+    if resp.status_code == 400 and "already exist" in resp.text.lower():
+        return
+    resp.raise_for_status()
+
+
+def _ensure_app_owns_group(token: str, group_id: str, app_object_id: str, *, dry_run: bool = False) -> str:
+    """Check that the app owns a group before granting it access or syncing it.
+
+    Group names are predictable, so a group that already has the name the
+    automation would use may have been created by someone else to gain
+    access.  The app is made owner of every group it creates; a group with
+    no owners at all (as created by earlier versions, app-only) has the app
+    added as owner.
+
+    Returns ``"owned"``, ``"adopted"`` (the app was added as owner — or, with
+    *dry_run*, would be) or ``"not_owned"`` (someone else owns it, and the
+    app doesn't).
+    """
+    owners = _get_group_owner_ids(token, group_id)
+    if app_object_id.lower() in owners:
+        return "owned"
+    if owners:
+        return "not_owned"
+    if dry_run:
+        return "adopted"
+    _add_group_owner(token, group_id, app_object_id)
+    logger.info("Added the app as owner of ownerless group %s", group_id)
+    return "adopted"
+
+
+def _token_object_id(token: str) -> str:
+    """Read the service principal's object ID (oid claim) from an app-only access token.
+
+    The token was just issued by Entra ID to this process, so its claims are
+    read without verifying the signature; the value is only used to name the
+    app as a group owner.
+    """
+    try:
+        payload = token.split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+        object_id = claims["oid"]
+    except (IndexError, ValueError, KeyError, TypeError) as exc:
+        raise ValueError(
+            "Couldn't read the app's object ID from its Graph token — pass service_principal_id "
+            "to SharePointLibraryManager"
+        ) from exc
+    if not isinstance(object_id, str) or not _GUID_PATTERN.match(object_id):
+        raise ValueError(f"The Graph token's oid claim isn't an object ID: {object_id!r}")
+    return object_id
 
 
 def _rename_security_group(token: str, group_id: str, new_display_name: str) -> None:

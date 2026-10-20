@@ -26,7 +26,7 @@ import fabric_python_helper.auth
 from fabric_python_helper.auth import Scopes
 
 from conftest import FakeAzure
-from sharepoint_fake import HOST, ROLE_DEFINITIONS, FakeTenant
+from sharepoint_fake import APP_ID, HOST, ROLE_DEFINITIONS, FakeTenant
 
 NOTEBOOK = (Path(__file__).resolve().parent.parent / "examples" / "Manage Faculty Sharepoint Libraries.Notebook"
             / "notebook-content.py")
@@ -158,7 +158,7 @@ def tenant(monkeypatch):
 @pytest.fixture
 def azure(monkeypatch):
     """Entra ID and Key Vault, for the notebook's KeyVaultCertificateCredential."""
-    fake = FakeAzure()
+    fake = FakeAzure(object_id=APP_ID)
     monkeypatch.setattr(fabric_python_helper.auth.requests, "get", fake.get)
     monkeypatch.setattr(fabric_python_helper.auth.requests, "post", fake.post)
     return fake
@@ -218,7 +218,9 @@ def seed_existing_libraries(tenant):
         def get_token(self, *scopes, **kwargs):
             return types.SimpleNamespace(token="t")
 
-    manager = SharePointLibraryManager(Credential(), HOST, include_site_name=False, add_to_navigation=True)
+    manager = SharePointLibraryManager(
+        Credential(), HOST, include_site_name=False, add_to_navigation=True, service_principal_id=APP_ID,
+    )
     for hub, code in ((HUB, "MATHOLD"), (OLD_HUB, "MATHMOVED")):
         manager.create_libraries(pd.DataFrame({
             "site_url": [hub], "library_code": [code], "library_display_name": [code],
@@ -252,6 +254,10 @@ def test_live_run_provisions_the_pilot_scope_and_advances_the_watermark(tenant, 
         assert ROLE_DEFINITIONS[role] in math["role_assignments"][principal]
 
     assert hub.web["MembersCanShare"] is False
+
+    # Faculty groups are owned by the app; the SLT groups are left for the headteacher to own
+    assert tenant.group_named("BAA-Sharepoint-MATH-Auto-Contribute")["owners"] == {APP_ID}
+    assert tenant.group_named("BAA-Sharepoint-SLT-Manual-Read")["owners"] == set()
     # The unlinked library's navigation link was removed; the others were added under the label
     assert sorted(c["Title"] for c in hub.nav[0]["Children"]) == ["Maths", "Moved Maths", "SLT"]
 
@@ -278,7 +284,7 @@ def test_notebook_authenticates_with_the_key_vault_certificate(tenant, run_noteb
     # One token per API, cached for the whole run
     scopes = [kwargs["data"]["scope"] for _, kwargs in azure.token_calls]
     assert sorted(scopes) == sorted([Scopes.GRAPH, f"https://{HOST}/.default"])
-    sharepoint_token = f"token-{scopes.index(f'https://{HOST}/.default') + 1}"
+    sharepoint_token = azure.issued[scopes.index(f'https://{HOST}/.default')]
     sharepoint_calls = [kwargs for method, url, kwargs in tenant.calls if "/_api/" in url]
     assert sharepoint_calls
     assert {kwargs["headers"]["Authorization"] for kwargs in sharepoint_calls} == {f"Bearer {sharepoint_token}"}

@@ -15,7 +15,7 @@ from fabric_python_helper.sharepoint import (
     ACTION_LOG_COLUMNS, FATAL_ACTIONS, WARNING_ACTIONS, SharePointLibraryManager,
 )
 
-from sharepoint_fake import HOST, ROLE_DEFINITIONS, FakeTenant
+from sharepoint_fake import APP_ID, HOST, ROLE_DEFINITIONS, FakeTenant
 
 READ = ROLE_DEFINITIONS["Read"]
 CONTRIBUTE = ROLE_DEFINITIONS["Contribute"]
@@ -41,6 +41,7 @@ def site(tenant):
 def make_manager(credential):
     def make(**options):
         options.setdefault("include_site_name", False)
+        options.setdefault("service_principal_id", APP_ID)
         return SharePointLibraryManager(credential, HOST, **options)
     return make
 
@@ -94,7 +95,7 @@ def test_works_with_key_vault_certificate_credential(fake_notebookutils, tenant,
     from fabric_python_helper.auth import KeyVaultCertificateCredential
     from conftest import FakeAzure
 
-    azure = FakeAzure()
+    azure = FakeAzure(object_id=APP_ID)
     monkeypatch.setattr(auth.requests, "get", azure.get)
     monkeypatch.setattr(auth.requests, "post", azure.post)
     credential = KeyVaultCertificateCredential("tenant", "client", "https://myvault.vault.azure.net/", "sp-cert")
@@ -107,9 +108,12 @@ def test_works_with_key_vault_certificate_credential(fake_notebookutils, tenant,
     assert [kwargs["data"]["scope"] for _, kwargs in azure.token_calls] == [Scopes.GRAPH, f"https://{HOST}/.default"]
     graph_auth = {c[2]["headers"]["Authorization"] for c in tenant.calls if c[1].startswith("https://graph.microsoft.com/")}
     sharepoint_auth = {c[2]["headers"]["Authorization"] for c in tenant.calls if c[1].startswith(f"https://{HOST}/")}
-    assert (graph_auth, sharepoint_auth) == ({"Bearer token-1"}, {"Bearer token-2"})
+    assert (graph_auth, sharepoint_auth) == ({f"Bearer {azure.issued[0]}"}, {f"Bearer {azure.issued[1]}"})
     assert fake_notebookutils == ["keyvault", "keyvault"]
     assert len(site.lists) == 2
+    # The app's object ID comes from the Graph token, and owns the groups it created
+    assert manager.service_principal_id == APP_ID
+    assert all(group["owners"] == {APP_ID} for group in tenant.groups.values())
 
 
 def test_constructor_fails_fast_on_bad_credentials():
@@ -1013,3 +1017,91 @@ def test_each_user_is_resolved_once_per_sync(make_manager, tenant, site):
     lookups = [url for method, url, _ in tenant.calls if "/v1.0/users" in url and method == "GET"]
     assert len(lookups) == 2  # UPN miss, then mail match — once, not once per library
     assert tenant.member_upns("BAA-Sharepoint-ART-Auto-Contribute") == ["jo.smith@contoso.onmicrosoft.com"]
+
+
+# Group ownership
+
+def test_new_groups_are_owned_by_the_app(make_manager, tenant, site):
+    tenant.add_user("head@contoso.com")
+    make_manager().create_libraries(libraries_df(site, "MATH", manual_read=True))
+    make_manager().update_memberships(memberships_df(site, [("MATH", "head@contoso.com", "owner")]))
+
+    assert {g["displayName"]: g["owners"] for g in tenant.groups.values()} == {
+        "BAA-Sharepoint-MATH-Auto-Read": {APP_ID},
+        "BAA-Sharepoint-MATH-Auto-Contribute": {APP_ID},
+        "BAA-Sharepoint-MATH-Manual-Read": {APP_ID},
+        "BAA-Sharepoint-MATH-Auto-Owner": {APP_ID},
+    }
+
+
+def test_a_same_named_group_someone_else_owns_is_never_granted_access(make_manager, tenant, site):
+    squatter = tenant.add_user("student@contoso.com")
+    squatted = tenant.add_group("BAA-Sharepoint-DRAMA-Manual-Contribute", owners={squatter["id"]})
+
+    results = make_manager().create_libraries(libraries_df(site, "DRAMA", manual_contribute=True))
+
+    [row] = rows(results, "group_not_owned").itertuples()
+    assert row.group == "BAA-Sharepoint-DRAMA-Manual-Contribute"
+    assert "group_not_owned" in WARNING_ACTIONS
+    lib = site.list_by_slug("DRAMA")
+    assert f"c:0t.c|tenant|{squatted['id']}" not in site.principals
+    assert len(lib["role_assignments"]) == 2  # the two Auto groups, created by the app
+    assert squatted["owners"] == {squatter["id"]}
+
+
+def test_a_squatted_auto_group_is_not_synced(make_manager, tenant, site):
+    site.add_list("MATH", unique=True)
+    squatter = tenant.add_user("student@contoso.com")
+    squatted = tenant.add_group("BAA-Sharepoint-MATH-Auto-Contribute", owners={squatter["id"]})
+    tenant.add_user("jo@contoso.com")
+
+    results = make_manager().update_memberships(memberships_df(site, [("MATH", "jo@contoso.com", "contribute")]))
+
+    assert actions(results) == ["group_not_owned"]
+    assert squatted["members"] == {}
+    assert site.list_by_slug("MATH")["role_assignments"] == {}
+
+
+def test_an_ownerless_group_is_adopted(make_manager, tenant, site):
+    legacy = tenant.add_group("BAA-Sharepoint-MATH-Auto-Read")  # created app-only by an earlier version
+
+    results = make_manager().create_libraries(libraries_df(site, "MATH"))
+
+    assert rows(results, "group_owner_added")["group"].tolist() == ["BAA-Sharepoint-MATH-Auto-Read"]
+    assert legacy["owners"] == {APP_ID}
+    assert f"c:0t.c|tenant|{legacy['id']}" in site.principals
+    assert "group_owner_added" not in actions(make_manager().create_libraries(libraries_df(site, "MATH")))
+
+
+def test_groups_people_own_are_left_alone_when_not_app_owned(make_manager, tenant, site):
+    head = tenant.add_user("head@contoso.com")
+    slt_read = tenant.add_group("BAA-Sharepoint-SLT-Manual-Read", owners={head["id"]})
+    df = libraries_df(site, "SLT", auto_groups=False, manual_read=True, manual_contribute=True, app_owned=False)
+
+    results = make_manager().create_libraries(df)
+
+    assert not set(results["action"]) & {"group_not_owned", "group_owner_added"}
+    assert slt_read["owners"] == {head["id"]}
+    assert tenant.group_named("BAA-Sharepoint-SLT-Manual-Contribute")["owners"] == set()
+    assert len(site.list_by_slug("SLT")["role_assignments"]) == 2
+
+
+def test_dry_run_reports_ownership_without_changing_it(make_manager, tenant, site):
+    site.add_list("MATH", unique=True)
+    site.add_list("ENG", unique=True)
+    other = tenant.add_user("someone@contoso.com")
+    legacy = tenant.add_group("BAA-Sharepoint-MATH-Auto-Contribute")
+    tenant.add_group("BAA-Sharepoint-ENG-Auto-Contribute", owners={other["id"]})
+    tenant.add_user("jo@contoso.com")
+    tenant.calls.clear()
+
+    results = make_manager(dry_run=True).update_memberships(memberships_df(site, [
+        ("MATH", "jo@contoso.com", "contribute"), ("ENG", "jo@contoso.com", "contribute"),
+    ]))
+
+    assert tenant.writes() == []
+    assert legacy["owners"] == set()
+    assert results[["document_library", "action"]].values.tolist() == [
+        ["MATH", "group_owner_added (dry run)"], ["MATH", "ensure_group (dry run)"], ["MATH", "add_to_group (dry run)"],
+        ["ENG", "group_not_owned"],
+    ]

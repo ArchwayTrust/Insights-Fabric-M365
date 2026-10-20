@@ -559,6 +559,7 @@ For each library (a row with a `site_url`, a `library_code` and a `group_prefix`
 - **Security groups**, named `{group_prefix}-{library_code}-{suffix}` (or `{group_prefix}-{site}-{library_code}-{suffix}` with `include_site_name=True`). Names are how the manager finds existing groups, so don't change the naming after rollout.
   - `Auto-Read`, `Auto-Contribute` and `Auto-Owner` are owned by the automation. Their membership is synced from your data and they are emptied when the library is unlinked.
   - `Manual-Read` and `Manual-Contribute` are optional, hand-curated groups. They are granted access and renamed with the library, but their membership is never changed.
+  - The app registration is made **owner** of every group it creates, and an existing group is only granted access or synced if the app owns it (see [Safety features](#safety-features)). Pass `app_owned=False` for groups people own, such as a leadership team's groups owned by the headteacher.
 - **Navigation** (optional). A link to the library in the site's quick launch, under a heading such as "Document Libraries".
 - **Provenance** (optional). `source_system` and `source_id` stored in the library's property bag, invisible to users, so a library can be traced back to the record that created it.
 - **Site sharing** (optional). Turns off "Allow members to share", "Allow access requests" and "Allow members to invite others" on each site, so access only comes from the groups.
@@ -605,7 +606,7 @@ Create the credential without a scope: the manager asks it for a Graph token and
 
 | Method | What it does | DataFrame columns |
 | --- | --- | --- |
-| `create_libraries(df)` | Ensures each library exists with its own permissions, its groups, metadata and navigation link. Safe to re-run: existing libraries and groups are reused, and a changed display name is applied. | `site_url`, `library_code`, `library_display_name`, `group_prefix`. Optional: `auto_groups` (default True), `manual_read`, `manual_contribute`, `source_system`, `source_id` |
+| `create_libraries(df)` | Ensures each library exists with its own permissions, its groups, metadata and navigation link. Safe to re-run: existing libraries and groups are reused, and a changed display name is applied. | `site_url`, `library_code`, `library_display_name`, `group_prefix`. Optional: `auto_groups` (default True), `manual_read`, `manual_contribute`, `app_owned` (default True), `source_system`, `source_id` |
 | `update_memberships(df, libraries_df=None, nested_groups_df=None)` | Makes each library's Auto groups contain exactly the users (and nested groups) given. Users are matched by UPN, then mail, then proxy addresses, so aliased domains work. Libraries in `libraries_df` with no rows in `df` have their Auto groups emptied. | `site_url`, `library_code`, `user_principal_name`, `permission` (`read`, `contribute` or `owner`), `group_prefix` |
 | `unlink_libraries(df)` | For libraries removed at source: renames to `{code}_UNLINKED`, empties the Auto groups, keeps the Manual groups, removes the navigation link. Nothing is deleted. | `site_url`, `library_code`, `group_prefix` |
 | `retire_moved_libraries(df)` | For a library whose site changed: renames the copy on the **old** site to `{code}_MOVED` and removes the groups' access to it. | `site_url` (the old site), `library_code`, `group_prefix` |
@@ -663,6 +664,7 @@ if not failures.empty:
 - **Incomplete data never drives removals.** If any user (or nested group) for a role can't be resolved, removals of that kind from that role's group are skipped (`removals_skipped`), as the "stale" member may be the one that failed to resolve.
 - **Manual groups are never synced or emptied,** and service principals and devices in Auto groups are left in place.
 - **No guessing between duplicates.** If two Entra groups share a name the manager would use, it stops for that library rather than pick one. Library codes that would produce the same group names (such as `PE-KS3` and `PEKS3`, or codes differing only in case) are skipped with `group_name_collision`, including when the other library was created by an earlier run. A library is only ever found by its URL, so a code is never matched to another library that merely has that title (`library_name_conflict`).
+- **Groups must be the app's.** Group names are predictable, so a group someone else creates with the name a library would use could otherwise be handed that library's access. The app is made owner of the groups it creates, and before it grants or syncs an existing group it checks the app is an owner: a group with no owner (as earlier versions created them) has the app added and is logged as `group_owner_added`; a group owned only by others is skipped with `group_not_owned`. The app's object ID is read from its Graph token, or can be passed as `service_principal_id`. Groups created with `app_owned=False` aren't owned or checked, and `grant_group_access` grants the groups it's given by name.
 - **Creating a group or navigation link is never repeated** after a failure that may have succeeded (a 5xx or timeout), so a retry can't make a duplicate. The next run finds what was created.
 - **Tokens only go to your tenant.** Every `site_url` must be `https://` on `sharepoint_hostname`, and redirects to another host or to plain http are refused.
 - **Throttling and transient errors are retried,** honouring `Retry-After`, with exponential backoff.
@@ -695,6 +697,7 @@ if not failures.empty:
 | `user_not_found` rows | The address matches no user's UPN, mail or proxy addresses. Fix it in the source data; the next run picks the user up. |
 | `removal_guardrail_triggered` row | A sync would remove more members than `max_removals_per_group`. Check the input data, then re-run with `allow_mass_removal=True`. |
 | `library_not_found` row | The library doesn't exist on the site, for example it was deleted by hand. Recreate it with `create_libraries` or remove it from the input. When unlinking, its Auto groups are still emptied. |
+| `group_not_owned` row | A group with the name the manager uses is owned by someone, but not by the app registration, so it wasn't used. Check who created it: if it's legitimate, add the app's service principal as an owner; otherwise delete it. |
 | `library_name_conflict` row | Another library on the site already has the code as its title, so the library can't be created. Rename that library's title. |
 
 ## Upgrading from 0.3.x

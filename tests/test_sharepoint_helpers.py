@@ -514,3 +514,22 @@ def test_group_names_differing_only_in_case_are_duplicates(tenant):
 
     with pytest.raises(ValueError, match="Multiple Entra groups share displayName"):
         _groups._find_group_by_name(TOKEN, "SP-ENG-Auto-Read")
+
+
+def jwt(claims):
+    import base64
+    import json
+    body = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
+    return f"eyJhbGciOiJub25lIn0.{body}.sig"
+
+
+def test_object_id_is_read_from_the_token():
+    object_id = "11111111-2222-3333-4444-555555555555"
+
+    assert _groups._token_object_id(jwt({"oid": object_id, "idtyp": "app"})) == object_id
+
+
+@pytest.mark.parametrize("token", ["opaque-token", jwt({"appid": "x"}), jwt({"oid": "../users/x"})])
+def test_unreadable_object_id_is_an_error(token):
+    with pytest.raises(ValueError, match="object ID"):
+        _groups._token_object_id(token)
