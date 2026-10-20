@@ -23,8 +23,7 @@ def test_setup_reads_the_package_version():
 
 
 def test_public_names_are_exported():
-    for name in ("KeyVaultCertificateCredential", "PemCertificateCredential", "Scopes", "Emails", "MessageNotFoundError",
-                 "SharePointLibraryManager"):
+    for name in ("KeyVaultCertificateCredential", "Scopes", "Emails", "MessageNotFoundError", "SharePointLibraryManager"):
         assert hasattr(fabric_python_helper, name)
 
 

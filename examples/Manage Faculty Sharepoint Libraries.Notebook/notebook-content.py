@@ -98,11 +98,13 @@ FACULTY_CODE_FILTER = "MATH%"
 # Set True to run the smoke-test cells against the demo library.
 RUN_SMOKE_TEST = False
 
-# Service principal used for Graph/SharePoint calls.
+# Service principal used for Graph/SharePoint calls, and the name of its
+# certificate in the KEY_VAULT key vault. Key Vault signs with the
+# certificate's private key, which never leaves the key vault; the identity
+# running the notebook needs Get on the certificate and Sign on its key.
 CLIENT_ID = "0706df24-bce9-48c9-a2c4-862df4ba4a6c"
 SHAREPOINT_HOSTNAME = "archwaylearningtrust.sharepoint.com"
-CERT_THUMBPRINT_SECRET_NAME = "Systems-SPLibrary-Cert-Thumbprint"
-CERT_PRIVATE_KEY_SECRET_NAME = "Systems-SPLibrary-Cert-Private-Key"
+CERTIFICATE_NAME = "Systems-SPLibrary-Cert"
 
 # METADATA ********************
 
@@ -120,9 +122,6 @@ CURATED_LH_NAME      = vl.getVariable("CURATED_LH_NAME")
 BASE_LH_NAME         = vl.getVariable("BASE_LH_NAME")
 KEY_VAULT_PATH       = vl.getVariable("KEY_VAULT")
 TENANT_ID            = vl.getVariable("TENANT_ID")
-
-CERT_THUMBPRINT  = notebookutils.credentials.getSecret(KEY_VAULT_PATH, CERT_THUMBPRINT_SECRET_NAME)
-CERT_PRIVATE_KEY = notebookutils.credentials.getSecret(KEY_VAULT_PATH, CERT_PRIVATE_KEY_SECRET_NAME)
 
 # METADATA ********************
 
@@ -170,7 +169,7 @@ import pandas as pd
 # The library manager lives in fabric_python_helper (pinned in the attached
 # environment): https://github.com/ArchwayTrust/Insights-Fabric-PythonHelper
 import fabric_python_helper
-from fabric_python_helper.auth import PemCertificateCredential
+from fabric_python_helper.auth import KeyVaultCertificateCredential
 from fabric_python_helper.sharepoint import (
     ACTION_LOG_COLUMNS,
     FATAL_ACTIONS,
@@ -205,11 +204,12 @@ logging.basicConfig(level=logging.INFO)
 
 # CELL ********************
 
-credential = PemCertificateCredential(
+# No scope: the manager requests Graph and SharePoint tokens as it needs them.
+credential = KeyVaultCertificateCredential(
     tenant_id=TENANT_ID,
     client_id=CLIENT_ID,
-    thumbprint=CERT_THUMBPRINT,
-    private_key=CERT_PRIVATE_KEY,
+    akv_url=KEY_VAULT_PATH,
+    certificate_name=CERTIFICATE_NAME,
 )
 
 mgr = SharePointLibraryManager(

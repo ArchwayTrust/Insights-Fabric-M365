@@ -15,12 +15,14 @@ The notebook's final state is [`examples/Manage Faculty Sharepoint Libraries.Not
 ## Moving the notebook over
 
 1. **Release version 0.5.0** of the package (see [Publishing to PyPI with a GitHub release](../README.md#publishing-to-pypi-with-a-github-release)), or upload the wheel to test it first (see [Testing a wheel in Fabric](../README.md#testing-a-wheel-in-fabric-before-publishing)).
-2. **Add the package to the notebook's environment.** In the Fabric environment the notebook and its pipeline use, add `fabric_python_helper` version `0.5.0` under **Public libraries** and publish the environment. The current notebook has no environment attached (`"environment": {}` in its metadata), so attach one under **Environment** in the notebook toolbar. `pandas` and `msal` are already in the Fabric runtime.
-3. **Replace the notebook's content** with the example file. With Git integration, copy it over the notebook's `notebook-content.py` and commit; otherwise make the edits listed in [What changed in the notebook](#what-changed-in-the-notebook) by hand. Nothing else (parameters, tables, the pipeline, Key Vault secrets, the app registration) needs to change.
-4. **Dry run it.** Run the notebook with `DRY_RUN = True` and `RUN_SMOKE_TEST = True`. The imports cell prints the package version. Compare the action log rows for this run (in `it.sharepoint_action_log`, by `run_id`) with those of a recent dry run from the old notebook: they should match, apart from the [behaviour changes](#what-changed-in-behaviour).
-5. **Let the pipeline run it** as before. The pipeline passes `DRY_RUN = False`.
+2. **Add the package to the notebook's environment.** In the Fabric environment the notebook and its pipeline use, add `fabric_python_helper` version `0.5.0` under **Public libraries** and publish the environment. The current notebook has no environment attached (`"environment": {}` in its metadata), so attach one under **Environment** in the notebook toolbar. Its dependencies, including `pandas`, are already in the Fabric runtime.
+3. **Put the app's certificate in Key Vault.** The notebook now authenticates with the package's `KeyVaultCertificateCredential`: Key Vault signs each request with the certificate's private key, which never leaves the key vault, instead of the notebook reading the key from two secrets. For the existing app registration (`CLIENT_ID`), follow steps 2 to 4 of [Setting up a certificate](../README.md#setting-up-a-certificate): create a certificate in the `KEY_VAULT` key vault, upload it to the app registration with `--append` (so the current certificate keeps working until you remove it), and give the identity that runs the notebook, interactively and in the pipeline, **Get** on the certificate and **Sign** on its key. Then set the `CERTIFICATE_NAME` parameter to the certificate's name if it isn't `Systems-SPLibrary-Cert`.
+4. **Replace the notebook's content** with the example file. With Git integration, copy it over the notebook's `notebook-content.py` and commit; otherwise make the edits listed in [What changed in the notebook](#what-changed-in-the-notebook) by hand. Nothing else (tables, the pipeline, the app registration's API permissions) needs to change.
+5. **Dry run it.** Run the notebook with `DRY_RUN = True` and `RUN_SMOKE_TEST = True`. The imports cell prints the package version. Compare the action log rows for this run (in `it.sharepoint_action_log`, by `run_id`) with those of a recent dry run from the old notebook: they should match, apart from the [behaviour changes](#what-changed-in-behaviour).
+6. **Let the pipeline run it** as before. The pipeline passes `DRY_RUN = False`.
+7. **Retire the old certificate.** Once the pipeline has run successfully, remove the old certificate from the app registration and delete the `Systems-SPLibrary-Cert-Thumbprint` and `Systems-SPLibrary-Cert-Private-Key` secrets.
 
-To roll back, restore the previous notebook content. The package doesn't change any state the old notebook relies on: group names, library URLs, property bag keys and the watermark are all the same.
+To roll back, restore the previous notebook content; it works for as long as the old certificate is on the app registration and its two secrets exist, so keep them until step 7. The package doesn't change any state the old notebook relies on: group names, library URLs, property bag keys and the watermark are all the same.
 
 ## Final state of the notebook
 
@@ -30,11 +32,11 @@ Cells are listed in order. **Changed** marks the cells that differ from the prev
 | --- | --- | --- | --- |
 | 1-2 | *Manage Faculty Sharepoint Libraries*, *Setup* | Headings | |
 | 3 | `from notebookutils import variableLibrary` | | |
-| 4 | **Parameters** | `DRY_RUN` (default True; the pipeline passes False), `MAX_WORKERS`, `INCLUDE_SITE_NAME`, `CREATE_ONEDRIVE_SHORTCUTS`, the removal guardrail, `ENFORCE_SITE_SHARING_LOCKDOWN`, navigation, the SLT library, the rollout scope (`ACADEMY_FILTER`, `FACULTY_CODE_FILTER`), `RUN_SMOKE_TEST`, the app's client ID, SharePoint host and the names of the certificate secrets | |
-| 5 | Variable library | Reads the workspace, lakehouse, Key Vault and tenant from `VL_CORE`, and the certificate thumbprint and private key from Key Vault | |
+| 4 | **Parameters** | `DRY_RUN` (default True; the pipeline passes False), `MAX_WORKERS`, `INCLUDE_SITE_NAME`, `CREATE_ONEDRIVE_SHORTCUTS`, the removal guardrail, `ENFORCE_SITE_SHARING_LOCKDOWN`, navigation, the SLT library, the rollout scope (`ACADEMY_FILTER`, `FACULTY_CODE_FILTER`), `RUN_SMOKE_TEST`, the app's client ID, the SharePoint host and `CERTIFICATE_NAME`, the app's certificate in Key Vault | **Changed** |
+| 5 | Variable library | Reads the workspace, lakehouse, Key Vault and tenant from `VL_CORE` | **Changed** |
 | 6 | Lakehouse tables | Names the curated faculty list and membership tables, and the action log, sync state and unresolved users tables | |
 | 7-9 | *Load Libraries* | Imports, including the package, and prints the package version. Turns on INFO logging | **Changed** |
-| 10-11 | *Core Setup* | Creates the credential and the `SharePointLibraryManager` from the parameters | **Changed** |
+| 10-11 | *Core Setup* | Creates a `KeyVaultCertificateCredential` for the app's certificate, and the `SharePointLibraryManager` from the parameters | **Changed** |
 | 12 | Run context | Run ID, `persist_action_log` (appends each operation's log to the audit table), the rollout scope predicate `scoped()`, the reserved SLT code and the shared eligibility predicate `eligible()` | **Changed** |
 | 13-18 | *Smoke Test* | Only with `RUN_SMOKE_TEST`: against the IT site's demo library, reads metadata, creates the library, checks its navigation link, locks down sharing and checks it, and syncs four test members | **Changed** (cells 16 and 17) |
 | 19-20 | *Real Data*, watermark | Creates the sync state table if needed and reads this scope's watermark | |
@@ -53,6 +55,8 @@ The cell that held the core code, and its *Core Code* heading, have been removed
 
 ## What changed in the notebook
 
+**Parameters and variable library.** `CERT_THUMBPRINT_SECRET_NAME` and `CERT_PRIVATE_KEY_SECRET_NAME` are replaced by one parameter, `CERTIFICATE_NAME`, the name of the app's certificate in the `KEY_VAULT` key vault. The variable library cell no longer reads the two secrets.
+
 **Load Libraries.** The imports the core code needed (`msal`, `requests`, `threading` and others) are gone. The notebook imports the package instead:
 
 ```python
@@ -65,7 +69,7 @@ import pandas as pd
 # The library manager lives in fabric_python_helper (pinned in the attached
 # environment): https://github.com/ArchwayTrust/Insights-Fabric-PythonHelper
 import fabric_python_helper
-from fabric_python_helper.auth import PemCertificateCredential
+from fabric_python_helper.auth import KeyVaultCertificateCredential
 from fabric_python_helper.sharepoint import (
     ACTION_LOG_COLUMNS,
     FATAL_ACTIONS,
@@ -77,14 +81,14 @@ from fabric_python_helper.sharepoint import (
 print(f"fabric_python_helper {fabric_python_helper.__version__}")
 ```
 
-**Core Setup.** The manager takes a credential rather than the tenant, client ID and certificate. `PemCertificateCredential` does what the notebook's MSAL code did, including fixing the PEM formatting Key Vault secrets tend to have. The other arguments are unchanged.
+**Core Setup.** The manager takes a credential rather than the tenant, client ID and certificate. It's the package's `KeyVaultCertificateCredential`, created without a scope: the manager asks it for a Graph token and a SharePoint token, and it caches each until shortly before it expires. This replaces the notebook's own MSAL code, which read the private key from Key Vault secrets into the notebook. The other arguments are unchanged.
 
 ```python
-credential = PemCertificateCredential(
+credential = KeyVaultCertificateCredential(
     tenant_id=TENANT_ID,
     client_id=CLIENT_ID,
-    thumbprint=CERT_THUMBPRINT,
-    private_key=CERT_PRIVATE_KEY,
+    akv_url=KEY_VAULT_PATH,
+    certificate_name=CERTIFICATE_NAME,
 )
 
 mgr = SharePointLibraryManager(
@@ -110,7 +114,7 @@ mgr = SharePointLibraryManager(
 
 ## What changed in behaviour
 
-The core code moved over unchanged. A script compared every function and constant in the package with the notebook's version, as parsed Python: 105 are identical, and the rest differ only by the authentication change above and by using the shared `ACTION_LOG_COLUMNS` list. These fixes were then made, each with a test that failed before it:
+The core code moved over unchanged. A script compared every function and constant in the package with the notebook's version, as parsed Python: 105 are identical, and the rest differ only by the authentication change above (the MSAL functions are gone) and by using the shared `ACTION_LOG_COLUMNS` list. These fixes were then made, each with a test that failed before it:
 
 | Fix | Effect on the notebook |
 | --- | --- |
@@ -127,7 +131,7 @@ The core code moved over unchanged. A script compared every function and constan
 | --- | --- |
 | Constants, thread-safe action log, shared validation helpers | [`sharepoint/_common.py`](../fabric_python_helper/sharepoint/_common.py) |
 | Resilient HTTP wrapper | [`sharepoint/_http.py`](../fabric_python_helper/sharepoint/_http.py) |
-| Authentication (`_build_msal_app`, `_token_from_app`, `_validate_and_normalise_certificate`) | [`auth.PemCertificateCredential`](../fabric_python_helper/auth.py) |
+| Authentication (`_build_msal_app`, `_token_from_app`, `_validate_and_normalise_certificate`) | Replaced by the package's existing [`auth.KeyVaultCertificateCredential`](../fabric_python_helper/auth.py) |
 | Graph API helpers, OneDrive shortcut helpers | [`sharepoint/_graph.py`](../fabric_python_helper/sharepoint/_graph.py) |
 | Entra ID security group management, group-name collisions | [`sharepoint/_groups.py`](../fabric_python_helper/sharepoint/_groups.py) |
 | SharePoint REST: permissions, property bag, site sharing settings | [`sharepoint/_sharepoint.py`](../fabric_python_helper/sharepoint/_sharepoint.py) |
@@ -142,15 +146,14 @@ The old core cell said it was an inlined copy of `SharePointLibraryPermissions` 
 
 All tests run without credentials or a Fabric workspace: [`tests/sharepoint_fake.py`](../tests/sharepoint_fake.py) is an in-memory fake of the Graph and SharePoint REST endpoints the manager calls. It replaces `requests.request`, so the real request building, retries and response handling all run, and it keeps state (groups, members, libraries, role assignments, navigation, sharing settings), so tests check what an operation actually changed and that running it again changes nothing. Like the real services, it parses query strings out of the URL, which is how the `&` bug above was caught.
 
-The suite went from 102 to 276 tests. It passes on Python 3.10, 3.11, 3.12 and 3.13, and with pandas 2 and pandas 3.
+The suite went from 102 to 264 tests. It passes on Python 3.10, 3.11, 3.12 and 3.13, and with pandas 2 and pandas 3.
 
 | File | Tests | Covers |
 | --- | --- | --- |
 | [`test_sharepoint_http.py`](../tests/test_sharepoint_http.py) | 23 | `Retry-After` in seconds and as a date (with clamping, NaN and past dates); retries on 429, 5xx, connection errors and timeouts, with backoff and jitter; redirects for POST keep the method; cross-host, https-to-http and looping redirects are refused |
 | [`test_sharepoint_helpers.py`](../tests/test_sharepoint_helpers.py) | 65 | Group naming, mail nicknames and collisions; DataFrame and URL validation; parallel runs logging failures without stopping; library lookup by slug and display name, with paging; duplicate and case-differing group names; member keys for users, groups and service principals; replication waits; user resolution by UPN, mail and proxy address, malformed and unknown users; nestable group resolution; property bag XML escaping and errors; navigation URL normalisation |
-| [`test_sharepoint_manager.py`](../tests/test_sharepoint_manager.py) | 62 | Every operation end to end: creating libraries with groups, metadata and navigation, and again changing nothing; renaming; dry runs making no writes; manual-only (SLT) libraries; colliding codes; one failing library not stopping others; parallel runs. Membership sync adding users and aliases, removing stale members, keeping service principals, emptying roles without creating groups, the removal guardrail, unresolved users blocking removals, nested groups, OneDrive shortcuts, `add_failed` and `remove_failed`. Unlink keeping Manual groups; retire removing access but not membership; grants being additive and idempotent; site sharing lockdown, including a write that doesn't stick |
-| [`test_auth_pem.py`](../tests/test_auth_pem.py) | 13 | `PemCertificateCredential` with MSAL faked; PEM normalisation checked against a real RSA key (newlines stripped, escaped, and with OpenSSL bag attributes) |
-| [`test_faculty_notebook.py`](../tests/test_faculty_notebook.py) | 7 | Runs the example notebook cell by cell, as Fabric does, with Spark SQL run on SQLite over small faculty tables, and checks a live run, a second run, a dry run, a failed run and a widened scope (below). Also checks the notebook has no undefined names and uses only the package's public API |
+| [`test_sharepoint_manager.py`](../tests/test_sharepoint_manager.py) | 63 | Every operation end to end: creating libraries with groups, metadata and navigation, and again changing nothing; renaming; dry runs making no writes; manual-only (SLT) libraries; colliding codes; one failing library not stopping others; parallel runs. Membership sync adding users and aliases, removing stale members, keeping service principals, emptying roles without creating groups, the removal guardrail, unresolved users blocking removals, nested groups, OneDrive shortcuts, `add_failed` and `remove_failed`. Unlink keeping Manual groups; retire removing access but not membership; grants being additive and idempotent; site sharing lockdown, including a write that doesn't stick. Authenticating with the real `KeyVaultCertificateCredential` (Entra ID and Key Vault faked): one Graph and one SharePoint token, each sent only to its own API |
+| [`test_faculty_notebook.py`](../tests/test_faculty_notebook.py) | 8 | Runs the example notebook cell by cell, as Fabric does, with Spark SQL run on SQLite over small faculty tables and the real `KeyVaultCertificateCredential`, and checks a live run, a second run, a dry run, a failed run and a widened scope (below). Also checks the notebook has no undefined names and uses only the package's public API |
 
 Line and branch coverage of `fabric_python_helper.sharepoint` is 97%. Most of what's left is handling for rarer failures, such as a site's prefetch failing part way through a rename.
 
@@ -159,6 +162,7 @@ The notebook test's scenarios, against a pilot scope of `BAA` and `MATH%`:
 - **Live run.** Creates the SLT library and the in-scope faculty library, with metadata, groups and navigation; unlinks the deleted faculty's library; retires the moved faculty's copy on its old hub; grants the SLT groups access; syncs members and the all-staff nested group; locks down sharing; persists the action log and the unresolved user; advances the watermark. The out-of-scope academy and faculty are left alone.
 - **Second run.** Finds no new watermark events and makes no membership changes.
 - **Dry run.** Makes no writes to SharePoint or Entra ID and leaves the watermark alone.
+- **Authentication.** The certificate named by `CERTIFICATE_NAME` is read from the key vault and signs the assertions, and the run uses one Graph and one SharePoint token.
 - **Failed run.** A failed member addition makes the run outcome cell raise, and the watermark isn't advanced.
 - **Widened scope.** Changing the filters starts a new watermark and replays events for the newly in-scope faculties, and the faculty coded `SLT` is reported and skipped.
 
@@ -166,5 +170,5 @@ The notebook test's scenarios, against a pilot scope of `BAA` and `MATH%`:
 
 ## Possible next steps
 
-- **Keep the private key in Key Vault.** Import the certificate (PFX, with its private key) into Key Vault as a certificate, give the notebook's identity **Get** on it and **Sign** on its key, and swap the credential for `KeyVaultCertificateCredential(TENANT_ID, CLIENT_ID, KEY_VAULT_PATH, "<certificate-name>")`. Nothing else changes, and the two secrets can then be deleted. See [Authentication](../README.md#authentication).
+- **Use a non-exportable key.** Creating the certificate in Key Vault as in step 3, rather than importing one, means nobody can download its private key.
 - **Pin the package version** in the environment, and upgrade deliberately: run the smoke test with `DRY_RUN = True` after each upgrade.

@@ -31,11 +31,6 @@ Semantic link and Azure SDK clients:
     need, so no scope is needed when creating the credential:
         fabric.refresh_dataset("Sales", workspace="Finance", credential=credential)
 
-Certificates held as Key Vault secrets:
-    If the certificate's private key and thumbprint are stored as Key Vault secrets rather than as a Key Vault
-    certificate, use PemCertificateCredential. The private key is read into the notebook, so prefer
-    KeyVaultCertificateCredential where the certificate can be imported into Key Vault.
-
 Client secrets:
     This module only covers certificates. For a client secret use azure.identity.ClientSecretCredential,
     which is already in the Fabric runtime, with the secret read from Key Vault. It has the same get_token
@@ -49,7 +44,6 @@ import requests
 import json
 import base64
 import hashlib
-import re
 import threading
 import time
 import uuid
@@ -448,129 +442,3 @@ class KeyVaultCertificateCredential:
             return f"Status code: {response.status_code}, {error.get('code')}: {error.get('message')}"
 
         return f"Status code: {response.status_code}, {error}: {body.get('error_description')}"
-
-
-class PemCertificateCredential:
-    """
-    Authenticates as a service principal using a certificate's private key (PEM) and thumbprint, using MSAL.
-
-    For a certificate whose private key and thumbprint are stored as Key Vault secrets, rather than as a
-    Key Vault certificate. The private key is read into the notebook, so prefer KeyVaultCertificateCredential,
-    which keeps it in Key Vault, where the certificate can be imported into Key Vault.
-
-    Implements azure.core.credentials.TokenCredential, so it can be used anywhere KeyVaultCertificateCredential can.
-    MSAL caches tokens per scope and requests new ones near expiry, so get_token can be called before every request.
-
-    Requires msal, which is in the Fabric runtime but isn't a dependency of this package.
-
-    Example:
-        credential = PemCertificateCredential(
-            tenant_id,
-            client_id,
-            thumbprint=notebookutils.credentials.getSecret(akv_url, "Cert-Thumbprint"),
-            private_key=notebookutils.credentials.getSecret(akv_url, "Cert-Private-Key"),
-        )
-
-    Attributes:
-        tenant_id (str): Tenant ID for Azure authentication.
-        client_id (str): Client ID of the app registration.
-    """
-
-    def __init__(self, tenant_id, client_id, thumbprint, private_key):
-        """
-        Initializes the credential. No calls are made until an access token is requested.
-
-        Parameters:
-            tenant_id (str): Tenant ID for Azure authentication.
-            client_id (str): Client ID of the app registration.
-            thumbprint (str): SHA-1 thumbprint of the certificate, as shown on the app registration.
-            private_key (str): The certificate's private key in PEM format. Formatting that secret stores often
-                introduce, such as missing or escaped newlines, is corrected, see _normalise_private_key.
-        """
-        if not thumbprint or not private_key:
-            raise ValueError("thumbprint and private_key are both required.")
-
-        try:
-            import msal
-        except ImportError as e:
-            raise ImportError("PemCertificateCredential needs msal. Install it with pip install msal.") from e
-
-        self.tenant_id = tenant_id
-        self.client_id = client_id
-        self._app = msal.ConfidentialClientApplication(
-            client_id,
-            authority=f"https://login.microsoftonline.com/{tenant_id}",
-            client_credential={"thumbprint": thumbprint, "private_key": self._normalise_private_key(private_key)},
-        )
-
-    def get_access_token(self, scope):
-        """
-        Returns an access token string for the given scope, for calling an API directly.
-
-        Parameters:
-            scope (str): Scope to request the access token for, see Scopes.
-
-        Returns:
-            str: An access token.
-        """
-        return self.get_token(scope).token
-
-    def get_token(self, *scopes, claims=None, tenant_id=None, enable_cae=False, **kwargs):
-        """
-        Returns an access token for the given scopes. Implements azure.core.credentials.TokenCredential.
-
-        Parameters:
-            scopes (str): Scopes to request the access token for, in the form {resource}/.default.
-            claims (str): Optional. Additional claims required in the token, such as from an API's claims challenge.
-            tenant_id (str): Optional. Only the tenant the credential was created with is supported.
-            enable_cae (bool): Optional. Accepted for compatibility but ignored.
-            kwargs: Other keyword arguments are accepted for compatibility but ignored.
-
-        Returns:
-            azure.core.credentials.AccessToken: The access token and its expiry time (seconds since epoch).
-        """
-        if not scopes:
-            raise ValueError("At least one scope is required, see Scopes.")
-
-        if tenant_id and tenant_id.lower() != self.tenant_id.lower():
-            raise ValueError(f"Tokens can only be requested from tenant {self.tenant_id}, not {tenant_id}.")
-
-        # Take the time before the request, so the expiry time errs on the early side
-        now = int(time.time())
-        result = self._app.acquire_token_for_client(scopes=list(scopes), claims_challenge=claims)
-
-        if "access_token" not in result:
-            raise Exception(
-                f"Failed to get access token for {self.client_id} with scope {' '.join(scopes)}. "
-                f"{result.get('error')}: {result.get('error_description', 'Unknown error')}"
-            )
-
-        return AccessToken(result["access_token"], now + int(result.get("expires_in", 0)))
-
-    @staticmethod
-    def _normalise_private_key(private_key):
-        """
-        Returns the PEM private key in a form the cryptography library can load.
-
-        Secret stores (e.g. Azure Key Vault) often strip newlines from PEM keys, or store them as literal \\n.
-        OpenSSL pkcs12 exports may also include "Bag Attributes" metadata before the PEM header. This strips
-        everything before the header, restores newlines and re-wraps the body at 64 characters if necessary.
-        """
-        raw_key = private_key
-        if "\\n" in raw_key:
-            raw_key = raw_key.replace("\\n", "\n")
-        pem_start = re.search(r"-----BEGIN [A-Z ]+-----", raw_key)
-        if pem_start:
-            raw_key = raw_key[pem_start.start():]
-        if "\n" not in raw_key and "-----" in raw_key:
-            raw_key = re.sub(
-                r"(-----BEGIN [A-Z ]+-----)(.*?)(-----END [A-Z ]+-----)",
-                lambda m: m.group(1) + "\n"
-                + "\n".join(
-                    m.group(2).strip()[i : i + 64]
-                    for i in range(0, len(m.group(2).strip()), 64)
-                )
-                + "\n" + m.group(3),
-                raw_key,
-            )
-        return raw_key.strip() + "\n"

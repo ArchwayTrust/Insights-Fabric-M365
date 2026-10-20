@@ -18,7 +18,6 @@ The package is built for Fabric notebooks. `KeyVaultCertificateCredential` uses 
   - [Using the credential](#using-the-credential)
   - [Scopes](#scopes)
   - [Using a client secret instead](#using-a-client-secret-instead)
-  - [Using a certificate stored as Key Vault secrets](#using-a-certificate-stored-as-key-vault-secrets)
   - [Renewing the certificate](#renewing-the-certificate)
 - [Emails](#emails)
   - [Giving the app access to a mailbox](#giving-the-app-access-to-a-mailbox)
@@ -43,7 +42,7 @@ The package is built for Fabric notebooks. `KeyVaultCertificateCredential` uses 
 
 ## Installation
 
-The package is published on PyPI as [`fabric_python_helper`](https://pypi.org/project/fabric-python-helper/). Its dependencies, `azure-core`, `pandas` and `requests`, are already in the Fabric runtime, as is `msal`, which `PemCertificateCredential` needs.
+The package is published on PyPI as [`fabric_python_helper`](https://pypi.org/project/fabric-python-helper/). Its dependencies, `azure-core`, `pandas` and `requests`, are already in the Fabric runtime.
 
 **In a Fabric environment** (use this for scheduled notebooks and pipelines):
 
@@ -57,7 +56,7 @@ The package is published on PyPI as [`fabric_python_helper`](https://pypi.org/pr
 %pip install fabric_python_helper==0.5.0
 ```
 
-Always pin a version. 0.4.0 has breaking changes from 0.3.x, see [Upgrading from 0.3.x](#upgrading-from-03x). 0.5.0 adds `fabric_python_helper.sharepoint` and `PemCertificateCredential`, and doesn't change anything that was already there.
+Always pin a version. 0.4.0 has breaking changes from 0.3.x, see [Upgrading from 0.3.x](#upgrading-from-03x). 0.5.0 adds `fabric_python_helper.sharepoint` and doesn't change anything that was already there.
 
 ## Quick start
 
@@ -323,27 +322,6 @@ The identity running the notebook needs **Get** on the secret. Compared with a c
 - Client secrets expire after at most 2 years and have to be copied into Key Vault by hand when they're renewed.
 - SharePoint's REST API rejects client secrets for app-only access.
 
-### Using a certificate stored as Key Vault secrets
-
-If the certificate's private key (PEM) and thumbprint are stored as two Key Vault secrets, rather than imported into Key Vault as a certificate, use `PemCertificateCredential`. It signs with the private key in the notebook using MSAL, and can be used anywhere `KeyVaultCertificateCredential` can:
-
-```python
-from fabric_python_helper.auth import PemCertificateCredential
-
-akv_url = "https://<key-vault-name>.vault.azure.net/"
-
-credential = PemCertificateCredential(
-    tenant_id="<tenant-id>",
-    client_id="<client-id>",
-    thumbprint=notebookutils.credentials.getSecret(akv_url, "<thumbprint-secret-name>"),
-    private_key=notebookutils.credentials.getSecret(akv_url, "<private-key-secret-name>"),
-)
-```
-
-Formatting that secret stores often introduce, such as missing or escaped newlines in the PEM, is corrected. The identity running the notebook needs **Get** on both secrets.
-
-Like a client secret, the private key is read into the notebook's memory. Prefer `KeyVaultCertificateCredential`: [importing the certificate](https://learn.microsoft.com/en-us/azure/key-vault/certificates/tutorial-import-certificate) (PFX, with its private key) into Key Vault lets you switch with a one-line change and then delete the two secrets.
-
 ### Renewing the certificate
 
 By default the credential signs with the latest version of the certificate, and Entra ID only accepts certificates that have been uploaded to the app registration. When you renew:
@@ -597,7 +575,7 @@ The app registration needs these application permissions, with admin consent:
 | Microsoft Graph | `Files.ReadWrite.All` | Only for OneDrive shortcuts (`create_onedrive_shortcuts=True`) |
 | SharePoint | `Sites.FullControl.All`, or `Sites.Selected` with full control on each site | Permissions, property bag, navigation and sharing settings |
 
-SharePoint only accepts app-only tokens obtained with a certificate, so use `KeyVaultCertificateCredential` or `PemCertificateCredential`, not a client secret.
+SharePoint only accepts app-only tokens obtained with a certificate, so use `KeyVaultCertificateCredential`, not a client secret. Set up the certificate as in [Setting up a certificate](#setting-up-a-certificate), uploading it to this app registration. The identity running the notebook (for a pipeline, whatever the notebook activity runs as) needs **Get** on the certificate and **Sign** on its key.
 
 ### Creating a SharePointLibraryManager
 
@@ -621,7 +599,7 @@ mgr = SharePointLibraryManager(
 )
 ```
 
-The constructor gets a Graph and a SharePoint token straight away, so wrong credentials or permissions fail here rather than part way through. `dry_run`, `max_workers`, `include_site_name`, `add_to_navigation`, `navigation_label`, `create_onedrive_shortcuts`, `max_removals_per_group` and `allow_mass_removal` are defaults that each operation can override, for example `mgr.create_libraries(df, dry_run=False)`.
+Create the credential without a scope: the manager asks it for a Graph token and a SharePoint token (`https://<sharepoint_hostname>/.default`), and the credential caches each until shortly before it expires. The constructor gets both tokens straight away, so wrong credentials or permissions fail here rather than part way through. `dry_run`, `max_workers`, `include_site_name`, `add_to_navigation`, `navigation_label`, `create_onedrive_shortcuts`, `max_removals_per_group` and `allow_mass_removal` are defaults that each operation can override, for example `mgr.create_libraries(df, dry_run=False)`.
 
 ### Operations
 
@@ -801,12 +779,12 @@ What they cover:
 
 | File | Covers |
 | --- | --- |
-| `test_auth.py`, `test_auth_pem.py` | Both credentials: token requests and caching, Key Vault signing, private key normalisation |
+| `test_auth.py` | `KeyVaultCertificateCredential`: token requests and caching, Key Vault signing, the client assertion |
 | `test_graph_api.py` | `Emails` |
 | `test_sharepoint_http.py` | The retry wrapper: throttling, `Retry-After`, server and connection errors, redirects |
 | `test_sharepoint_helpers.py` | Group naming and collisions, input validation, user and group resolution, the property bag, navigation URLs |
-| `test_sharepoint_manager.py` | Every `SharePointLibraryManager` operation end to end, including re-runs, dry runs, guardrails and failures |
-| `test_faculty_notebook.py` | Runs the [example notebook](#example-notebook) cell by cell, with Spark SQL on SQLite |
+| `test_sharepoint_manager.py` | Every `SharePointLibraryManager` operation end to end, including re-runs, dry runs, guardrails and failures, and authenticating with `KeyVaultCertificateCredential` |
+| `test_faculty_notebook.py` | Runs the [example notebook](#example-notebook) cell by cell, with Spark SQL on SQLite and the real `KeyVaultCertificateCredential` |
 | `test_packaging.py` | The version, public names and that the README's examples are valid Python |
 
 The SharePoint tests run against `tests/sharepoint_fake.py`, an in-memory fake of the Graph and SharePoint endpoints the manager calls, which keeps state so a test can check what an operation changed. Add `--cov=fabric_python_helper` to see coverage.

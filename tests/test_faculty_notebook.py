@@ -5,6 +5,7 @@ Each code cell is executed in order, as Fabric runs it, with:
     - spark backed by SQLite, holding small curated faculty tables. The notebook's Spark SQL is translated just
       enough to run (four-part table names, TIMESTAMP literals, regexp_replace, MERGE).
     - notebookutils and the variable library replaced with fakes.
+    - the real KeyVaultCertificateCredential, with Entra ID and Key Vault replaced with FakeAzure.
     - Graph and SharePoint replaced with the in-memory FakeTenant.
 
 This checks the notebook's own logic (scope filters, SLT checks, the watermark, the error gate) against the
@@ -22,7 +23,9 @@ import pandas as pd
 import pytest
 
 import fabric_python_helper.auth
+from fabric_python_helper.auth import Scopes
 
+from conftest import FakeAzure
 from sharepoint_fake import HOST, ROLE_DEFINITIONS, FakeTenant
 
 NOTEBOOK = (Path(__file__).resolve().parent.parent / "examples" / "Manage Faculty Sharepoint Libraries.Notebook"
@@ -144,16 +147,23 @@ def tenant(monkeypatch):
 
 
 @pytest.fixture
-def run_notebook(monkeypatch, credential):
-    """Returns run(spark, **parameters), which executes the notebook and returns its namespace."""
-    monkeypatch.setattr(fabric_python_helper.auth, "PemCertificateCredential", lambda **kwargs: credential)
+def azure(monkeypatch):
+    """Entra ID and Key Vault, for the notebook's KeyVaultCertificateCredential."""
+    fake = FakeAzure()
+    monkeypatch.setattr(fabric_python_helper.auth.requests, "get", fake.get)
+    monkeypatch.setattr(fabric_python_helper.auth.requests, "post", fake.post)
+    return fake
 
+
+@pytest.fixture
+def run_notebook(monkeypatch, azure):
+    """Returns run(spark, **parameters), which executes the notebook and returns its namespace."""
     variables = {"STORE_WORKSPACE_NAME": "Store", "CURATED_LH_NAME": "Curated", "BASE_LH_NAME": "Base",
-                 "KEY_VAULT": "https://kv.vault.azure.net/", "TENANT_ID": "tenant"}
+                 "KEY_VAULT": "https://myvault.vault.azure.net/", "TENANT_ID": "tenant"}
     library = types.SimpleNamespace(getVariable=variables.__getitem__)
     notebookutils = types.ModuleType("notebookutils")
     notebookutils.variableLibrary = types.SimpleNamespace(getLibrary=lambda name: library)
-    notebookutils.credentials = types.SimpleNamespace(getSecret=lambda vault, name: f"secret:{name}")
+    notebookutils.credentials = types.SimpleNamespace(getToken=lambda audience: f"{audience}-token")
     monkeypatch.setitem(sys.modules, "notebookutils", notebookutils)
 
     def run(spark, **parameters):
@@ -244,6 +254,25 @@ def test_live_run_provisions_the_pilot_scope_and_advances_the_watermark(tenant, 
         ["BAA", "Maths", "typo@contoso.com"]
     ]
     assert spark.watermark() == {"faculty_sharepoint_sync|BAA|MATH%": "2026-10-01 09:00:00.000000"}
+
+
+def test_notebook_authenticates_with_the_key_vault_certificate(tenant, run_notebook, spark, azure):
+    seed_existing_libraries(tenant)
+
+    ns = run_notebook(spark)
+
+    # The certificate named in the parameters is read from the key vault, which signs each assertion
+    assert {url for url, _ in azure.certificate_calls} == {
+        f"https://myvault.vault.azure.net/certificates/{ns['CERTIFICATE_NAME']}"
+    }
+    assert azure.sign_calls
+    # One token per API, cached for the whole run
+    scopes = [kwargs["data"]["scope"] for _, kwargs in azure.token_calls]
+    assert sorted(scopes) == sorted([Scopes.GRAPH, f"https://{HOST}/.default"])
+    sharepoint_token = f"token-{scopes.index(f'https://{HOST}/.default') + 1}"
+    sharepoint_calls = [kwargs for method, url, kwargs in tenant.calls if "/_api/" in url]
+    assert sharepoint_calls
+    assert {kwargs["headers"]["Authorization"] for kwargs in sharepoint_calls} == {f"Bearer {sharepoint_token}"}
 
 
 def test_second_run_finds_no_new_events_and_changes_no_membership(tenant, run_notebook, spark):

@@ -56,9 +56,10 @@ class SharePointLibraryManager:
 
     Args:
         credential:           Credential with a ``get_token(*scopes)`` method,
-                              such as ``fabric_python_helper.auth.KeyVaultCertificateCredential``
-                              or ``PemCertificateCredential``.  It must use a
-                              certificate, as SharePoint rejects app-only
+                              normally ``fabric_python_helper.auth.KeyVaultCertificateCredential``,
+                              created without a scope: Graph and SharePoint
+                              tokens are requested from it as needed.  It must
+                              use a certificate, as SharePoint rejects app-only
                               tokens obtained with a client secret.
         sharepoint_hostname:  e.g. ``"contoso.sharepoint.com"``.
         dry_run:              Default dry-run mode for all operations.

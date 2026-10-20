@@ -26,10 +26,8 @@ setup(
         "requests"
     ],
     extras_require={
-        # PemCertificateCredential only. msal is already in the Fabric runtime.
-        "msal": ["msal"],
         # pip install -e .[test], then run pytest
-        "test": ["pytest", "pytest-cov", "pyflakes", "setuptools", "msal"]
+        "test": ["pytest", "pytest-cov", "pyflakes", "setuptools"]
     },
     author="Ben Dobbs",
     author_email="bdobbs@archwaytrust.co.uk",

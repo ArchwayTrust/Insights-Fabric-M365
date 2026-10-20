@@ -1,13 +1,11 @@
 from .auth import KeyVaultCertificateCredential
-from .auth import PemCertificateCredential
 from .auth import Scopes
 from .graph_api import Emails
 from .graph_api import MessageNotFoundError
 from .sharepoint import SharePointLibraryManager
 
 __all__ = [
-    "KeyVaultCertificateCredential", "PemCertificateCredential", "Scopes",
-    "Emails", "MessageNotFoundError", "SharePointLibraryManager",
+    "KeyVaultCertificateCredential", "Scopes", "Emails", "MessageNotFoundError", "SharePointLibraryManager",
 ]
 
 __version__="0.5.0"

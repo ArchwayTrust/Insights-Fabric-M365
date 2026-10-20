@@ -89,6 +89,29 @@ def test_constructor_gets_graph_and_sharepoint_tokens_up_front(credential, tenan
     assert tenant.calls == []
 
 
+def test_works_with_key_vault_certificate_credential(fake_notebookutils, tenant, site, monkeypatch):
+    from fabric_python_helper import auth
+    from fabric_python_helper.auth import KeyVaultCertificateCredential
+    from conftest import FakeAzure
+
+    azure = FakeAzure()
+    monkeypatch.setattr(auth.requests, "get", azure.get)
+    monkeypatch.setattr(auth.requests, "post", azure.post)
+    credential = KeyVaultCertificateCredential("tenant", "client", "https://myvault.vault.azure.net/", "sp-cert")
+
+    manager = SharePointLibraryManager(credential, HOST, include_site_name=False)
+    manager.create_libraries(libraries_df(site, "MATH", "ENG"))
+    manager.enforce_site_sharing_lockdown([site.url])
+
+    # Graph and SharePoint tokens are requested once each and reused for every call
+    assert [kwargs["data"]["scope"] for _, kwargs in azure.token_calls] == [Scopes.GRAPH, f"https://{HOST}/.default"]
+    graph_auth = {c[2]["headers"]["Authorization"] for c in tenant.calls if c[1].startswith("https://graph.microsoft.com/")}
+    sharepoint_auth = {c[2]["headers"]["Authorization"] for c in tenant.calls if c[1].startswith(f"https://{HOST}/")}
+    assert (graph_auth, sharepoint_auth) == ({"Bearer token-1"}, {"Bearer token-2"})
+    assert fake_notebookutils == ["keyvault", "keyvault"]
+    assert len(site.lists) == 2
+
+
 def test_constructor_fails_fast_on_bad_credentials():
     class Broken:
         def get_token(self, *scopes, **kwargs):
