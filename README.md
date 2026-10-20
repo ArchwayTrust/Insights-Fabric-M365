@@ -979,6 +979,8 @@ Environments pinned to `fabric_python_helper` 0.5.0 or earlier keep working, and
 
 0.4.0 removes the delegated (signed-in user) authentication, which stored a user's refresh token in Key Vault, and the `pbi_admin` module.
 
+The examples below use the package's current name, `alt_fabric_m365` (0.6.0 or later). On 0.4.x or 0.5.x, import from `fabric_python_helper` instead.
+
 **Emails**
 
 Before:

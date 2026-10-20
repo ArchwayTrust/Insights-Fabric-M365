@@ -4,7 +4,7 @@ This package is now published as [`alt-fabric-m365`](https://pypi.org/project/al
 
 To move over:
 
-1. In each Fabric environment, under **Public libraries**, replace `fabric_python_helper` with `alt-fabric-m365`, at the same or a later version.
+1. In each Fabric environment, under **Public libraries**, replace `fabric_python_helper` with `alt-fabric-m365` version 0.6.0 or later. 0.6.0 has the same code as `fabric_python_helper` 0.5.0.
 2. In your notebooks, change `fabric_python_helper` to `alt_fabric_m365` in every import. Nothing else changes:
 
    ```python
