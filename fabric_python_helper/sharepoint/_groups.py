@@ -169,8 +169,11 @@ def _create_security_group(
         "mailNickname": _build_mail_nickname(display_name),
         "securityEnabled": True,
     }
+    # Not repeated after a failure that may have created the group: a
+    # duplicate name would block the library until removed by hand.
     resp = _request_with_retry(
-        "POST", f"{GRAPH_BASE_URL}/groups", headers=_graph_headers(token), json=body
+        "POST", f"{GRAPH_BASE_URL}/groups", headers=_graph_headers(token), json=body,
+        idempotent=False,
     )
     resp.raise_for_status()
     group = resp.json()
@@ -511,6 +514,36 @@ def _find_group_name_collisions(
             collisions[other] = (site_url, library_code)
         else:
             seen[key] = (site_url, library_code)
+    return collisions
+
+
+def _find_existing_library_collisions(
+    libraries, lists_by_site: dict[str, dict[str, dict]],
+) -> dict[tuple, tuple]:
+    """Find libraries whose group names would collide with a library already on their site.
+
+    _find_group_name_collisions only compares the libraries in one call, but
+    create runs are incremental, so a new code that sanitises like an
+    existing library's ('PEKS3' after 'PE-KS3') would otherwise take over
+    that library's groups — and with them its members' access.
+
+    *libraries* is an iterable of (site_url, library_code); *lists_by_site*
+    maps site_url -> _list_existing_lists result.  Returns each colliding
+    pair mapped to (site_url, existing slug), the shape
+    _log_group_name_collisions expects.
+    """
+    slugs_by_key: dict[str, dict[str, list[str]]] = {}
+    for site_url, lists in lists_by_site.items():
+        by_key = slugs_by_key.setdefault(site_url, {})
+        for slug in lists:
+            by_key.setdefault(sanitise_for_group_name(slug).lower(), []).append(slug)
+
+    collisions: dict[tuple, tuple] = {}
+    for site_url, library_code in libraries:
+        key = sanitise_for_group_name(library_code).lower()
+        others = [s for s in slugs_by_key.get(site_url, {}).get(key, []) if s != library_code.lower()]
+        if others:
+            collisions[(site_url, library_code)] = (site_url, others[0])
     return collisions
 
 

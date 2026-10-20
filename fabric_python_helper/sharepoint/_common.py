@@ -48,13 +48,13 @@ ACTION_LOG_COLUMNS = [
 FATAL_ACTIONS = frozenset({"error", "add_failed", "remove_failed"})
 
 # Actions that deserve attention but do not mean the run failed.
-# library_not_found, group_name_collision and group_not_found are persistent
-# data problems: failing the run could not fix them, it would only wedge
-# every future run behind them.
+# library_not_found, library_name_conflict, group_name_collision and
+# group_not_found are persistent data problems: failing the run could not
+# fix them, it would only wedge every future run behind them.
 WARNING_ACTIONS = frozenset({
     "user_not_found", "removal_guardrail_triggered", "removals_skipped",
-    "onedrive_shortcut_failed", "library_not_found", "group_name_collision",
-    "group_not_found",
+    "onedrive_shortcut_failed", "library_not_found", "library_name_conflict",
+    "group_name_collision", "group_not_found",
 })
 
 logger = logging.getLogger(__name__)

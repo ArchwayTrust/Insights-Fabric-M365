@@ -3,7 +3,7 @@ SharePointLibraryManager: manages SharePoint document libraries and their permis
 """
 import logging
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 import requests
@@ -15,12 +15,13 @@ from ._common import (
     _validate_site_urls,
 )
 from ._graph import (
-    _create_onedrive_shortcut, _ensure_document_library, _get_library_display_name, _get_list_id, _get_site_id,
-    _list_existing_lists, _resolve_site_ids, _set_library_display_name,
+    _create_onedrive_shortcut, _ensure_document_library, _find_title_conflict, _get_library_display_name, _get_list_id,
+    _get_site_id, _list_existing_lists, _set_library_display_name,
 )
 from ._groups import (
     GroupResolutionError, UserResolutionError, _add_group_member, _create_security_group, _empty_group_members,
-    _ensure_security_group, _find_group_by_name, _find_group_name_collisions, _find_groups_by_name_prefix,
+    _ensure_security_group, _find_existing_library_collisions, _find_group_by_name, _find_group_name_collisions,
+    _find_groups_by_name_prefix,
     _get_group_members, _get_unique_group, _log_group_name_collisions, _remove_group_member,
     _rename_security_group, _resolve_nestable_group, _resolve_user_with_fallback, build_group_name,
 )
@@ -30,8 +31,9 @@ from ._navigation import (
 )
 from ._sharepoint import (
     _add_role_assignment, _break_role_inheritance, _disable_site_sharing, _ensure_group_assigned_to_library,
-    _ensure_library_metadata, _get_library_properties, _get_library_role_assignments, _get_site_sharing_settings,
-    _has_unique_permissions, _remove_library_role_assignment, _resolve_group_principal_id, _resolve_role_def_ids,
+    _ensure_library_metadata, _get_library_group_roles, _get_library_properties, _get_library_role_assignments,
+    _get_site_sharing_settings, _group_claims, _has_unique_permissions, _remove_library_role_assignment,
+    _resolve_group_principal_id, _resolve_role_def_ids,
 )
 
 logger = logging.getLogger(__name__)
@@ -146,6 +148,81 @@ class SharePointLibraryManager:
             for name, value in overrides.items()
         )
 
+    def _prefetch_sites(
+        self,
+        site_urls,
+        action_log: _ThreadSafeLog,
+        *,
+        role_definitions: bool = False,
+        navigation_label: str | None = None,
+        gone: tuple[str, str] | None = None,
+    ) -> dict[str, dict]:
+        """Read each site's state once, before the per-library work.
+
+        Returns site_url -> dict with ``site_id``, ``lists`` (a
+        _list_existing_lists result) and, when asked for, ``role_def_ids``
+        and ``nav_label`` (a _find_nav_label result).  Reads only, so it
+        runs in dry runs too.
+
+        A site that can't be read gets one ``error`` row and is left out, so
+        only its libraries are skipped and the rest of the operation
+        proceeds; the watermark is held back, so they are retried next run.
+        *gone* is an (action, status) row logged instead when a site no
+        longer resolves (HTTP 400, 403 or 404).
+        """
+        sites: dict[str, dict] = {}
+        for site_url in dict.fromkeys(site_urls):
+            try:
+                try:
+                    site_id = _get_site_id(self._graph_token, site_url)
+                except requests.HTTPError as exc:
+                    status = exc.response.status_code if exc.response is not None else None
+                    if gone is not None and status in (400, 403, 404):
+                        _append_log(action_log, site_url, "", *gone)
+                        continue
+                    raise
+                site = {"site_id": site_id, "lists": _list_existing_lists(self._graph_token, site_id)}
+                if role_definitions:
+                    site["role_def_ids"] = _resolve_role_def_ids(self._sp_token, site_url)
+                if navigation_label is not None:
+                    site["nav_label"] = _find_nav_label(self._sp_token, site_url, navigation_label)
+            except (requests.RequestException, ValueError, KeyError) as exc:
+                logger.error("Error reading site state for '%s': %s", site_url, exc)
+                _append_log(action_log, site_url, "", "error", str(exc))
+                continue
+            sites[site_url] = site
+        return sites
+
+    def _resolve_users(self, user_principal_names) -> dict[str, tuple]:
+        """Resolve each distinct user once, in parallel.
+
+        Staff in several faculties would otherwise cost up to three Graph
+        lookups per library.  Keys are the normalised (stripped, lowercase)
+        input; values are (object_id, real_upn, failure_reason, fatal).
+        A user that doesn't exist is not fatal (user_not_found); an API
+        failure is, and fails the libraries that use the user.
+        """
+        graph_token = self._graph_token
+
+        def resolve(upn: str) -> tuple[str, tuple]:
+            try:
+                oid, real_upn = _resolve_user_with_fallback(graph_token, upn)
+            except UserResolutionError as exc:
+                return upn, (None, None, exc.reason, False)
+            except requests.HTTPError as exc:
+                if exc.response is not None and exc.response.status_code == 404:
+                    return upn, (None, None, "not found in Entra ID (404)", False)
+                return upn, (None, None, f"user lookup failed: {exc}", True)
+            except requests.RequestException as exc:
+                return upn, (None, None, f"user lookup failed: {exc}", True)
+            if real_upn != upn:
+                logger.info("Aliased domain: '%s' resolved to '%s'", upn, real_upn)
+            return upn, (oid, real_upn, None, False)
+
+        upns = sorted({upn.strip().lower() for upn in user_principal_names})
+        with ThreadPoolExecutor(max_workers=min(8, max(len(upns), 1))) as executor:
+            return dict(executor.map(resolve, upns))
+
     # -------------------------------------------------------------------
     # create_libraries
     # -------------------------------------------------------------------
@@ -180,6 +257,22 @@ class SharePointLibraryManager:
 
         try:
             # Step 1: Ensure the library exists (created with code, display name set after)
+            if library_code.lower() not in existing_lists:
+                conflict = _find_title_conflict(existing_lists, library_code)
+                if conflict is not None:
+                    # Creating it would fail on every run (titles are unique
+                    # per site), and adopting the other library would hand
+                    # it this faculty's groups.
+                    logger.warning(
+                        "Library '%s' not created on '%s': another library (%s) has that title",
+                        library_code, site_url, conflict.get("webUrl"),
+                    )
+                    _append_log(
+                        action_log, site_url, library_code, "library_name_conflict",
+                        f"another library ({conflict.get('webUrl')}) is already titled "
+                        f"'{library_code}' — rename it so this library can be created",
+                    )
+                    return
             if dry_run:
                 list_id = None
                 lib_web_url = None
@@ -189,14 +282,18 @@ class SharePointLibraryManager:
                 list_id = lib["id"]
                 lib_web_url = lib.get("webUrl", "")
 
-            # Step 2: Break role inheritance
+            # Step 2: Break role inheritance.  The library's existing group
+            # bindings are read here so step 6 only writes missing ones.
+            existing_roles: dict[str, set[int]] = {}
             if not dry_run:
                 if _has_unique_permissions(self._sp_token, site_url, list_id):
                     logger.info(
                         "Library '%s' already has unique permissions — skipping inheritance break",
                         library_code,
                     )
+                    existing_roles = _get_library_group_roles(self._sp_token, site_url, list_id)
                 else:
+                    # copyRoleAssignments=false: no group holds a role yet
                     _break_role_inheritance(self._sp_token, site_url, list_id)
 
             # Step 2.5: Set metadata properties on the library's root folder
@@ -267,20 +364,26 @@ class SharePointLibraryManager:
                     )
                     time.sleep(REPLICATION_BASE_DELAY)
 
-            # Step 6: Assign all groups to the library
+            # Step 6: Assign all groups to the library (only missing bindings)
             for group_display_name, suffix, role_key, action_name, group_id, is_new in created_groups:
                 role_def_id = role_def_ids[role_key]
-                _ensure_group_assigned_to_library(
+                granted = _ensure_group_assigned_to_library(
                     self._sp_token, site_url, list_id,
                     group_id, group_display_name, role_def_id,
-                    is_new_group=is_new,
+                    is_new_group=is_new, existing_roles=existing_roles,
                 )
                 is_manual = suffix.startswith("Manual-")
-                _append_log(
-                    action_log, site_url, library_code, action_name,
-                    "success (membership not synced)" if is_manual else "success",
-                    group=group_display_name, permission=role_key,
-                )
+                if granted:
+                    _append_log(
+                        action_log, site_url, library_code, action_name,
+                        "success (membership not synced)" if is_manual else "success",
+                        group=group_display_name, permission=role_key,
+                    )
+                else:
+                    _append_log(
+                        action_log, site_url, library_code, "already_assigned", "no change needed",
+                        group=group_display_name, permission=role_key,
+                    )
 
             # Step 7: Ensure the library is linked in site navigation under
             # the label.  Last on purpose: a navigation failure is logged as
@@ -389,18 +492,10 @@ class SharePointLibraryManager:
         if "source_id" not in df.columns:
             df["source_id"] = None
 
-        site_ids = _resolve_site_ids(self._graph_token, df["site_url"].unique())
-
-        # Pre-fetch existing lists and role definition IDs once per site
-        existing_lists_by_site: dict[str, dict[str, dict]] = {}
-        role_def_ids_by_site: dict[str, dict[str, int]] = {}
-        for site_url_key in df["site_url"].unique():
-            existing_lists_by_site[site_url_key] = _list_existing_lists(
-                self._graph_token, site_ids[site_url_key],
-            )
-            role_def_ids_by_site[site_url_key] = _resolve_role_def_ids(self._sp_token, site_url_key)
-
         action_log = _ThreadSafeLog()
+
+        # Read each site once: its lists and role definition IDs.
+        sites = self._prefetch_sites(df["site_url"].unique(), action_log, role_definitions=True)
 
         # Pre-ensure the navigation label once per site — doing it here rather
         # than in the per-library workers stops concurrent workers racing to
@@ -409,7 +504,7 @@ class SharePointLibraryManager:
         # permissions work still proceeds.
         nav_by_site: dict[str, dict | None] = {}
         if add_to_navigation_:
-            for site_url_key in df["site_url"].unique():
+            for site_url_key in sites:
                 if dry_run_:
                     nav_by_site[site_url_key] = {
                         "label": navigation_label_, "node_id": None, "children": None,
@@ -437,11 +532,13 @@ class SharePointLibraryManager:
         # Deduplicate by (site_url, library_code) — whole rows, so values from
         # different duplicate rows are never mixed
         deduped = df.drop_duplicates(subset=["site_url", "library_code"], keep="first")
+        deduped = deduped[deduped["site_url"].isin(list(sites))]
 
-        collisions = _find_group_name_collisions(
-            {(r["site_url"], r["library_code"]): r["group_prefix"] for _, r in deduped.iterrows()},
-            include_site_name_,
-        )
+        prefixes = {(r["site_url"], r["library_code"]): r["group_prefix"] for _, r in deduped.iterrows()}
+        collisions = _find_group_name_collisions(prefixes, include_site_name_)
+        collisions.update(_find_existing_library_collisions(
+            prefixes, {site_url: site["lists"] for site_url, site in sites.items()},
+        ))
         _log_group_name_collisions(collisions, action_log)
 
         items = []
@@ -450,7 +547,7 @@ class SharePointLibraryManager:
             if (site_url, row["library_code"]) in collisions:
                 continue
             items.append((
-                site_url, site_ids[site_url],
+                site_url, sites[site_url]["site_id"],
                 row["library_code"],
                 row["library_display_name"],
                 row["group_prefix"],
@@ -461,8 +558,8 @@ class SharePointLibraryManager:
                 row["source_id"] if pd.notna(row["source_id"]) else None,
                 dry_run_,
                 include_site_name_,
-                role_def_ids_by_site[site_url],
-                existing_lists_by_site[site_url],
+                sites[site_url]["role_def_ids"],
+                sites[site_url]["lists"],
                 nav_by_site.get(site_url),
             ))
 
@@ -481,6 +578,7 @@ class SharePointLibraryManager:
         source_system: str | None,
         source_id: str | None,
         dry_run: bool,
+        existing_lists: dict[str, dict],
         *,
         action_log: _ThreadSafeLog,
     ) -> None:
@@ -499,7 +597,9 @@ class SharePointLibraryManager:
             return
 
         try:
-            list_id = None if dry_run else _get_list_id(self._graph_token, site_id, library_code)
+            list_id = None if dry_run else _get_list_id(
+                self._graph_token, site_id, library_code, existing=existing_lists,
+            )
             _ensure_library_metadata(
                 self._sp_token, site_url, list_id, library_code,
                 source_system, source_id, action_log, dry_run=dry_run,
@@ -558,21 +658,23 @@ class SharePointLibraryManager:
         if not has_source_id:
             df["source_id"] = None
 
-        site_ids = _resolve_site_ids(self._graph_token, df["site_url"].unique())
-
         action_log = _ThreadSafeLog()
+        sites = self._prefetch_sites(df["site_url"].unique(), action_log)
 
         deduped = df.drop_duplicates(subset=["site_url", "library_code"], keep="first")
 
         items = []
         for _, row in deduped.iterrows():
             site_url = row["site_url"]
+            if site_url not in sites:
+                continue  # site couldn't be read — already logged
             items.append((
-                site_url, site_ids[site_url],
+                site_url, sites[site_url]["site_id"],
                 row["library_code"],
                 row["source_system"] if pd.notna(row["source_system"]) else None,
                 row["source_id"] if pd.notna(row["source_id"]) else None,
                 dry_run_,
+                sites[site_url]["lists"],
             ))
 
         _run_parallel(self._process_set_metadata, items, max_workers_, action_log)
@@ -601,7 +703,8 @@ class SharePointLibraryManager:
         df = _validate_required_columns(df, required)
         _validate_site_urls(df["site_url"].unique(), self.sharepoint_hostname)
 
-        site_ids = _resolve_site_ids(self._graph_token, df["site_url"].unique())
+        # A site that can't be read gives None values for its libraries
+        sites = self._prefetch_sites(df["site_url"].unique(), _ThreadSafeLog())
 
         deduped = df.drop_duplicates(subset=["site_url", "library_code"], keep="first")
 
@@ -610,8 +713,10 @@ class SharePointLibraryManager:
             site_url = row["site_url"]
             library_code = row["library_code"]
             try:
-                site_id = site_ids[site_url]
-                list_id = _get_list_id(self._graph_token, site_id, library_code)
+                if site_url not in sites:
+                    raise ValueError(f"site '{site_url}' could not be read")
+                site = sites[site_url]
+                list_id = _get_list_id(self._graph_token, site["site_id"], library_code, existing=site["lists"])
                 props = _get_library_properties(
                     self._sp_token, site_url, list_id,
                     list(METADATA_PROPERTY_KEYS.values()),
@@ -656,7 +761,7 @@ class SharePointLibraryManager:
         include_site_name: bool,
         add_to_navigation: bool,
         navigation_label: str,
-        existing_lists: dict[str, dict] | None,
+        existing_lists: dict[str, dict],
         nav_label_found: tuple[int, dict[str, dict]] | None,
         *,
         action_log: _ThreadSafeLog,
@@ -664,7 +769,7 @@ class SharePointLibraryManager:
         """Rename a library's display name and (if code changed) its groups.
 
         *existing_lists* and *nav_label_found* are per-site prefetches from
-        rename_libraries (both None in dry-run, which reads nothing).
+        rename_libraries.
         """
         code_changed = old_library_code and old_library_code != library_code
         logger.info(
@@ -710,6 +815,15 @@ class SharePointLibraryManager:
                         include_site_name=include_site_name,
                     ),
                 )
+                # Groups already under the new code (e.g. ensured by a create
+                # run): renaming onto one would duplicate the name.
+                new_groups_by_name = _find_groups_by_name_prefix(
+                    self._graph_token,
+                    build_group_name(
+                        group_prefix, site_url, library_code, "",
+                        include_site_name=include_site_name,
+                    ),
+                )
                 for suffix in ALL_GROUP_SUFFIXES:
                     old_group_name = build_group_name(
                         group_prefix, site_url, old_library_code, suffix,
@@ -724,6 +838,17 @@ class SharePointLibraryManager:
                         group_prefix, site_url, library_code, suffix,
                         include_site_name=include_site_name,
                     )
+                    if new_groups_by_name.get(new_group_name.lower()):
+                        logger.warning(
+                            "Group '%s' not renamed: '%s' already exists", old_group_name, new_group_name,
+                        )
+                        _append_log(
+                            action_log, site_url, library_code, "group_name_collision",
+                            f"not renamed: a group named '{new_group_name}' already exists — "
+                            f"merge their members and delete one by hand",
+                            group=old_group_name,
+                        )
+                        continue
 
                     if dry_run:
                         logger.info(
@@ -827,42 +952,25 @@ class SharePointLibraryManager:
             df["old_library_code"] = None
         df = df.drop_duplicates(subset=["site_url", "library_code"], keep="first")
 
-        site_ids = _resolve_site_ids(self._graph_token, df["site_url"].unique())
-
         action_log = _ThreadSafeLog()
 
-        # Per-site prefetch, mirroring unlink_libraries: one list enumeration
-        # (rename + webUrl lookups) and one quick-launch fetch per site.
-        existing_lists_by_site: dict[str, dict[str, dict]] = {}
-        nav_label_by_site: dict[str, tuple[int, dict[str, dict]] | None] = {}
-        failed_sites: set[str] = set()
-        if not dry_run_:
-            for site_url_key in df["site_url"].unique():
-                try:
-                    existing_lists_by_site[site_url_key] = _list_existing_lists(
-                        self._graph_token, site_ids[site_url_key],
-                    )
-                    if add_to_navigation_:
-                        nav_label_by_site[site_url_key] = _find_nav_label(
-                            self._sp_token, site_url_key, navigation_label_,
-                        )
-                except (requests.RequestException, ValueError) as exc:
-                    logger.error(
-                        "Error prefetching site state for '%s': %s", site_url_key, exc,
-                    )
-                    _append_log(action_log, site_url_key, "", "error", str(exc))
-                    failed_sites.add(site_url_key)
+        # One list enumeration (rename + webUrl lookups) and, with
+        # navigation, one quick-launch read per site.
+        sites = self._prefetch_sites(
+            df["site_url"].unique(), action_log,
+            navigation_label=navigation_label_ if add_to_navigation_ else None,
+        )
 
         items = []
         for _, row in df.iterrows():
             site_url = row["site_url"]
-            if site_url in failed_sites:
-                continue
+            if site_url not in sites:
+                continue  # site couldn't be read — already logged
             old_code = row["old_library_code"]
             if pd.isna(old_code):
                 old_code = None
             items.append((
-                site_url, site_ids[site_url],
+                site_url, sites[site_url]["site_id"],
                 row["library_code"],
                 row["library_display_name"],
                 old_code,
@@ -871,8 +979,8 @@ class SharePointLibraryManager:
                 include_site_name_,
                 add_to_navigation_,
                 navigation_label_,
-                existing_lists_by_site.get(site_url),
-                nav_label_by_site.get(site_url),
+                sites[site_url]["lists"],
+                sites[site_url].get("nav_label"),
             ))
 
         _run_parallel(self._process_rename_library, items, max_workers_, action_log)
@@ -892,7 +1000,7 @@ class SharePointLibraryManager:
         include_site_name: bool,
         add_to_navigation: bool,
         navigation_label: str,
-        existing_lists: dict[str, dict] | None,
+        existing_lists: dict[str, dict],
         nav_label_found: tuple[int, dict[str, dict]] | None,
         *,
         action_log: _ThreadSafeLog,
@@ -900,7 +1008,7 @@ class SharePointLibraryManager:
         """Unlink a single library: set display name to _UNLINKED and empty Auto groups.
 
         *existing_lists* and *nav_label_found* are per-site prefetches from
-        unlink_libraries (both None in dry-run, which reads nothing).
+        unlink_libraries.
 
         Manual-* groups are deliberately left untouched — their descriptions
         promise membership is never managed by automation, and a transient
@@ -912,7 +1020,18 @@ class SharePointLibraryManager:
         try:
             # Step 1: Set the display name to {code}_UNLINKED
             lib_web_url = None
-            if dry_run:
+            if library_code.lower() not in existing_lists:
+                # Never created (created and deleted between runs) or deleted
+                # by hand: nothing to rename.  A data problem, not a fault —
+                # an error here would fail every run on the same event.  The
+                # Auto groups are still emptied below.
+                logger.warning("Library '%s' not found on '%s' — not renamed", library_code, site_url)
+                _append_log(
+                    action_log, site_url, library_code, "library_not_found",
+                    "library does not exist on the site — nothing to rename; "
+                    "its Auto groups are still emptied",
+                )
+            elif dry_run:
                 logger.info("[DRY RUN] Would set display name to '%s'", unlinked_display)
                 _append_log(
                     action_log, site_url, library_code,
@@ -1062,51 +1181,30 @@ class SharePointLibraryManager:
         # workers over the same library, groups, and navigation node.
         df = df.drop_duplicates(subset=["site_url", "library_code"], keep="first")
 
-        site_ids = _resolve_site_ids(self._graph_token, df["site_url"].unique())
-
         action_log = _ThreadSafeLog()
 
-        # Per-site prefetch (mirrors create_libraries): one list enumeration
-        # per site for the rename/webUrl lookups and one quick-launch fetch
-        # per site for navigation removal, instead of one of each per library.
-        # Skipped in dry-run, which mutates nothing and needs neither.  A site
-        # whose prefetch fails gets an error row and its libraries are skipped;
-        # the watermark stays put, so they are retried next run.
-        existing_lists_by_site: dict[str, dict[str, dict]] = {}
-        nav_label_by_site: dict[str, tuple[int, dict[str, dict]] | None] = {}
-        failed_sites: set[str] = set()
-        if not dry_run_:
-            for site_url_key in df["site_url"].unique():
-                try:
-                    existing_lists_by_site[site_url_key] = _list_existing_lists(
-                        self._graph_token, site_ids[site_url_key],
-                    )
-                    if add_to_navigation_:
-                        nav_label_by_site[site_url_key] = _find_nav_label(
-                            self._sp_token, site_url_key, navigation_label_,
-                        )
-                except (requests.RequestException, ValueError) as exc:
-                    logger.error(
-                        "Error prefetching site state for '%s': %s", site_url_key, exc,
-                    )
-                    _append_log(action_log, site_url_key, "", "error", str(exc))
-                    failed_sites.add(site_url_key)
+        # One list enumeration (rename + webUrl lookups) and, with
+        # navigation, one quick-launch read per site.
+        sites = self._prefetch_sites(
+            df["site_url"].unique(), action_log,
+            navigation_label=navigation_label_ if add_to_navigation_ else None,
+        )
 
         items = []
         for _, row in df.iterrows():
             site_url = row["site_url"]
-            if site_url in failed_sites:
-                continue
+            if site_url not in sites:
+                continue  # site couldn't be read — already logged
             items.append((
-                site_url, site_ids[site_url],
+                site_url, sites[site_url]["site_id"],
                 row["library_code"],
                 row["group_prefix"],
                 dry_run_,
                 include_site_name_,
                 add_to_navigation_,
                 navigation_label_,
-                existing_lists_by_site.get(site_url),
-                nav_label_by_site.get(site_url),
+                sites[site_url]["lists"],
+                sites[site_url].get("nav_label"),
             ))
 
         _run_parallel(self._process_unlink_library, items, max_workers_, action_log)
@@ -1126,7 +1224,7 @@ class SharePointLibraryManager:
         include_site_name: bool,
         add_to_navigation: bool,
         navigation_label: str,
-        existing_lists: dict[str, dict] | None,
+        existing_lists: dict[str, dict],
         nav_label_found: tuple[int, dict[str, dict]] | None,
         *,
         action_log: _ThreadSafeLog,
@@ -1142,7 +1240,7 @@ class SharePointLibraryManager:
         logger.info("Retiring moved library '%s' on '%s' …", library_code, site_url)
 
         try:
-            if existing_lists is not None and library_code.lower() not in existing_lists:
+            if library_code.lower() not in existing_lists:
                 # Nothing left to retire (deleted by hand, or already cleaned
                 # up) — benign, so no warning.
                 _append_log(
@@ -1200,7 +1298,7 @@ class SharePointLibraryManager:
                     )
                     continue
                 principal_id = _resolve_group_principal_id(
-                    self._sp_token, site_url, f"c:0t.c|tenant|{existing_group['id']}",
+                    self._sp_token, site_url, _group_claims(existing_group["id"]),
                 )
                 if _remove_library_role_assignment(
                     self._sp_token, site_url, list_id, principal_id,
@@ -1291,58 +1389,29 @@ class SharePointLibraryManager:
 
         action_log = _ThreadSafeLog()
 
-        # Old hubs may have been deleted since the move — resolve site IDs
-        # individually and skip (rather than fail) the ones that are gone.
-        site_ids: dict[str, str] = {}
-        for site_url_key in df["site_url"].unique():
-            try:
-                site_ids[site_url_key] = _get_site_id(self._graph_token, site_url_key)
-            except requests.HTTPError as exc:
-                status = exc.response.status_code if exc.response is not None else None
-                if status in (400, 403, 404):
-                    _append_log(
-                        action_log, site_url_key, "", "retire_skipped",
-                        "old site no longer resolves — nothing to retire",
-                    )
-                    continue
-                raise
-
-        # Per-site prefetch, mirroring unlink_libraries.
-        existing_lists_by_site: dict[str, dict[str, dict]] = {}
-        nav_label_by_site: dict[str, tuple[int, dict[str, dict]] | None] = {}
-        failed_sites: set[str] = set()
-        if not dry_run_:
-            for site_url_key, prefetch_site_id in site_ids.items():
-                try:
-                    existing_lists_by_site[site_url_key] = _list_existing_lists(
-                        self._graph_token, prefetch_site_id,
-                    )
-                    if add_to_navigation_:
-                        nav_label_by_site[site_url_key] = _find_nav_label(
-                            self._sp_token, site_url_key, navigation_label_,
-                        )
-                except (requests.RequestException, ValueError) as exc:
-                    logger.error(
-                        "Error prefetching site state for '%s': %s", site_url_key, exc,
-                    )
-                    _append_log(action_log, site_url_key, "", "error", str(exc))
-                    failed_sites.add(site_url_key)
+        # Old hubs may have been deleted since the move — those are skipped
+        # (nothing to retire), not errors.
+        sites = self._prefetch_sites(
+            df["site_url"].unique(), action_log,
+            navigation_label=navigation_label_ if add_to_navigation_ else None,
+            gone=("retire_skipped", "old site no longer resolves — nothing to retire"),
+        )
 
         items = []
         for _, row in df.iterrows():
             site_url = row["site_url"]
-            if site_url not in site_ids or site_url in failed_sites:
-                continue
+            if site_url not in sites:
+                continue  # site gone or couldn't be read — already logged
             items.append((
-                site_url, site_ids[site_url],
+                site_url, sites[site_url]["site_id"],
                 row["library_code"],
                 row["group_prefix"],
                 dry_run_,
                 include_site_name_,
                 add_to_navigation_,
                 navigation_label_,
-                existing_lists_by_site.get(site_url),
-                nav_label_by_site.get(site_url),
+                sites[site_url]["lists"],
+                sites[site_url].get("nav_label"),
             ))
 
         _run_parallel(self._process_retire_library, items, max_workers_, action_log)
@@ -1361,6 +1430,7 @@ class SharePointLibraryManager:
         group_df: pd.DataFrame,
         nested_df: pd.DataFrame,
         group_refs: dict[str, tuple[str | None, str | None, str | None, str | None]],
+        user_refs: dict[str, tuple],
         dry_run: bool,
         include_site_name: bool,
         role_def_ids: dict[str, int],
@@ -1425,51 +1495,30 @@ class SharePointLibraryManager:
                     continue
                 desired_by_role[perm].add(upn)
 
-            # Pre-resolve all UPNs to handle aliased domains.
-            # Maps input_upn -> (object_id, real_upn) so membership comparison
-            # uses the canonical UPN that Graph returns for existing members.
-            # Resolved in parallel to reduce wall-clock time for large user lists.
-            all_upns = {upn for upns in desired_by_role.values() for upn in upns}
+            # UPNs were resolved once per call (see _resolve_users) to
+            # handle aliased domains.  Maps input_upn -> (object_id,
+            # real_upn) so membership comparison uses the canonical UPN that
+            # Graph returns for existing members.
+            all_upns = sorted({upn for upns in desired_by_role.values() for upn in upns})
             resolved_users: dict[str, tuple[str, str]] = {}  # input_upn -> (oid, real_upn)
-            not_found_upns: set[str] = set()
             # Roles containing a UPN that failed to resolve: their removals are
             # skipped — an incomplete desired set must not drive removals.
             failed_roles: set[str] = set()
-
-            graph_token = self._graph_token
-
-            def _resolve_one(upn_to_resolve: str) -> tuple[str, str | None, str | None, str | None]:
-                """Returns (input_upn, object_id, real_upn, failure_reason)."""
-                try:
-                    oid, real = _resolve_user_with_fallback(graph_token, upn_to_resolve)
-                    return (upn_to_resolve, oid, real, None)
-                except UserResolutionError as exc:
-                    return (upn_to_resolve, None, None, exc.reason)
-                except requests.HTTPError as exc:
-                    if exc.response is not None and exc.response.status_code == 404:
-                        return (upn_to_resolve, None, None, "not found in Entra ID (404)")
-                    raise
-
-            with ThreadPoolExecutor(max_workers=min(8, max(len(all_upns), 1))) as user_executor:
-                futures = [user_executor.submit(_resolve_one, u) for u in all_upns]
-                for future in as_completed(futures):
-                    upn, oid, real_upn, fail_reason = future.result()
-                    if oid is not None:
-                        resolved_users[upn] = (oid, real_upn)
-                        if real_upn != upn:
-                            logger.info(
-                                "Aliased domain: '%s' resolved to '%s'", upn, real_upn,
-                            )
-                    else:
-                        not_found_upns.add(upn)
-                        user_perms = [r for r, u in desired_by_role.items() if upn in u]
-                        failed_roles.update(user_perms)
-                        _append_log(
-                            action_log, site_url, library_code,
-                            "user_not_found", fail_reason,
-                            user=upn, permission=", ".join(user_perms),
-                        )
-                        logger.warning("User '%s' could not be resolved: %s", upn, fail_reason)
+            for upn in all_upns:
+                oid, real_upn, fail_reason, fatal = user_refs[upn]
+                if fatal:
+                    raise requests.RequestException(f"user '{upn}': {fail_reason}")
+                if oid is not None:
+                    resolved_users[upn] = (oid, real_upn)
+                    continue
+                user_perms = [r for r, u in desired_by_role.items() if upn in u]
+                failed_roles.update(user_perms)
+                _append_log(
+                    action_log, site_url, library_code,
+                    "user_not_found", fail_reason,
+                    user=upn, permission=", ".join(user_perms),
+                )
+                logger.warning("User '%s' could not be resolved: %s", upn, fail_reason)
 
             # Rebuild desired sets using real (canonical) UPNs and collect
             # the pre-resolved object IDs so the sync loop doesn't need to
@@ -1619,7 +1668,13 @@ class SharePointLibraryManager:
                     )
                     time.sleep(REPLICATION_BASE_DELAY)
 
-            # Phase 3: Assign groups to library and sync membership
+            # Phase 3: Assign groups to library and sync membership.  The
+            # library's group bindings are read once so only missing ones are
+            # written — this runs as a full pass, so most already exist.
+            existing_roles: dict[str, set[int]] = {}
+            if any(assign and not is_new for _, _, _, is_new, _, _, assign in created_role_groups):
+                existing_roles = _get_library_group_roles(self._sp_token, site_url, list_id)
+
             # Track users who already received a OneDrive shortcut for this
             # library (a user with multiple roles should only get one shortcut).
             shortcuts_created: set[str] = set()
@@ -1628,19 +1683,21 @@ class SharePointLibraryManager:
                  desired_upns, desired_groups, assign_needed) in created_role_groups:
                 if assign_needed:
                     role_def_id = role_def_ids[role]
-                    _ensure_group_assigned_to_library(
+                    granted = _ensure_group_assigned_to_library(
                         self._sp_token, site_url, list_id,
                         group_id, group_display_name, role_def_id,
-                        is_new_group=is_new_group,
+                        is_new_group=is_new_group, existing_roles=existing_roles,
                     )
                     _append_log(
                         action_log, site_url, library_code,
-                        "group_assigned", "success",
+                        *(("group_assigned", "success") if granted else ("already_assigned", "no change needed")),
                         group=group_display_name, permission=role,
                     )
 
-                # Sync group membership
-                current_members = _get_group_members(self._graph_token, group_id)
+                # Sync group membership.  A group created this run has no
+                # members, and reading them straight away can 404 while it
+                # replicates.
+                current_members = {} if is_new_group else _get_group_members(self._graph_token, group_id)
 
                 # Add users who should be in the group (UPNs are already
                 # resolved to canonical form; OIDs are in upn_to_oid).
@@ -1987,24 +2044,28 @@ class SharePointLibraryManager:
             except requests.RequestException as exc:
                 group_refs[reference] = (None, None, "error", f"group lookup failed: {exc}")
 
+        action_log = _ThreadSafeLog()
+
+        # Read each site once: its lists and role definition IDs.  A site
+        # that can't be read skips only its own libraries.
+        unique_urls = sorted({site_url for site_url, _ in prefix_by_library})
+        sites = self._prefetch_sites(unique_urls, action_log, role_definitions=True)
+        prefix_by_library = {pair: prefix for pair, prefix in prefix_by_library.items() if pair[0] in sites}
+
+        # Collisions within this call, and with libraries already on the
+        # site (e.g. an unlinked library still holding the shared groups).
         collisions = _find_group_name_collisions(prefix_by_library, include_site_name_)
+        collisions.update(_find_existing_library_collisions(
+            prefix_by_library, {site_url: site["lists"] for site_url, site in sites.items()},
+        ))
         for pair in collisions:
             prefix_by_library.pop(pair, None)
-
-        unique_urls = sorted({site_url for site_url, _ in prefix_by_library})
-        site_ids = _resolve_site_ids(self._graph_token, unique_urls)
-
-        # Pre-fetch existing lists and role definition IDs once per site
-        existing_lists_by_site: dict[str, dict[str, dict]] = {}
-        role_def_ids_by_site: dict[str, dict[str, int]] = {}
-        for site_url_key in unique_urls:
-            existing_lists_by_site[site_url_key] = _list_existing_lists(
-                self._graph_token, site_ids[site_url_key],
-            )
-            role_def_ids_by_site[site_url_key] = _resolve_role_def_ids(self._sp_token, site_url_key)
-
-        action_log = _ThreadSafeLog()
         _log_group_name_collisions(collisions, action_log)
+
+        user_refs = self._resolve_users(
+            df.loc[df.set_index(["site_url", "library_code"]).index.isin(list(prefix_by_library)),
+                   "user_principal_name"]
+        )
         grouped = dict(tuple(df.groupby(["site_url", "library_code"])))
         nested_grouped = dict(tuple(nested_groups_df.groupby(["site_url", "library_code"])))
 
@@ -2017,16 +2078,17 @@ class SharePointLibraryManager:
             group_df = grouped.get((site_url, library_code), empty_group_df)
             nested_df = nested_grouped.get((site_url, library_code), empty_nested_df)
             items.append((
-                site_url, site_ids[site_url],
+                site_url, sites[site_url]["site_id"],
                 library_code,
                 group_prefix,
                 group_df,
                 nested_df,
                 group_refs,
+                user_refs,
                 dry_run_,
                 include_site_name_,
-                role_def_ids_by_site[site_url],
-                existing_lists_by_site[site_url],
+                sites[site_url]["role_def_ids"],
+                sites[site_url]["lists"],
                 create_onedrive_shortcuts_,
                 max_removals_,
                 allow_mass_removal_,
@@ -2166,8 +2228,7 @@ class SharePointLibraryManager:
         # principal is per site, so ensureuser runs once per (site, group)
         # rather than once per library.  A site whose prefetch fails gets an
         # error row and its grants are skipped.
-        existing_lists_by_site: dict[str, dict[str, dict]] = {}
-        role_def_ids_by_site: dict[str, dict[str, int]] = {}
+        sites: dict[str, dict] = {}
         principal_ids: dict[tuple[str, str], int] = {}
         if not dry_run_:
             group_ids: dict[str, str] = {}
@@ -2191,34 +2252,29 @@ class SharePointLibraryManager:
                     continue
                 group_ids[group_name] = group["id"]
 
-            for site_url_key in df["site_url"].unique():
-                try:
-                    site_id = _get_site_id(self._graph_token, site_url_key)
-                    existing_lists_by_site[site_url_key] = _list_existing_lists(
-                        self._graph_token, site_id,
-                    )
-                    role_def_ids_by_site[site_url_key] = _resolve_role_def_ids(
-                        self._sp_token, site_url_key,
-                    )
-                    site_groups = df.loc[df["site_url"] == site_url_key, "group_name"].unique()
-                    for group_name in site_groups:
-                        if group_name in group_ids:
-                            principal_ids[(site_url_key, group_name)] = _resolve_group_principal_id(
-                                self._sp_token, site_url_key,
-                                f"c:0t.c|tenant|{group_ids[group_name]}",
-                            )
-                except (requests.RequestException, ValueError) as exc:
-                    logger.error(
-                        "Error prefetching site state for '%s': %s", site_url_key, exc,
-                    )
-                    _append_log(action_log, site_url_key, "", "error", str(exc))
-                    existing_lists_by_site.pop(site_url_key, None)
+            sites = self._prefetch_sites(df["site_url"].unique(), action_log, role_definitions=True)
+            for site_url_key in sites:
+                site_groups = df.loc[df["site_url"] == site_url_key, "group_name"].unique()
+                for group_name in site_groups:
+                    if group_name not in group_ids:
+                        continue
+                    # Per group, so one group that SharePoint can't resolve
+                    # doesn't skip the other groups' grants on the site.
+                    try:
+                        principal_ids[(site_url_key, group_name)] = _resolve_group_principal_id(
+                            self._sp_token, site_url_key, _group_claims(group_ids[group_name]),
+                        )
+                    except (requests.RequestException, ValueError, KeyError) as exc:
+                        logger.error("Group '%s' on '%s': %s", group_name, site_url_key, exc)
+                        _append_log(
+                            action_log, site_url_key, "", "error", str(exc), group=group_name,
+                        )
 
         grants_by_library: dict[tuple[str, str], list[tuple[str, str, int | None]]] = {}
         for row in df.itertuples(index=False):
             principal_id = None
             if not dry_run_:
-                if row.site_url not in existing_lists_by_site:
+                if row.site_url not in sites:
                     continue  # site prefetch failed — already logged
                 principal_id = principal_ids.get((row.site_url, row.group_name))
                 if principal_id is None:
@@ -2230,8 +2286,8 @@ class SharePointLibraryManager:
         items = [
             (
                 site_url, library_code, grants, dry_run_,
-                role_def_ids_by_site.get(site_url),
-                existing_lists_by_site.get(site_url),
+                sites.get(site_url, {}).get("role_def_ids"),
+                sites.get(site_url, {}).get("lists"),
             )
             for (site_url, library_code), grants in grants_by_library.items()
         ]

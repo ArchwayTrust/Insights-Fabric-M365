@@ -76,37 +76,35 @@ def _break_role_inheritance(token: str, site_url: str, list_id: str) -> None:
     logger.info("Broke role inheritance on library '%s'", list_id)
 
 
-def _get_role_definition_id(token: str, site_url: str, role_name: str) -> int:
-    """
-    Look up the numeric role definition ID for a named role.
+# SharePoint role definition names for each permission level.
+SP_ROLE_NAMES = {
+    "read": "Read",
+    "contribute": "Contribute",
+    "owner": "Full Control",
+}
 
-    Mapping: 'read' -> Read, 'contribute' -> Contribute, 'owner' -> Full Control.
-    """
-    sp_role_name_map = {
-        "read": "Read",
-        "contribute": "Contribute",
-        "owner": "Full Control",
-    }
-    sp_role_name = sp_role_name_map.get(role_name.lower())
-    if sp_role_name is None:
-        raise ValueError(
-            f"Unknown permission '{role_name}'. Must be one of: {list(sp_role_name_map.keys())}"
-        )
 
-    rest_url = _get_sharepoint_rest_url(site_url)
-    url = f"{rest_url}/web/roledefinitions/getbyname('{requests.utils.quote(sp_role_name)}')"
-    resp = _request_with_retry("GET", url, headers=_sharepoint_headers(token))
-    resp.raise_for_status()
-    return resp.json()["d"]["Id"]
+def _group_claims(group_id: str) -> str:
+    """Claims-based login name SharePoint uses for an Entra ID security group."""
+    return f"c:0t.c|tenant|{group_id}"
 
 
 def _resolve_role_def_ids(token: str, site_url: str) -> dict[str, int]:
-    """Pre-resolve all role definition IDs for a site.
+    """Pre-resolve all role definition IDs for a site, in one request.
 
     Returns a dict mapping role name ('read', 'contribute', 'owner') to its
     numeric SharePoint role definition ID.
     """
-    return {role: _get_role_definition_id(token, site_url, role) for role in VALID_ROLES}
+    rest_url = _get_sharepoint_rest_url(site_url)
+    resp = _request_with_retry(
+        "GET", f"{rest_url}/web/roledefinitions?$select=Id,Name", headers=_sharepoint_headers(token),
+    )
+    resp.raise_for_status()
+    ids_by_name = {rd["Name"]: rd["Id"] for rd in resp.json()["d"]["results"]}
+    missing = [name for name in SP_ROLE_NAMES.values() if name not in ids_by_name]
+    if missing:
+        raise ValueError(f"Role definition(s) {missing} not found on {site_url}")
+    return {role: ids_by_name[SP_ROLE_NAMES[role]] for role in VALID_ROLES}
 
 
 def _resolve_group_principal_id(
@@ -210,6 +208,35 @@ def _remove_library_role_assignment(
     return True
 
 
+def _get_library_group_roles(
+    token: str, site_url: str, list_id: str,
+) -> dict[str, set[int]]:
+    """Return a library's role assignments as lowercase login name -> role definition IDs.
+
+    Groups appear under their claims login name (see _group_claims), so a
+    caller can tell whether a group already holds a role without resolving
+    its principal ID through ensureuser first.
+    """
+    rest_url = _get_sharepoint_rest_url(site_url)
+    url: str | None = (
+        f"{rest_url}/web/lists(guid'{list_id}')/roleassignments"
+        f"?$expand=Member,RoleDefinitionBindings"
+        f"&$select=Member/LoginName,RoleDefinitionBindings/Id"
+    )
+    roles: dict[str, set[int]] = {}
+    while url:
+        resp = _request_with_retry("GET", url, headers=_sharepoint_headers(token))
+        resp.raise_for_status()
+        data = resp.json()["d"]
+        for assignment in data["results"]:
+            login_name = ((assignment.get("Member") or {}).get("LoginName") or "").lower()
+            roles.setdefault(login_name, set()).update(
+                role_def["Id"] for role_def in assignment["RoleDefinitionBindings"]["results"]
+            )
+        url = data.get("__next")
+    return roles
+
+
 def _ensure_group_assigned_to_library(
     token: str,
     site_url: str,
@@ -219,7 +246,8 @@ def _ensure_group_assigned_to_library(
     role_def_id: int,
     *,
     is_new_group: bool = False,
-) -> None:
+    existing_roles: dict[str, set[int]] | None = None,
+) -> bool:
     """
     Ensure a security group is assigned to a library with the given role.
 
@@ -228,8 +256,16 @@ def _ensure_group_assigned_to_library(
 
     When *is_new_group* is True, allows for Entra ID replication delay
     before SharePoint can recognise the group via ensureuser.
+
+    *existing_roles* is the library's _get_library_group_roles result, when
+    the caller has read it: a group that already holds the role is left
+    alone, saving the ensureuser and role assignment writes.
+
+    Returns True when the role was granted, False when it was already held.
     """
-    claims_identity = f"c:0t.c|tenant|{group_id}"
+    claims_identity = _group_claims(group_id)
+    if existing_roles is not None and role_def_id in existing_roles.get(claims_identity.lower(), set()):
+        return False
     principal_id = _resolve_group_principal_id(
         token, site_url, claims_identity, is_new_group=is_new_group
     )
@@ -238,6 +274,7 @@ def _ensure_group_assigned_to_library(
         "Assigned group '%s' to library '%s' with role def %d",
         group_display_name, list_id, role_def_id,
     )
+    return True
 
 
 # ---------------------------------------------------------------------------

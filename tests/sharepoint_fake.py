@@ -341,9 +341,10 @@ class FakeTenant:
                 return response(404)
             return self._sharepoint_list(method, site, lst, m.group(2), body)
 
-        m = re.fullmatch(r"web/roledefinitions/getbyname\('([^']+)'\)", path)
-        if m and method == "GET":
-            return response(200, {"d": {"Id": ROLE_DEFINITIONS[m.group(1)]}})
+        if path == "web/roledefinitions" and method == "GET":
+            return response(200, {"d": {"results": [
+                {"Id": role_id, "Name": name} for name, role_id in ROLE_DEFINITIONS.items()
+            ]}})
 
         if path == "web/ensureuser" and method == "POST":
             logon_name = body["logonName"]
@@ -418,8 +419,13 @@ class FakeTenant:
             lst["role_assignments"].setdefault(int(m.group(1)), set()).add(int(m.group(2)))
             return response(200, {"d": {}})
         if rest == "/roleassignments" and method == "GET":
+            login_names = {pid: claims for claims, pid in site.principals.items()}
             return response(200, {"d": {"results": [
-                {"PrincipalId": pid, "RoleDefinitionBindings": {"results": [{"Id": r} for r in sorted(roles)]}}
+                {
+                    "PrincipalId": pid,
+                    "Member": {"LoginName": login_names.get(pid, f"i:0#.f|membership|user{pid}")},
+                    "RoleDefinitionBindings": {"results": [{"Id": r} for r in sorted(roles)]},
+                }
                 for pid, roles in lst["role_assignments"].items()
             ]}})
         m = re.fullmatch(r"/roleassignments/getbyprincipalid\((\d+)\)", rest)

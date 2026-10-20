@@ -70,6 +70,7 @@ def _request_with_retry(
     max_retries: int = DEFAULT_MAX_RETRIES,
     base_delay: float = DEFAULT_BASE_DELAY,
     max_delay: float = DEFAULT_MAX_DELAY,
+    idempotent: bool = True,
     **kwargs,
 ) -> requests.Response:
     """
@@ -82,12 +83,19 @@ def _request_with_retry(
 
     Does NOT retry on other 4xx errors (returns the response for the caller).
 
+    With *idempotent* False (a request that must not run twice, such as
+    creating a group), only failures where the server certainly did not act
+    are retried: 429 and connect timeouts.  A 5xx, read timeout or dropped
+    connection may follow a request that succeeded, so it is returned or
+    raised rather than repeated — the next run finds what was created.
+
     Args:
         method:      HTTP method (GET, POST, DELETE, etc.).
         url:         Request URL.
         max_retries: Maximum number of retry attempts.
         base_delay:  Starting delay in seconds for exponential backoff.
         max_delay:   Cap on backoff delay in seconds.
+        idempotent:  False for requests that must not be repeated, see above.
         **kwargs:    Passed through to requests.request().
 
     Returns:
@@ -151,6 +159,8 @@ def _request_with_retry(
             # callers treat non-2xx via raise_for_status as usual)
             if resp.status_code < 500 and resp.status_code != 429:
                 return resp
+            if not idempotent and resp.status_code != 429:
+                return resp
 
             # 429: respect Retry-After header
             if resp.status_code == 429:
@@ -179,6 +189,8 @@ def _request_with_retry(
             return resp
 
         except (requests.ConnectionError, requests.Timeout) as exc:
+            if not idempotent and not isinstance(exc, requests.ConnectTimeout):
+                raise
             last_exception = exc
             delay = min(base_delay * (2 ** attempt), max_delay)
             delay += delay * random.uniform(0, 0.25)

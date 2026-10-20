@@ -135,18 +135,18 @@ def test_empty_action_log_has_the_standard_columns():
 
 # Libraries
 
-def test_lists_are_keyed_by_display_name_and_slug_with_slug_winning(tenant):
+def test_lists_are_keyed_by_url_slug_only(tenant):
     site = tenant.add_site("/sites/maths")
     slt = site.add_list("SLT")
-    titled_slt = site.add_list("SLT", slug="OldLeadership")  # display name equals another library's slug
+    titled_art = site.add_list("Art", slug="ARTD")  # titled like another faculty's code
     spaced = site.add_list("Year 7 & 8", slug="Y7 & 8")
 
     lists = _graph._list_existing_lists(TOKEN, site.id)
 
-    assert lists["slt"]["id"] == slt["id"]
-    assert lists["oldleadership"]["id"] == titled_slt["id"]
-    assert lists["y7 & 8"]["id"] == spaced["id"]  # slug is percent-decoded
-    assert lists["year 7 & 8"]["id"] == spaced["id"]
+    assert sorted(lists) == ["artd", "slt", "y7 & 8"]  # slug is percent-decoded
+    assert (lists["slt"]["id"], lists["artd"]["id"], lists["y7 & 8"]["id"]) == (slt["id"], titled_art["id"], spaced["id"])
+    assert _graph._find_title_conflict(lists, "ART")["id"] == titled_art["id"]
+    assert _graph._find_title_conflict(lists, "SLT") is None  # its own title
 
 
 def test_lists_follow_pages(tenant):
@@ -357,9 +357,38 @@ def test_existing_group_principal_failure_is_raised(tenant):
         _sharepoint._resolve_group_principal_id(TOKEN, site.url, "c:0t.c|tenant|missing")
 
 
-def test_unknown_role_is_rejected():
-    with pytest.raises(ValueError, match="Unknown permission 'edit'"):
-        _sharepoint._get_role_definition_id(TOKEN, SITE, "edit")
+def test_role_definitions_are_read_in_one_request(tenant):
+    site = tenant.add_site("/sites/maths")
+
+    role_def_ids = _sharepoint._resolve_role_def_ids(TOKEN, site.url)
+
+    assert role_def_ids == {"read": 1073741826, "contribute": 1073741827, "owner": 1073741829}
+    assert len(tenant.calls) == 1
+
+
+def test_missing_role_definition_is_an_error(tenant):
+    site = tenant.add_site("/sites/maths")
+    tenant.fail("GET", r"/roledefinitions", response(200, {"d": {"results": [{"Id": 1, "Name": "Read"}]}}))
+
+    with pytest.raises(ValueError, match="Contribute"):
+        _sharepoint._resolve_role_def_ids(TOKEN, site.url)
+
+
+def test_group_roles_are_keyed_by_claims_login_name(tenant):
+    site = tenant.add_site("/sites/maths")
+    lst = site.add_list("ENG", unique=True)
+    group = tenant.add_group("SP-ENG-Auto-Read")
+    principal = _sharepoint._resolve_group_principal_id(TOKEN, site.url, _sharepoint._group_claims(group["id"]))
+    _sharepoint._add_role_assignment(TOKEN, site.url, lst["id"], principal, 1073741826)
+
+    roles = _sharepoint._get_library_group_roles(TOKEN, site.url, lst["id"])
+
+    assert roles == {f"c:0t.c|tenant|{group['id']}": {1073741826}}
+    tenant.calls.clear()
+    assert _sharepoint._ensure_group_assigned_to_library(
+        TOKEN, site.url, lst["id"], group["id"], "SP-ENG-Auto-Read", 1073741826, existing_roles=roles,
+    ) is False
+    assert tenant.calls == []
 
 
 def test_removing_a_missing_role_assignment_is_not_an_error(tenant):

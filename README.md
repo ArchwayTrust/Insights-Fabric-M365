@@ -642,7 +642,7 @@ results = mgr.update_memberships(members, libraries_df=libraries)
 
 ### The action log
 
-Every operation returns a DataFrame with the columns `site_url`, `document_library`, `group`, `user`, `action`, `permission` and `status`, one row per thing it did or (in a dry run) would do. Problems are rows too, so one bad library or user never stops the others. Two sets of action names help decide whether a run succeeded:
+Every operation returns a DataFrame with the columns `site_url`, `document_library`, `group`, `user`, `action`, `permission` and `status`, one row per thing it did or (in a dry run) would do. Problems are rows too, so one bad library, user or site never stops the others. Where nothing needed changing, the row says so (`already_member`, `already_assigned`), and nothing is written. Two sets of action names help decide whether a run succeeded:
 
 - `FATAL_ACTIONS`: `error`, `add_failed`, `remove_failed`. Something failed and should be retried, so fail the run.
 - `WARNING_ACTIONS`: for example `user_not_found`, `library_not_found` and `removal_guardrail_triggered`. Problems with the data that failing the run wouldn't fix.
@@ -662,7 +662,8 @@ if not failures.empty:
 - **Removal guardrail.** If syncing a group would remove more than `max_removals_per_group` members, its removals are skipped and logged as `removal_guardrail_triggered` (additions still happen). Re-run with `allow_mass_removal=True` once you've checked the data.
 - **Incomplete data never drives removals.** If any user (or nested group) for a role can't be resolved, removals of that kind from that role's group are skipped (`removals_skipped`), as the "stale" member may be the one that failed to resolve.
 - **Manual groups are never synced or emptied,** and service principals and devices in Auto groups are left in place.
-- **No guessing between duplicates.** If two Entra groups share a name the manager would use, it stops for that library rather than pick one. Library codes that would produce the same group names (such as `PE-KS3` and `PEKS3`) are skipped with `group_name_collision`.
+- **No guessing between duplicates.** If two Entra groups share a name the manager would use, it stops for that library rather than pick one. Library codes that would produce the same group names (such as `PE-KS3` and `PEKS3`, or codes differing only in case) are skipped with `group_name_collision`, including when the other library was created by an earlier run. A library is only ever found by its URL, so a code is never matched to another library that merely has that title (`library_name_conflict`).
+- **Creating a group or navigation link is never repeated** after a failure that may have succeeded (a 5xx or timeout), so a retry can't make a duplicate. The next run finds what was created.
 - **Tokens only go to your tenant.** Every `site_url` must be `https://` on `sharepoint_hostname`, and redirects to another host or to plain http are refused.
 - **Throttling and transient errors are retried,** honouring `Retry-After`, with exponential backoff.
 
@@ -693,7 +694,8 @@ if not failures.empty:
 | `error` row: `Multiple Entra groups share displayName` | Two groups have the name the manager uses for a library. Delete or rename the duplicate. |
 | `user_not_found` rows | The address matches no user's UPN, mail or proxy addresses. Fix it in the source data; the next run picks the user up. |
 | `removal_guardrail_triggered` row | A sync would remove more members than `max_removals_per_group`. Check the input data, then re-run with `allow_mass_removal=True`. |
-| `library_not_found` row | The library doesn't exist on the site, for example it was deleted by hand. Recreate it with `create_libraries` or remove it from the input. |
+| `library_not_found` row | The library doesn't exist on the site, for example it was deleted by hand. Recreate it with `create_libraries` or remove it from the input. When unlinking, its Auto groups are still emptied. |
+| `library_name_conflict` row | Another library on the site already has the code as its title, so the library can't be created. Rename that library's title. |
 
 ## Upgrading from 0.3.x
 
@@ -793,7 +795,7 @@ The tests can't show that the real services accept the requests, so test a new v
 
 ### Versioning
 
-The version number is only set in `fabric_python_helper/__init__.py`, as `__version__="0.4.0"`. `setup.py` reads it from there, so there's nothing else to keep in sync. Check it with `python setup.py --version`.
+The version number is only set in `fabric_python_helper/__init__.py`, as `__version__="0.5.0"`. `setup.py` reads it from there, so there's nothing else to keep in sync. Check it with `python setup.py --version`.
 
 Versions follow [semantic versioning](https://semver.org/). While the major version is 0, increase the minor version (0.4.0 to 0.5.0) for breaking changes, and the patch version (0.4.0 to 0.4.1) for fixes. PyPI never accepts the same version twice, even if it's deleted.
 
@@ -810,8 +812,8 @@ python -m twine check dist/*
 
 This creates two files in `dist/`:
 
-- `fabric_python_helper-0.4.0-py3-none-any.whl`, the wheel
-- `fabric_python_helper-0.4.0.tar.gz`, the source distribution
+- `fabric_python_helper-0.5.0-py3-none-any.whl`, the wheel
+- `fabric_python_helper-0.5.0.tar.gz`, the source distribution
 
 `twine check` confirms the package metadata and this README will render on PyPI. Clearing `dist/` first stops old versions being uploaded by mistake.
 
@@ -828,7 +830,7 @@ trusted-host = files.pythonhosted.org
 Upload the `.whl` file to a lakehouse's `Files` folder, then in a notebook attached to that lakehouse:
 
 ```python
-%pip install /lakehouse/default/Files/fabric_python_helper-0.4.0-py3-none-any.whl
+%pip install /lakehouse/default/Files/fabric_python_helper-0.5.0-py3-none-any.whl
 ```
 
 Or add it to an environment under **Custom libraries** > **Upload**.
@@ -886,7 +888,7 @@ python -m twine upload --repository testpypi dist/*
 ```
 
 ```python
-%pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ fabric_python_helper==0.4.0
+%pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ fabric_python_helper==0.5.0
 ```
 
 ### After publishing

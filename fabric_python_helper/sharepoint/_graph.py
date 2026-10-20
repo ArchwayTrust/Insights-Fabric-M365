@@ -41,11 +41,10 @@ def _list_existing_lists(token: str, site_id: str) -> dict[str, dict]:
     """
     Fetch all lists/libraries on a site.
 
-    Returns a dict keyed by **lowercase display name** *and* by the
-    **last segment of the webUrl** (the URL slug / library code).  Both
-    keys point to the same Graph list resource.  Where one library's slug
-    equals another's display name, the slug wins — a library titled 'SLT'
-    must never shadow the library whose URL is /SLT.
+    Returns a dict keyed by the lowercase **last segment of the webUrl**
+    (the URL slug, which is the library code).  Display names are not keys:
+    a library is only ever identified by its URL, so code 'ART' can never
+    pick up an unrelated library merely titled 'Art'.
     """
     url: str | None = f"{GRAPH_BASE_URL}/sites/{site_id}/lists?$select=id,displayName,webUrl,list"
 
@@ -57,17 +56,29 @@ def _list_existing_lists(token: str, site_id: str) -> dict[str, dict]:
         lists.extend(data.get("value", []))
         url = data.get("@odata.nextLink")
 
-    lists_by_key: dict[str, dict] = {lst["displayName"].lower(): lst for lst in lists}
+    lists_by_key: dict[str, dict] = {}
     for lst in lists:
-        # Key by the URL slug (last path segment of webUrl) after every
-        # display name, so slugs take precedence.  webUrl is percent-encoded
-        # — decode so codes containing spaces or '&' match the raw
-        # library_code used for lookups.
+        # webUrl is percent-encoded — decode so codes containing spaces or
+        # '&' match the raw library_code used for lookups.
         web_url = lst.get("webUrl", "")
         if web_url:
             slug = unquote(web_url.rstrip("/").rsplit("/", 1)[-1]).lower()
             lists_by_key[slug] = lst
     return lists_by_key
+
+
+def _find_title_conflict(existing: dict[str, dict], library_code: str) -> dict | None:
+    """Return another library already titled *library_code*, if any.
+
+    A new library is created with its code as the title (which sets the URL
+    slug), and SharePoint list titles are unique per site, so such a library
+    would make the create fail on every run.
+    """
+    key = library_code.lower()
+    for slug, lst in existing.items():
+        if slug != key and (lst.get("displayName") or "").lower() == key:
+            return lst
+    return None
 
 
 def _get_list_id(
@@ -76,7 +87,6 @@ def _get_list_id(
 ) -> str:
     """Resolve a library code (URL slug) to its Graph list ID.
 
-    Falls back to matching by display name if the slug is not found.
     Raises ValueError if the library does not exist.
 
     If *existing* is provided, uses it instead of fetching the list of lists.
@@ -149,14 +159,6 @@ def _set_library_display_name(
     resp = _request_with_retry("PATCH", url, headers=_graph_headers(token), json=body)
     resp.raise_for_status()
     logger.info("Set display name to '%s' (id=%s)", display_name, list_id)
-
-
-def _resolve_site_ids(graph_token: str, site_urls) -> dict[str, str]:
-    """Resolve a collection of site URLs to Graph site IDs."""
-    site_ids: dict[str, str] = {}
-    for site_url in site_urls:
-        site_ids[site_url] = _get_site_id(graph_token, site_url)
-    return site_ids
 
 
 # ---------------------------------------------------------------------------

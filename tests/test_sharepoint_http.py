@@ -189,3 +189,29 @@ def test_303_is_not_followed_for_post():
         assert _request_with_retry("POST", URL).status_code == 303
 
     assert request.call_count == 1
+
+
+# Requests that must not run twice
+
+def test_non_idempotent_request_is_not_repeated_after_a_server_error(sleeps):
+    with patch_request(return_value=response(503)) as request:
+        assert _request_with_retry("POST", URL, idempotent=False).status_code == 503
+
+    assert request.call_count == 1
+
+
+@pytest.mark.parametrize("error", [requests.ReadTimeout("slow"), requests.ConnectionError("reset")])
+def test_non_idempotent_request_is_not_repeated_after_it_may_have_arrived(sleeps, error):
+    with patch_request(side_effect=error) as request:
+        with pytest.raises(type(error)):
+            _request_with_retry("POST", URL, idempotent=False)
+
+    assert request.call_count == 1
+
+
+@pytest.mark.parametrize("first", [response(429, headers={"Retry-After": "1"}), requests.ConnectTimeout("no route")])
+def test_non_idempotent_request_is_retried_when_it_certainly_did_not_arrive(sleeps, first):
+    with patch_request(side_effect=[first, response(201, {})]) as request:
+        assert _request_with_retry("POST", URL, idempotent=False).status_code == 201
+
+    assert request.call_count == 2

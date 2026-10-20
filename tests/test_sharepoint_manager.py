@@ -191,6 +191,8 @@ def test_create_library_again_changes_nothing(make_manager, tenant, site):
 
     assert "navigation_label_created" not in actions(results)
     assert "navigation_link_added" not in actions(results)
+    assert actions(results).count("already_assigned") == 3
+    assert created(tenant, "/web/ensureuser") == [] and created(tenant, "addroleassignment") == []
     assert created(tenant, "/groups") == []
     assert created(tenant, f"/sites/{site.id}/lists") == []
     assert created(tenant, "breakroleinheritance") == []
@@ -443,7 +445,8 @@ def test_memberships_add_users_including_aliases(make_manager, tenant, site, lib
         ("MATH", "sam@contoso.com", "contribute"),
     ]))
 
-    assert actions(results) == ["added_to_group", "added_to_group", "group_assigned"]
+    # create_libraries already gave the group Contribute, so nothing is re-written
+    assert actions(results) == ["added_to_group", "added_to_group", "already_assigned"]
     assert tenant.member_upns("BAA-Sharepoint-MATH-Auto-Contribute") == [
         "jo@contoso.com", "sam.jones@contoso.onmicrosoft.com",
     ]
@@ -458,9 +461,8 @@ def test_memberships_again_change_nothing(make_manager, tenant, site, library):
 
     results = make_manager().update_memberships(df)
 
-    assert actions(results) == ["already_member", "group_assigned"]
-    assert created(tenant, "/members/$ref") == []
-    assert created(tenant, "/$ref", method="DELETE") == []
+    assert actions(results) == ["already_assigned", "already_member"]
+    assert tenant.writes() == []
 
 
 def test_memberships_remove_stale_members_but_keep_service_principals(make_manager, tenant, site, library):
@@ -472,7 +474,7 @@ def test_memberships_remove_stale_members_but_keep_service_principals(make_manag
 
     results = make_manager().update_memberships(memberships_df(site, [("MATH", "jo@contoso.com", "contribute")]))
 
-    assert actions(results) == ["added_to_group", "group_assigned", "non_user_member_preserved", "removed_from_group"]
+    assert actions(results) == ["added_to_group", "already_assigned", "non_user_member_preserved", "removed_from_group"]
     assert set(group["members"]) == {jo["id"], service_principal["id"]}
 
 
@@ -846,7 +848,7 @@ def test_retire_dry_run_makes_no_writes(make_manager, tenant, site):
 
 def test_grant_skips_a_site_whose_prefetch_fails(make_manager, tenant, site, library, slt_groups):
     from sharepoint_fake import response
-    tenant.fail("GET", r"/roledefinitions/", response(503), times=99)
+    tenant.fail("GET", r"/roledefinitions", response(503), times=99)
 
     results = make_manager().grant_group_access(
         grants_df(site, [("MATH", "BAA-Sharepoint-SLT-Manual-Read", "read")]),
@@ -884,3 +886,130 @@ def test_group_differing_only_in_case_is_reused_not_duplicated(make_manager, ten
     make_manager().update_memberships(memberships_df(site, [("MATH", "jo@contoso.com", "contribute")]))
 
     assert len([g for g in tenant.groups.values() if g["displayName"].lower().endswith("-math-auto-contribute")]) == 1
+
+
+
+# Code review fixes
+
+def test_group_creation_is_not_repeated_after_a_server_error(make_manager, tenant, site):
+    from sharepoint_fake import response
+    tenant.fail("POST", r"/v1.0/groups$", response(504))
+
+    results = make_manager().create_libraries(libraries_df(site, "MATH"))
+
+    assert actions(results) == ["error"]
+    assert len(created(tenant, "/v1.0/groups")) == 1  # not retried, so no duplicate can be created
+    assert actions(make_manager().create_libraries(libraries_df(site, "MATH"))) == ["group_assigned"] * 2
+
+
+def test_unlinking_a_library_that_never_existed_is_a_warning(make_manager, tenant, site):
+    jo = tenant.add_user("jo@contoso.com")
+    group = tenant.add_group("BAA-Sharepoint-MATH-Auto-Contribute")
+    group["members"][jo["id"]] = jo
+
+    results = make_manager().unlink_libraries(libraries_df(site, "MATH"))
+
+    assert actions(results) == ["group_emptied", "library_not_found", "manual_groups_preserved"]
+    assert not set(results["action"]) & FATAL_ACTIONS
+    assert group["members"] == {}
+
+
+def test_new_code_colliding_with_an_existing_library_is_skipped(make_manager, tenant, site):
+    make_manager().create_libraries(libraries_df(site, "PE-KS3"))
+    tenant.add_user("jo@contoso.com")
+
+    results = make_manager().create_libraries(libraries_df(site, "PEKS3"))
+
+    [row] = results.itertuples()
+    assert (row.action, row.document_library) == ("group_name_collision", "PEKS3")
+    assert site.list_by_slug("PEKS3") is None
+
+    results = make_manager().update_memberships(memberships_df(site, [("PEKS3", "jo@contoso.com", "contribute")]))
+
+    assert actions(results) == ["group_name_collision"]
+    assert tenant.member_upns("BAA-Sharepoint-PEKS3-Auto-Contribute") == []
+
+
+def test_code_matching_another_librarys_title_is_never_adopted(make_manager, tenant, site):
+    artd = site.add_list("Art", slug="ARTD", unique=True)
+    tenant.add_user("jo@contoso.com")
+
+    results = make_manager().create_libraries(libraries_df(site, "ART", library_display_name="Art & Design"))
+
+    assert actions(results) == ["library_name_conflict"]
+    assert artd["displayName"] == "Art" and artd["role_assignments"] == {}
+
+    results = make_manager().update_memberships(memberships_df(site, [("ART", "jo@contoso.com", "contribute")]))
+
+    assert actions(results) == ["library_not_found"]
+    assert artd["role_assignments"] == {}
+
+
+def test_members_of_a_new_group_are_not_read(make_manager, tenant, site, library):
+    tenant.add_user("head@contoso.com")
+
+    make_manager().update_memberships(memberships_df(site, [("MATH", "head@contoso.com", "owner")]))
+
+    owner = tenant.group_named("BAA-Sharepoint-MATH-Auto-Owner")
+    assert not any(f"/groups/{owner['id']}/members?" in url for method, url, _ in tenant.calls if method == "GET")
+
+
+@pytest.mark.parametrize("operation", ["create", "update"])
+def test_one_unreadable_site_does_not_stop_the_others(make_manager, tenant, site, operation):
+    tenant.add_user("jo@contoso.com")
+    gone = "https://contoso.sharepoint.com/sites/Typo"
+    manager = make_manager()
+    if operation == "create":
+        df = pd.concat([libraries_df(site, "MATH"), libraries_df(site, "ENG").assign(site_url=gone)])
+        results = manager.create_libraries(df)
+        assert site.list_by_slug("MATH") is not None
+    else:
+        manager.create_libraries(libraries_df(site, "MATH"))
+        df = memberships_df(site, [("MATH", "jo@contoso.com", "contribute"), ("ENG", "jo@contoso.com", "read")])
+        df.loc[1, "site_url"] = gone
+        results = manager.update_memberships(df)
+        assert tenant.member_upns("BAA-Sharepoint-MATH-Auto-Contribute") == ["jo@contoso.com"]
+
+    [error] = rows(results, "error").itertuples()
+    assert error.site_url == gone
+
+
+def test_rename_never_renames_onto_an_existing_group(make_manager, tenant, site):
+    make_manager().create_libraries(libraries_df(site, "MATHS"))
+    site.list_by_slug("MATHS")["slug"] = "MATH"
+    tenant.add_group("BAA-Sharepoint-MATH-Auto-Read")  # already ensured for the new code
+
+    results = make_manager().rename_libraries(libraries_df(site, "MATH", old_library_code="MATHS"))
+
+    assert sorted(actions(results)) == ["group_name_collision", "group_renamed", "library_renamed"]
+    assert tenant.group_named("BAA-Sharepoint-MATHS-Auto-Read") is not None
+    assert tenant.group_named("BAA-Sharepoint-MATH-Auto-Contribute") is not None
+
+
+def test_one_unresolvable_group_does_not_skip_the_sites_other_grants(make_manager, tenant, site, library, slt_groups):
+    from sharepoint_fake import response
+    read_group = tenant.group_named("BAA-Sharepoint-SLT-Manual-Read")
+    tenant.fail("POST", r"/web/ensureuser$", response(400), times=1)  # the first group looked up
+    df = grants_df(site, [
+        ("MATH", "BAA-Sharepoint-SLT-Manual-Read", "read"),
+        ("MATH", "BAA-Sharepoint-SLT-Manual-Contribute", "contribute"),
+    ])
+    site.principals.pop(f"c:0t.c|tenant|{read_group['id']}", None)
+
+    results = make_manager().grant_group_access(df)
+
+    assert sorted(actions(results)) == ["error", "group_access_granted"]
+
+
+def test_each_user_is_resolved_once_per_sync(make_manager, tenant, site):
+    make_manager().create_libraries(libraries_df(site, "MATH", "ENG", "ART"))
+    tenant.add_user("jo.smith@contoso.onmicrosoft.com", mail="jo@contoso.com")
+    tenant.calls.clear()
+
+    make_manager().update_memberships(memberships_df(site, [
+        (code, "jo@contoso.com", "contribute") for code in ("MATH", "ENG", "ART")
+    ]))
+
+    lookups = [url for method, url, _ in tenant.calls if "/v1.0/users" in url and method == "GET"]
+    assert len(lookups) == 2  # UPN miss, then mail match — once, not once per library
+    assert tenant.member_upns("BAA-Sharepoint-ART-Auto-Contribute") == ["jo.smith@contoso.onmicrosoft.com"]

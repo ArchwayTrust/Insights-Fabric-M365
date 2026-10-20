@@ -128,7 +128,24 @@ The core code moved over unchanged. A script compared every function and constan
 | `site_url` was only checked to be http or https, and the SharePoint token is sent to it. | A `site_url` that isn't `https://` on `SHAREPOINT_HOSTNAME` now raises a `ValueError` for that operation, before any request. All hub URLs should already be on that host. |
 | Redirects from https to http were followed, with the token, and GET redirects weren't checked at all. | Every redirect hop, for every method, must stay on the same host and on https. Requests to SharePoint and Graph aren't redirected elsewhere in normal use. |
 | A user principal name containing `/` could change the path of the Graph user lookup. | The `/` is now encoded. Valid UPNs are sent exactly as before. |
+| Unlinking a library that doesn't exist (a faculty created and deleted between runs, or a library deleted by hand) was a fatal `error`. | Now a `library_not_found` warning, and the Auto groups are still emptied. Before, the run failed and the watermark never advanced past the event. |
+| Creating a group or navigation link was retried after a 5xx or timeout, even though it may have succeeded. | Only retried when the request certainly didn't arrive (429, connect timeout), so no duplicate group can block a library. |
+| The collision check only compared libraries in the same call, but create runs are incremental. | A new code that would share groups with a library already on the site (e.g. `PEKS3` after `PE-KS3`, or an unlinked library still holding the groups) is now skipped with `group_name_collision`. |
+| A library code also matched other libraries' titles, so code `ART` could take over a library titled "Art". | Libraries are only found by URL. A code that is another library's title is reported as `library_name_conflict`. |
+| Membership sync read a just-created group's members, which can 404 while it replicates. | No longer read: a new group has none. |
+| In create and membership sync, one site that couldn't be read (e.g. a mistyped hub URL) stopped the whole operation. | Only that site's libraries are skipped, with an `error` row. |
+| `rename_libraries` could rename groups onto names already in use. | Reported as `group_name_collision` and left as is. |
+| In grants, one group SharePoint couldn't resolve skipped every grant on its site. | Only that group's grants are skipped. |
 | `get_library_metadata` returned `NaN` instead of `None` for unset values under pandas 3. | No effect under the current runtime's pandas 2. |
+
+### Fewer requests
+
+Membership sync and the SLT passes run over every faculty on every run, so work that changes nothing adds up. On a run where nothing has changed:
+
+- **Role assignments** are read once per library, and only missing ones are written. Before, every group was re-registered (`ensureuser`) and re-assigned on every run: two writes per group per library. Unchanged groups are now logged as `already_assigned`.
+- **Users** are resolved once per membership sync, not once per library they belong to. Each resolution can take up to three Graph lookups.
+- **Role definitions** are read in one request per site, not three.
+- **Libraries** are listed once per site for metadata reads and writes, instead of once per library.
 
 ## Where the core code went
 
@@ -151,13 +168,13 @@ The old core cell said it was an inlined copy of `SharePointLibraryPermissions` 
 
 All tests run without credentials or a Fabric workspace: [`tests/sharepoint_fake.py`](../tests/sharepoint_fake.py) is an in-memory fake of the Graph and SharePoint REST endpoints the manager calls. It replaces `requests.request`, so the real request building, retries and response handling all run, and it keeps state (groups, members, libraries, role assignments, navigation, sharing settings), so tests check what an operation actually changed and that running it again changes nothing. Like the real services, it parses query strings out of the URL, which is how the `&` bug above was caught.
 
-The suite went from 102 to 277 tests. It passes on Python 3.10, 3.11, 3.12 and 3.13, and with pandas 2 and pandas 3.
+The suite went from 102 to 294 tests. It passes on Python 3.10, 3.11, 3.12 and 3.13, and with pandas 2 and pandas 3.
 
 | File | Tests | Covers |
 | --- | --- | --- |
-| [`test_sharepoint_http.py`](../tests/test_sharepoint_http.py) | 31 | `Retry-After` in seconds and as a date (with clamping, NaN and past dates); retries on 429, 5xx, connection errors and timeouts, with backoff and jitter; redirects for POST keep the method; cross-host, https-to-http and looping redirects are refused |
-| [`test_sharepoint_helpers.py`](../tests/test_sharepoint_helpers.py) | 68 | Group naming, mail nicknames and collisions; DataFrame and URL validation; parallel runs logging failures without stopping; library lookup by slug and display name, with paging; duplicate and case-differing group names; member keys for users, groups and service principals; replication waits; user resolution by UPN, mail and proxy address, malformed and unknown users; nestable group resolution; property bag XML escaping and errors; navigation URL normalisation |
-| [`test_sharepoint_manager.py`](../tests/test_sharepoint_manager.py) | 63 | Every operation end to end: creating libraries with groups, metadata and navigation, and again changing nothing; renaming; dry runs making no writes; manual-only (SLT) libraries; colliding codes; one failing library not stopping others; parallel runs. Membership sync adding users and aliases, removing stale members, keeping service principals, emptying roles without creating groups, the removal guardrail, unresolved users blocking removals, nested groups, OneDrive shortcuts, `add_failed` and `remove_failed`. Unlink keeping Manual groups; retire removing access but not membership; grants being additive and idempotent; site sharing lockdown, including a write that doesn't stick. Authenticating with the real `KeyVaultCertificateCredential` (Entra ID and Key Vault faked): one Graph and one SharePoint token, each sent only to its own API |
+| [`test_sharepoint_http.py`](../tests/test_sharepoint_http.py) | 36 | `Retry-After` in seconds and as a date (with clamping, NaN and past dates); retries on 429, 5xx, connection errors and timeouts, with backoff and jitter; redirects for POST keep the method; cross-host, https-to-http and looping redirects are refused |
+| [`test_sharepoint_helpers.py`](../tests/test_sharepoint_helpers.py) | 70 | Group naming, mail nicknames and collisions; DataFrame and URL validation; parallel runs logging failures without stopping; library lookup by slug and display name, with paging; duplicate and case-differing group names; member keys for users, groups and service principals; replication waits; user resolution by UPN, mail and proxy address, malformed and unknown users; nestable group resolution; property bag XML escaping and errors; navigation URL normalisation |
+| [`test_sharepoint_manager.py`](../tests/test_sharepoint_manager.py) | 73 | Every operation end to end: creating libraries with groups, metadata and navigation, and again changing nothing; renaming; dry runs making no writes; manual-only (SLT) libraries; colliding codes; one failing library not stopping others; parallel runs. Membership sync adding users and aliases, removing stale members, keeping service principals, emptying roles without creating groups, the removal guardrail, unresolved users blocking removals, nested groups, OneDrive shortcuts, `add_failed` and `remove_failed`. Unlink keeping Manual groups; retire removing access but not membership; grants being additive and idempotent; site sharing lockdown, including a write that doesn't stick. Authenticating with the real `KeyVaultCertificateCredential` (Entra ID and Key Vault faked): one Graph and one SharePoint token, each sent only to its own API |
 | [`test_faculty_notebook.py`](../tests/test_faculty_notebook.py) | 10 | Runs the example notebook cell by cell, as Fabric does, with Spark SQL run on SQLite over small faculty tables and the real `KeyVaultCertificateCredential`, and checks a live run, a second run, a dry run, a failed run and a widened scope (below). Also checks the notebook has no undefined names and uses only the package's public API |
 
 Line and branch coverage of `fabric_python_helper.sharepoint` is 97%. Most of what's left is handling for rarer failures, such as a site's prefetch failing part way through a rename.

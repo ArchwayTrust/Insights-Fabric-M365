@@ -50,7 +50,11 @@ def _create_nav_node(
         "Url": node_url,
         "IsExternal": is_external,
     }
-    resp = _request_with_retry("POST", url, headers=_sharepoint_post_headers(token), json=body)
+    # Not repeated after a failure that may have created the node, which
+    # would duplicate the link.
+    resp = _request_with_retry(
+        "POST", url, headers=_sharepoint_post_headers(token), json=body, idempotent=False,
+    )
     resp.raise_for_status()
     return resp.json()["d"]
 
