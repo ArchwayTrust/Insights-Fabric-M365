@@ -10,10 +10,6 @@ Requests
 - Project: https://github.com/psf/requests
 - License: Apache License 2.0
 
-Microsoft Authentication Library (MSAL) for Python
-- Project: https://github.com/AzureAD/microsoft-authentication-library-for-python
-- License: Apache License 2.0
-
 ------------------------------------------------------------------------------
 
 Apache License 2.0
