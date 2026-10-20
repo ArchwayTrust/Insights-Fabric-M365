@@ -22,11 +22,12 @@ setup(
     python_requires=">=3.10",
     install_requires=[
         "azure-core",
+        "pandas",
         "requests"
     ],
     extras_require={
         # pip install -e .[test], then run pytest
-        "test": ["pytest", "pyflakes", "setuptools"]
+        "test": ["pytest", "pytest-cov", "pyflakes", "setuptools"]
     },
     author="Ben Dobbs",
     author_email="bdobbs@archwaytrust.co.uk",

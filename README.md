@@ -4,6 +4,7 @@ Python helpers for automation in Microsoft Fabric notebooks.
 
 - **`fabric_python_helper.auth`** gets app-only access tokens for Microsoft APIs (Microsoft Graph, Power BI, Fabric, OneLake and others) as a service principal, using a certificate held in Azure Key Vault. Key Vault signs each request, so the certificate's private key never leaves the key vault.
 - **`fabric_python_helper.graph_api`** finds emails in a mailbox, downloads their attachments, deletes them and sends emails, using Microsoft Graph.
+- **`fabric_python_helper.sharepoint`** manages SharePoint document libraries and their permissions through Entra ID security groups: creating libraries, keeping group membership in sync, navigation links and site sharing settings.
 
 The package is built for Fabric notebooks. `KeyVaultCertificateCredential` uses `notebookutils` to call Key Vault as the identity running the notebook, so it only works in Fabric (or Synapse) notebooks. The package itself can be imported anywhere.
 
@@ -26,6 +27,15 @@ The package is built for Fabric notebooks. `KeyVaultCertificateCredential` uses 
   - [Deleting an email](#deleting-an-email)
   - [Sending an email](#sending-an-email)
   - [Full example](#full-example)
+- [SharePoint libraries](#sharepoint-libraries)
+  - [What it manages](#what-it-manages)
+  - [Giving the app access](#giving-the-app-access)
+  - [Creating a SharePointLibraryManager](#creating-a-sharepointlibrarymanager)
+  - [Operations](#operations)
+  - [The action log](#the-action-log)
+  - [Safety features](#safety-features)
+  - [Using it in your own setting](#using-it-in-your-own-setting)
+  - [Example notebook](#example-notebook)
 - [Troubleshooting](#troubleshooting)
 - [Upgrading from 0.3.x](#upgrading-from-03x)
 - [Building and publishing](#building-and-publishing)
@@ -33,21 +43,21 @@ The package is built for Fabric notebooks. `KeyVaultCertificateCredential` uses 
 
 ## Installation
 
-The package is published on PyPI as [`fabric_python_helper`](https://pypi.org/project/fabric-python-helper/). Its dependencies, `azure-core` and `requests`, are already in the Fabric runtime.
+The package is published on PyPI as [`fabric_python_helper`](https://pypi.org/project/fabric-python-helper/). Its dependencies, `azure-core`, `pandas` and `requests`, are already in the Fabric runtime.
 
 **In a Fabric environment** (use this for scheduled notebooks and pipelines):
 
 1. Open the environment your notebooks use.
-2. Under **Public libraries**, select **Add from PyPI**, enter `fabric_python_helper` and choose a version, for example `0.4.0`.
+2. Under **Public libraries**, select **Add from PyPI**, enter `fabric_python_helper` and choose a version, for example `0.5.0`.
 3. Select **Publish**. Notebooks pick up the new version when their next session starts.
 
 **In a single notebook session** (useful for testing a new version):
 
 ```python
-%pip install fabric_python_helper==0.4.0
+%pip install fabric_python_helper==0.5.0
 ```
 
-Always pin a version. 0.4.0 has breaking changes from 0.3.x, see [Upgrading from 0.3.x](#upgrading-from-03x).
+Always pin a version. 0.4.0 has breaking changes from 0.3.x, see [Upgrading from 0.3.x](#upgrading-from-03x). 0.5.0 adds `fabric_python_helper.sharepoint` and doesn't change anything that was already there.
 
 ## Quick start
 
@@ -295,7 +305,7 @@ One credential can get tokens for any number of these APIs.
 
 ### Using a client secret instead
 
-Certificates are recommended, but anything in this package that takes a credential also accepts `azure.identity.ClientSecretCredential`, which is already in the Fabric runtime:
+Certificates are recommended, but `Emails` and anything else in this package that takes a credential, except `SharePointLibraryManager`, also accepts `azure.identity.ClientSecretCredential`, which is already in the Fabric runtime:
 
 ```python
 from azure.identity import ClientSecretCredential
@@ -538,6 +548,379 @@ for subject, path in reports.items():
     print(f"Loaded '{subject}' ({file_name}).")
 ```
 
+## SharePoint libraries
+
+`fabric_python_helper.sharepoint.SharePointLibraryManager` manages SharePoint document libraries and their permissions through Entra ID security groups. Each operation takes a pandas DataFrame describing the libraries or memberships you want, makes SharePoint match it, and returns an [action log](#the-action-log) of what it did.
+
+### What it manages
+
+For each library (a row with a `site_url`, a `library_code` and a `group_prefix`):
+
+- **The library.** Created with the code as its URL slug (`/sites/<site>/<code>`), then given its display name. The slug never changes, so renaming a library only changes its display name. It is given its own permissions, not inherited from the site.
+- **Security groups**, named `{group_prefix}-{library_code}-{suffix}` (or `{group_prefix}-{site}-{library_code}-{suffix}` with `include_site_name=True`). Names are how the manager finds existing groups, so don't change the naming after rollout.
+  - `Auto-Read`, `Auto-Contribute` and `Auto-Owner` are owned by the automation. Their membership is synced from your data and they are emptied when the library is unlinked.
+  - `Manual-Read` and `Manual-Contribute` are optional, hand-curated groups. They are granted access like the Auto groups, but their membership is never changed.
+  - Group names use the library **code**, so they stay the same when the library's display name changes. `create_libraries` updates the groups' descriptions, which name the library, to match. Names only change if the code itself changes, through `rename_libraries` with `old_library_code`.
+  - The app registration is made **owner** of every group it creates, and an existing group is only granted access or synced if the app owns it (see [Safety features](#safety-features)). Pass `app_owned=False` for groups people own, such as a leadership team's groups owned by the headteacher.
+- **Navigation** (optional). A link to the library in the site's quick launch, under a heading such as "Document Libraries".
+- **Provenance** (optional). `source_system` and `source_id` stored in the library's property bag, invisible to users, so a library can be traced back to the record that created it.
+- **Site sharing** (optional). Turns off "Allow members to share", "Allow access requests" and "Allow members to invite others" on each site, so access only comes from the groups.
+
+### Giving the app access
+
+The app registration needs these application permissions, with admin consent:
+
+| API | Permission | Used for |
+| --- | --- | --- |
+| Microsoft Graph | `Sites.FullControl.All`, or `Sites.Selected` with full control on each site | Finding sites, creating and renaming libraries |
+| Microsoft Graph | `Group.ReadWrite.All` and `GroupMember.ReadWrite.All` | Creating and renaming groups, syncing membership |
+| Microsoft Graph | `User.Read.All` | Resolving users by UPN, mail or proxy address |
+| Microsoft Graph | `Files.ReadWrite.All` | Only for OneDrive shortcuts (`create_onedrive_shortcuts=True`) |
+| SharePoint | `Sites.FullControl.All`, or `Sites.Selected` with full control on each site | Permissions, property bag, navigation and sharing settings |
+
+SharePoint only accepts app-only tokens obtained with a certificate, so use `KeyVaultCertificateCredential`, not a client secret. Set up the certificate as in [Setting up a certificate](#setting-up-a-certificate), uploading it to this app registration. The identity running the notebook (for a pipeline, whatever the notebook activity runs as) needs **Get** on the certificate and **Sign** on its key.
+
+### Creating a SharePointLibraryManager
+
+```python
+from fabric_python_helper.auth import KeyVaultCertificateCredential
+from fabric_python_helper.sharepoint import SharePointLibraryManager
+
+credential = KeyVaultCertificateCredential(
+    "<tenant-id>", "<client-id>", "https://<key-vault-name>.vault.azure.net/", "<certificate-name>",
+)
+
+mgr = SharePointLibraryManager(
+    credential,
+    sharepoint_hostname="contoso.sharepoint.com",
+    dry_run=True,                   # log what would change, change nothing
+    max_workers=4,                  # libraries processed in parallel
+    include_site_name=False,        # see group naming above; don't change after rollout
+    add_to_navigation=True,
+    navigation_label="Document Libraries",
+    max_removals_per_group=10,      # see Safety features
+)
+```
+
+Create the credential without a scope: the manager asks it for a Graph token and a SharePoint token (`https://<sharepoint_hostname>/.default`), and the credential caches each until shortly before it expires. The constructor gets both tokens straight away, so wrong credentials or permissions fail here rather than part way through. `dry_run`, `max_workers`, `include_site_name`, `add_to_navigation`, `navigation_label`, `create_onedrive_shortcuts`, `max_removals_per_group` and `allow_mass_removal` are defaults that each operation can override, for example `mgr.create_libraries(df, dry_run=False)`.
+
+### Operations
+
+| Method | What it does | DataFrame columns |
+| --- | --- | --- |
+| `create_libraries(df)` | Ensures each library exists with its own permissions, its groups, metadata and navigation link. Safe to re-run: existing libraries and groups are reused, and a changed display name is applied. | `site_url`, `library_code`, `library_display_name`, `group_prefix`. Optional: `auto_groups` (default True), `manual_read`, `manual_contribute`, `app_owned` (default True), `source_system`, `source_id` |
+| `update_memberships(df, libraries_df=None, nested_groups_df=None)` | Makes each library's Auto groups contain exactly the users (and nested groups) given. Users are matched by UPN, then mail, then proxy addresses, so aliased domains work. Libraries in `libraries_df` with no rows in `df` have their Auto groups emptied. | `site_url`, `library_code`, `user_principal_name`, `permission` (`read`, `contribute` or `owner`), `group_prefix` |
+| `unlink_libraries(df)` | For libraries removed at source: renames to `{code}_UNLINKED`, empties the Auto groups, keeps the Manual groups, removes the navigation link. Nothing is deleted. | `site_url`, `library_code`, `group_prefix` |
+| `retire_moved_libraries(df)` | For a library whose site changed: renames the copy on the **old** site to `{code}_MOVED` and removes the groups' access to it. With `new_site_url`, waits until the library exists there (`retire_deferred` until then). | `site_url` (the old site), `library_code`, `group_prefix`. Optional: `new_site_url` |
+| `rename_libraries(df)` | Sets new display names and, when `old_library_code` is given, renames the groups to the new code. | `site_url`, `library_code`, `library_display_name`, `group_prefix`. Optional: `old_library_code` |
+| `grant_group_access(df)` | Grants existing groups a permission level on existing libraries, for example a leadership group on every library. Additive: never removes access. | `site_url`, `library_code`, `group_name`, `permission` |
+| `enforce_site_sharing_lockdown(site_urls)` | Turns off member sharing, access requests and member invites on each site, and checks the change stuck. | A list of site URLs |
+| `set_library_metadata(df)` / `get_library_metadata(df)` | Writes or reads `source_system` and `source_id` in each library's property bag. | `site_url`, `library_code`, and for set `source_system` and/or `source_id` |
+
+Read-only helpers: `mgr.group_name(group_prefix, site_url, library_code, suffix)` returns a group name exactly as the operations build it, and `mgr.get_navigation_link(site_url, library_code)` and `mgr.get_site_sharing_settings(site_url)` read back what is on the site.
+
+```python
+import pandas as pd
+
+site = "https://contoso.sharepoint.com/sites/Academy"
+
+libraries = pd.DataFrame({
+    "site_url": [site, site],
+    "library_code": ["MATH", "ENG"],
+    "library_display_name": ["Maths", "English"],
+    "group_prefix": "ACA-Sharepoint",
+    "manual_read": True,
+})
+results = mgr.create_libraries(libraries)
+
+members = pd.DataFrame({
+    "site_url": site,
+    "library_code": ["MATH", "MATH", "ENG"],
+    "user_principal_name": ["jo@contoso.com", "sam@contoso.com", "alex@contoso.com"],
+    "permission": "contribute",
+    "group_prefix": "ACA-Sharepoint",
+})
+results = mgr.update_memberships(members, libraries_df=libraries)
+```
+
+### The action log
+
+Every operation returns a DataFrame with the columns `site_url`, `document_library`, `group`, `user`, `action`, `permission` and `status`, one row per thing it did or (in a dry run) would do. Problems are rows too, so one bad library, user or site never stops the others. Where nothing needed changing, the row says so (`already_member`, `already_assigned`), and nothing is written. Two sets of action names help decide whether a run succeeded:
+
+- `FATAL_ACTIONS`: `error`, `add_failed`, `remove_failed`. Something failed and should be retried, so fail the run.
+- `WARNING_ACTIONS`: for example `user_not_found`, `library_not_found` and `removal_guardrail_triggered`. Problems with the data that failing the run wouldn't fix.
+
+```python
+from fabric_python_helper.sharepoint import FATAL_ACTIONS, WARNING_ACTIONS
+
+warnings = results[results["action"].isin(WARNING_ACTIONS)]
+failures = results[results["action"].isin(FATAL_ACTIONS)]
+if not failures.empty:
+    raise RuntimeError(f"{len(failures)} failed action(s)")
+```
+
+### Safety features
+
+- **Dry run.** With `dry_run=True` nothing is changed; the log shows what would be, with actions ending `(dry run)`.
+- **Removal guardrail.** If syncing a group would remove more than `max_removals_per_group` members, its removals are skipped and logged as `removal_guardrail_triggered` (additions still happen). Re-run with `allow_mass_removal=True` once you've checked the data.
+- **Incomplete data never drives removals.** If any user (or nested group) for a role can't be resolved, removals of that kind from that role's group are skipped (`removals_skipped`), as the "stale" member may be the one that failed to resolve.
+- **Manual groups are never synced or emptied,** and service principals and devices in Auto groups are left in place.
+- **No guessing between duplicates.** If two Entra groups share a name the manager would use, it stops for that library rather than pick one. Library codes that would produce the same group names (such as `PE-KS3` and `PEKS3`, or codes differing only in case) are skipped with `group_name_collision`, including when the other library was created by an earlier run. A library is only ever found by its URL, so a code is never matched to another library that merely has that title (`library_name_conflict`).
+- **Groups must be the app's.** Group names are predictable, so a group someone else creates with the name a library would use could otherwise be handed that library's access. The app is made owner of the groups it creates, and before it grants or syncs an existing group it checks the app is an owner: a group with no owner (as earlier versions created them) has the app added and is logged as `group_owner_added`; a group owned only by others is skipped with `group_not_owned`. The app's object ID is read from its Graph token, or can be passed as `service_principal_id`. Groups created with `app_owned=False` aren't owned or checked, and `grant_group_access` grants the groups it's given by name.
+- **Creating a group, navigation link or OneDrive shortcut is never repeated** after a failure that may have succeeded (a 5xx or timeout), so a retry can't make a duplicate. The next run finds what was created.
+- **Only document libraries count as libraries.** An ordinary list whose URL ends in the code (`/Lists/ENG`) is never adopted, though its title still counts for `library_name_conflict`.
+- **A moved library keeps working until its replacement exists.** Given `new_site_url`, `retire_moved_libraries` leaves the old library alone (`retire_deferred`) until the library exists on the new site.
+- **Permission levels are found by type**, not by name, so sites in another language, or with renamed levels, work too.
+- **Tokens only go to your tenant.** Every `site_url` must be `https://` on `sharepoint_hostname`, and redirects to another host or to plain http are refused. A redirect that can't be followed is an error, never a success.
+- **Throttling and transient errors are retried,** honouring `Retry-After`, with exponential backoff.
+
+### Using it in your own setting
+
+The manager only works with DataFrames, so it doesn't mind where the data comes from: a school's faculties, a company's departments, project teams or anything else that needs a library with its own access. This section suggests a set of tables to drive it from, the tables to record what it did, and the order to run the operations in. The [example notebook](#example-notebook) is one setting built this way.
+
+#### Input tables
+
+Keep the desired state in a few lakehouse tables, maintained by whatever feeds them (an MIS or HR extract, a hand-maintained table, a dataflow). Names and the extra columns used only by the flow are suggestions; the columns the manager reads are fixed.
+
+**`sharepoint_libraries`**: one row per library, holding its current state.
+
+| Column | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `library_id` | string | Yes | Stable ID from the source system. Stored on the library as `source_id`, so a library can be traced back to its record. |
+| `site_url` | string | Yes | Full URL of the site the library lives on, `https://<tenant>.sharepoint.com/sites/<site>`. |
+| `library_code` | string | Yes | Short code, used as the library's URL and in its group names (for example `MATH`). Never change it after the library is created; rename with `library_display_name` instead. |
+| `library_display_name` | string | Yes | Name shown in SharePoint (for example `Mathematics`). Can change; the next create pass applies it. |
+| `group_prefix` | string | Yes | Start of the group names, for example `ACA-Sharepoint`. Use one prefix per site. |
+| `auto_groups` | boolean | No (True) | Create the synced Auto-Read and Auto-Contribute groups. |
+| `manual_read`, `manual_contribute` | boolean | No (False) | Create hand-curated Manual-Read / Manual-Contribute groups. |
+| `app_owned` | boolean | No (True) | The app owns the groups. False for groups a person owns and curates. |
+| `previous_site_url` | string | Flow only | The site the library was on before a move, or null. |
+| `deleted` | boolean | Flow only | True once the library has been removed at source. Keep the row, so the unlink pass sees it. |
+| `last_changed_ts` | timestamp | Flow only | When the row last changed. Drives the incremental passes. |
+
+**`sharepoint_library_members`**: one row per person per library. The full desired membership, not changes.
+
+| Column | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `library_id` | string | Yes | Joins to `sharepoint_libraries`. |
+| `user_principal_name` | string | Yes | The person's sign-in name or email. Aliases and secondary addresses are resolved. |
+| `permission` | string | Yes | `read`, `contribute` or `owner`. |
+
+**`sharepoint_library_nested_groups`** (optional): existing Entra ID security groups to nest in a library's Auto groups, such as an all-staff group.
+
+| Column | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `library_id` | string | Yes | Joins to `sharepoint_libraries`. |
+| `member_group` | string | Yes | The group's object ID, or its exact display name. |
+| `permission` | string | Yes | `read`, `contribute` or `owner`. |
+
+**`sharepoint_library_grants`** (optional): existing groups that should hold a permission on a library without being synced, such as a leadership team on every library.
+
+| Column | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `library_id` | string | Yes | Joins to `sharepoint_libraries`. |
+| `group_name` | string | Yes | The group's exact display name. |
+| `permission` | string | Yes | `read`, `contribute` or `owner`. |
+
+#### Output tables
+
+**`sharepoint_action_log`**: every operation's action log, appended. The seven action log columns (`site_url`, `document_library`, `group`, `user`, `action`, `permission`, `status`, all strings), plus:
+
+| Column | Type | Meaning |
+| --- | --- | --- |
+| `run_id` | string | Identifies the run, to find everything it did. |
+| `operation` | string | Which operation logged the row, for example `update_memberships`. |
+| `dry_run` | boolean | Whether the run was a dry run. |
+| `logged_at` | timestamp | When the row was written. |
+
+**`sharepoint_sync_state`**: the watermark for the incremental passes.
+
+| Column | Type | Meaning |
+| --- | --- | --- |
+| `process` | string | Names the flow, for example `sharepoint_libraries`. Include the rollout scope in it if you filter the inputs, so a wider scope starts a fresh watermark. |
+| `last_processed_ts` | timestamp | The newest `last_changed_ts` a clean run has processed. |
+| `updated_at` | timestamp | When it was last advanced. |
+
+Optionally, also write the `user_not_found` rows to a table of their own (`run_id`, `site_url`, `library_code`, `user_principal_name`, `reason`, `logged_at`), so whoever owns the source data can fix the addresses.
+
+#### Recommended flow
+
+Run the operations in this order, from a pipeline, with a dry run first whenever the inputs or the package version change:
+
+1. **Read the libraries table, apply any scope, then read the watermark**, and the newest `last_changed_ts` as an upper bound. Only rows between the two are "changed" in this run. Rows that land while it runs are left for the next one.
+2. **Lock down site sharing** on every live site (full pass). It's independent of the rest, and corrects settings changed by hand.
+3. **Create** changed, not-deleted libraries (incremental). This also applies renames and new metadata. It runs before the grant and membership passes, which need the libraries to exist.
+4. **Unlink** changed, deleted libraries (incremental).
+5. **Retire** libraries whose site changed (incremental, on `previous_site_url`). This runs after the create pass, and with `new_site_url` it only retires a library once its replacement exists on the new site, so a failed create never leaves the library without working access (`retire_deferred` until then).
+6. **Grant** the extra groups on every live library (full pass). Additive, so it also restores access removed by hand.
+7. **Sync memberships** for every live library (full pass), passing all live libraries as `libraries_df` so a library whose last member left has its groups emptied.
+8. **Save each operation's action log** straight after it runs, so a later failure doesn't lose it.
+9. **Fail the run** if any row's action is in `FATAL_ACTIONS`. Show the `WARNING_ACTIONS` rows, but don't fail on them: they're data problems that failing can't fix.
+10. **Advance the watermark** to the upper bound, only after a clean run that wasn't a dry run. A failed run leaves it alone, so its changes are retried.
+
+Every operation is safe to re-run, so a failed run is fixed by running it again.
+
+```python
+# Parameters cell
+DRY_RUN = True
+SCHEMA = "<workspace>.<lakehouse>.<schema>"
+TENANT_ID = "<tenant-id>"
+CLIENT_ID = "<client-id>"
+KEY_VAULT = "https://<key-vault-name>.vault.azure.net/"
+CERTIFICATE_NAME = "<certificate-name>"
+SHAREPOINT_HOSTNAME = "<tenant>.sharepoint.com"
+```
+
+```python
+import uuid
+from datetime import datetime, timezone
+
+import pandas as pd
+
+from fabric_python_helper.auth import KeyVaultCertificateCredential
+from fabric_python_helper.sharepoint import FATAL_ACTIONS, WARNING_ACTIONS, SharePointLibraryManager
+
+credential = KeyVaultCertificateCredential(TENANT_ID, CLIENT_ID, KEY_VAULT, CERTIFICATE_NAME)
+mgr = SharePointLibraryManager(
+    credential, SHAREPOINT_HOSTNAME,
+    dry_run=DRY_RUN, max_workers=4, include_site_name=False, add_to_navigation=True,
+)
+
+RUN_ID = str(uuid.uuid4())
+PROCESS = "sharepoint_libraries"
+logs = []
+
+
+def save(operation, log):
+    """Step 8: keep the log for the gate, and append it to the audit table."""
+    logs.append(log)
+    if not log.empty:
+        rows = log.assign(run_id=RUN_ID, operation=operation, dry_run=DRY_RUN, logged_at=datetime.now(timezone.utc))
+        spark.createDataFrame(rows).write.format("delta").mode("append").saveAsTable(f"{SCHEMA}.sharepoint_action_log")
+
+
+# Step 1: what changed since the last clean run, up to now
+libraries = spark.table(f"{SCHEMA}.sharepoint_libraries").toPandas()
+# Setting-specific: filter the rows in scope here (see "Adding setting-specific steps")
+
+# The watermark is read after any scope is applied, as the scope is part of its key
+state = spark.sql(f"SELECT last_processed_ts FROM {SCHEMA}.sharepoint_sync_state WHERE process = '{PROCESS}'").collect()
+since = state[0]["last_processed_ts"] if state else datetime(1900, 1, 1)
+until = libraries["last_changed_ts"].max() if not libraries.empty else since
+changed = libraries[(libraries["last_changed_ts"] > since) & (libraries["last_changed_ts"] <= until)]
+live = libraries[~libraries["deleted"]].assign(source_id=lambda df: df["library_id"])
+
+save("site_sharing_lockdown", mgr.enforce_site_sharing_lockdown(live["site_url"]))                          # step 2
+save("create_libraries", mgr.create_libraries(live[live["library_id"].isin(changed["library_id"])]))        # step 3
+save("unlink_libraries", mgr.unlink_libraries(changed[changed["deleted"]]))                                  # step 4
+
+# Step 5: new_site_url makes retire wait until the library exists on its new site (not for deleted ones)
+moved = changed[changed["previous_site_url"].notna() & (changed["previous_site_url"] != changed["site_url"])]
+save("retire_moved_libraries", mgr.retire_moved_libraries(moved.assign(
+    site_url=moved["previous_site_url"], new_site_url=moved["site_url"].where(~moved["deleted"]),
+)))
+
+# Steps 6 and 7 read the optional tables too; leave out any you don't use
+keys = live[["library_id", "site_url", "library_code", "group_prefix"]]
+grants = spark.table(f"{SCHEMA}.sharepoint_library_grants").toPandas().merge(keys, on="library_id")
+save("grant_group_access", mgr.grant_group_access(grants))                                                  # step 6
+
+members = spark.table(f"{SCHEMA}.sharepoint_library_members").toPandas().merge(keys, on="library_id")
+nested = spark.table(f"{SCHEMA}.sharepoint_library_nested_groups").toPandas().merge(keys, on="library_id")
+save("update_memberships", mgr.update_memberships(members, libraries_df=keys, nested_groups_df=nested))      # step 7
+
+# Setting-specific: extra passes go here, before the gate (see "Adding setting-specific steps")
+
+# Step 9: fail on failed actions, show warnings
+results = pd.concat(logs, ignore_index=True)
+display(results[results["action"].isin(WARNING_ACTIONS)])
+failed = results[results["action"].isin(FATAL_ACTIONS)]
+if not failed.empty:
+    raise RuntimeError(f"{len(failed)} failed action(s), see sharepoint_action_log where run_id = '{RUN_ID}'")
+
+# Step 10: advance the watermark after a clean live run
+if not DRY_RUN and not changed.empty:
+    spark.sql(f"""
+        MERGE INTO {SCHEMA}.sharepoint_sync_state AS t
+        USING (SELECT '{PROCESS}' AS process, TIMESTAMP'{until:%Y-%m-%d %H:%M:%S.%f}' AS last_processed_ts) AS s
+        ON t.process = s.process
+        WHEN MATCHED THEN UPDATE SET t.last_processed_ts = s.last_processed_ts, t.updated_at = current_timestamp()
+        WHEN NOT MATCHED THEN INSERT (process, last_processed_ts, updated_at)
+            VALUES (s.process, s.last_processed_ts, current_timestamp())
+    """)
+```
+
+#### Adding setting-specific steps
+
+The skeleton is deliberately generic. Most settings add a few rules of their own, at the two places marked in it. These are the patterns the [example notebook](#example-notebook) uses for its school faculties; swap in your own names.
+
+**Scope and exclusions**, straight after reading the libraries table. Everything after it works on the filtered rows, so a filtered-out library is neither created nor synced. Include the scope in the watermark's `process` key, so widening it starts a fresh watermark and the newly included rows are processed:
+
+```python
+# Roll out a few sites at a time, let the source opt rows out, and keep the
+# leadership library's code (below) for that library alone
+SITES_IN_SCOPE = {"https://<tenant>.sharepoint.com/sites/Academy"}
+LEADERSHIP_CODE = "SLT"
+
+libraries = libraries[
+    libraries["site_url"].isin(SITES_IN_SCOPE)
+    & ~libraries.get("exclude", pd.Series(False, index=libraries.index)).astype("boolean").fillna(False)
+    & (libraries["library_code"].map(sanitise_for_group_name).str.upper() != LEADERSHIP_CODE)
+]
+PROCESS = f"sharepoint_libraries|{','.join(sorted(SITES_IN_SCOPE))}"
+```
+
+This needs `from fabric_python_helper.sharepoint import sanitise_for_group_name`. The code check compares sanitised codes, because that's how they appear in group names: `S-L-T` would otherwise share the leadership library's groups. The example notebook does the same filtering in Spark SQL instead, in its `eligible()` predicate, and also reports the excluded rows as warnings so they don't go unnoticed.
+
+**A leadership library on each site** (the example notebook's SLT library), before the gate. It's governed only by hand-curated Manual groups that a person (the headteacher) owns, so `app_owned=False`, and it has no Auto groups. A second pass grants those groups access to every library on their site:
+
+```python
+# One leadership library per site, with Manual groups only, owned by a person
+leadership = live[["site_url", "group_prefix"]].drop_duplicates().assign(
+    library_code=LEADERSHIP_CODE, library_display_name="Senior Leadership",
+    auto_groups=False, manual_read=True, manual_contribute=True, app_owned=False,
+)
+save("create_leadership_libraries", mgr.create_libraries(leadership))
+
+# Its groups get Contribute and Read on every library on their site. Names come
+# from mgr.group_name, so they always match the groups create_libraries made.
+leadership_grants = pd.DataFrame(
+    [
+        {
+            "site_url": row.site_url,
+            "library_code": row.library_code,
+            "group_name": mgr.group_name(row.group_prefix, row.site_url, LEADERSHIP_CODE, suffix),
+            "permission": permission,
+        }
+        for row in keys.itertuples(index=False)
+        for suffix, permission in (("Manual-Contribute", "contribute"), ("Manual-Read", "read"))
+    ],
+    columns=["site_url", "library_code", "group_name", "permission"],
+)
+save("grant_leadership_access", mgr.grant_group_access(leadership_grants))
+```
+
+The leadership library isn't in `sharepoint_libraries`, so the membership sync never touches its groups, and the grant pass is additive, so a library that's later unlinked keeps the leadership access. If two academies could share a site, give each its own code or skip the shared site, as `create_libraries` keeps only the first of two rows for the same library.
+
+**Other rules the example notebook adds**, which need no new operations:
+
+- **Group prefix from the source.** It builds `group_prefix` as `academy_code || '-Sharepoint'` in SQL, so each academy's groups are named after it.
+- **Nested groups from flags.** Instead of a nested-groups table, it builds the rows from two flag columns and a group column on the faculty list (`all_staff_read`, `all_staff_contribute`, `all_staff_security_group`), one row per flag that's set.
+- **Unresolved users with context.** It joins the `user_not_found` rows back to the source table, so each carries the academy and subject, which helps whoever fixes the address in the source system.
+
+Things to decide once, before the first live run, as changing them later orphans what was created:
+
+- **Group naming.** `group_prefix` and `include_site_name` make up every group name, and names are how the manager finds its groups. Use one prefix per site, so two sites never share a library's groups.
+- **Library codes.** A library's code is its URL and part of its group names. Treat it as permanent, and use `library_display_name` for renames. Codes that differ only in punctuation or case (`PE-KS3`, `peks3`) would share groups, so they're skipped with `group_name_collision`.
+- **Who owns the groups.** Leave `app_owned` on for groups the automation manages. Turn it off for groups a person owns and curates, and give those to `grant_group_access` rather than the membership sync.
+- **Scope.** If you roll out a few sites at a time, filter the input DataFrames and include the filter in the watermark's `process` key. Widening the scope then starts a fresh watermark, so the newly included rows are processed.
+
+Outside Fabric, `KeyVaultCertificateCredential` isn't available (it needs `notebookutils`). Pass any credential with a `get_token` method that uses a certificate, such as `azure.identity.CertificateCredential`, and run the same flow with the input tables read however suits.
+
+### Example notebook
+
+[`examples/Manage Faculty Sharepoint Libraries.Notebook`](examples/Manage%20Faculty%20Sharepoint%20Libraries.Notebook/notebook-content.py) is a complete notebook, run from a pipeline, that drives every operation from curated lakehouse tables: incremental create, unlink and retire using a watermark, full membership and access passes, an audit table and a run outcome gate. [docs/faculty-sharepoint-notebook.md](docs/faculty-sharepoint-notebook.md) describes it cell by cell, and how it was moved onto this package.
+
 ## Troubleshooting
 
 | Error | Likely cause |
@@ -556,6 +939,15 @@ for subject, path in reports.items():
 | `get_attachment_ids_and_names` returns an empty list | The email has no file attachments. Inline images are left out unless you pass `include_inline=True`, and attached emails and cloud links are always left out. |
 | `Attachment ... is a #microsoft.graph.itemAttachment` | `download_attachment` was given the ID of an attached email, not a file. |
 | `ImportError: notebookutils is not available. KeyVaultCertificateCredential must be used in a Fabric notebook.` | The code is running outside Fabric. `KeyVaultCertificateCredential` only works in Fabric (or Synapse) notebooks. |
+| SharePoint `401` with `Unsupported app only token` | The token came from a client secret. SharePoint needs a certificate, see [Giving the app access](#giving-the-app-access). |
+| `ValueError: site_url '...' is not on https://...` | A `site_url` isn't on the `sharepoint_hostname` the manager was created with, or uses `http://`. |
+| `error` row: `Multiple Entra groups share displayName` | Two groups have the name the manager uses for a library. Delete or rename the duplicate. |
+| `user_not_found` rows | The address matches no user's UPN, mail or proxy addresses. Fix it in the source data; the next run picks the user up. |
+| `removal_guardrail_triggered` row | A sync would remove more members than `max_removals_per_group`. Check the input data, then re-run with `allow_mass_removal=True`. |
+| `library_not_found` row | The library doesn't exist on the site, for example it was deleted by hand. Recreate it with `create_libraries` or remove it from the input. When unlinking, its Auto groups are still emptied. |
+| `group_not_owned` row | A group with the name the manager uses is owned by someone, but not by the app registration, so it wasn't used. Check who created it: if it's legitimate, add the app's service principal as an owner; otherwise delete it. |
+| `retire_deferred` row | The library hasn't been created on its new site yet (for example the create failed), so the old one was left working. It's retired on a later run once the new one exists. |
+| `library_name_conflict` row | Another library on the site already has the code as its title, so the library can't be created. Rename that library's title. |
 
 ## Upgrading from 0.3.x
 
@@ -614,7 +1006,7 @@ Once every notebook has moved over, delete the refresh token secret from Key Vau
 
 ### Running the tests
 
-The tests mock Microsoft Entra ID, Key Vault and Graph, and replace `notebookutils`, so they run anywhere without credentials. From the repository root:
+The tests mock Microsoft Entra ID, Key Vault, Graph and SharePoint, and replace `notebookutils` and Spark, so they run anywhere without credentials. From the repository root:
 
 ```powershell
 python -m pip install -e .[test]
@@ -637,11 +1029,26 @@ On its own, the Tests workflow only reports a result: GitHub still lets a pull r
 
 If the Python versions in `tests.yml` change, update the required checks to match, or pull requests will wait for a check that never runs.
 
-The tests can't show that the real services accept the requests, so test a new version in Fabric before releasing it (see [Testing a wheel in Fabric](#testing-a-wheel-in-fabric-before-publishing)). Get a token, find a known email and list its attachments.
+What they cover:
+
+| File | Covers |
+| --- | --- |
+| `test_auth.py` | `KeyVaultCertificateCredential`: token requests and caching, Key Vault signing, the client assertion |
+| `test_graph_api.py` | `Emails` |
+| `test_sharepoint_http.py` | The retry wrapper: throttling, `Retry-After`, server and connection errors, redirects |
+| `test_sharepoint_helpers.py` | Group naming and collisions, input validation, user and group resolution, the property bag, navigation URLs |
+| `test_sharepoint_manager.py` | Every `SharePointLibraryManager` operation end to end, including re-runs, dry runs, guardrails and failures, and authenticating with `KeyVaultCertificateCredential` |
+| `test_readme_flow.py` | Runs the [recommended flow](#recommended-flow) example against the suggested input tables (a dry run, a live run, a re-run and a deletion), and again with the [setting-specific steps](#adding-setting-specific-steps) inserted |
+| `test_faculty_notebook.py` | Runs the [example notebook](#example-notebook) cell by cell, with Spark SQL on SQLite and the real `KeyVaultCertificateCredential` |
+| `test_packaging.py` | The version, public names and that the README's examples are valid Python |
+
+The SharePoint tests run against `tests/sharepoint_fake.py`, an in-memory fake of the Graph and SharePoint endpoints the manager calls, which keeps state so a test can check what an operation changed. Add `--cov=fabric_python_helper` to see coverage.
+
+The tests can't show that the real services accept the requests, so test a new version in Fabric before releasing it (see [Testing a wheel in Fabric](#testing-a-wheel-in-fabric-before-publishing)). Get a token, find a known email and list its attachments. For the SharePoint manager, run the example notebook with `RUN_SMOKE_TEST = True`, first with `DRY_RUN = True`.
 
 ### Versioning
 
-The version number is only set in `fabric_python_helper/__init__.py`, as `__version__="0.4.0"`. `setup.py` reads it from there, so there's nothing else to keep in sync. Check it with `python setup.py --version`.
+The version number is only set in `fabric_python_helper/__init__.py`, as `__version__="0.5.0"`. `setup.py` reads it from there, so there's nothing else to keep in sync. Check it with `python setup.py --version`.
 
 Versions follow [semantic versioning](https://semver.org/). While the major version is 0, increase the minor version (0.4.0 to 0.5.0) for breaking changes, and the patch version (0.4.0 to 0.4.1) for fixes. PyPI never accepts the same version twice, even if it's deleted.
 
@@ -658,8 +1065,8 @@ python -m twine check dist/*
 
 This creates two files in `dist/`:
 
-- `fabric_python_helper-0.4.0-py3-none-any.whl`, the wheel
-- `fabric_python_helper-0.4.0.tar.gz`, the source distribution
+- `fabric_python_helper-0.5.0-py3-none-any.whl`, the wheel
+- `fabric_python_helper-0.5.0.tar.gz`, the source distribution
 
 `twine check` confirms the package metadata and this README will render on PyPI. Clearing `dist/` first stops old versions being uploaded by mistake.
 
@@ -676,7 +1083,7 @@ trusted-host = files.pythonhosted.org
 Upload the `.whl` file to a lakehouse's `Files` folder, then in a notebook attached to that lakehouse:
 
 ```python
-%pip install /lakehouse/default/Files/fabric_python_helper-0.4.0-py3-none-any.whl
+%pip install /lakehouse/default/Files/fabric_python_helper-0.5.0-py3-none-any.whl
 ```
 
 Or add it to an environment under **Custom libraries** > **Upload**.
@@ -734,7 +1141,7 @@ python -m twine upload --repository testpypi dist/*
 ```
 
 ```python
-%pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ fabric_python_helper==0.4.0
+%pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ fabric_python_helper==0.5.0
 ```
 
 ### After publishing
