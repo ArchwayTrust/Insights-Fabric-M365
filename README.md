@@ -203,7 +203,7 @@ credential = KeyVaultCertificateCredential(
 | --- | --- | --- |
 | `tenant_id` | Yes | Directory (tenant) ID. |
 | `client_id` | Yes | Application (client) ID of the app registration. |
-| `akv_url` | Yes | Key Vault URL, `https://<key-vault-name>.vault.azure.net/` (or the sovereign cloud equivalent). Anything that isn't an `https://` Key Vault URL raises `ValueError`. |
+| `akv_url` | Yes | Key Vault URL, `https://<key-vault-name>.vault.azure.net/`. Anything that isn't an `https://` Key Vault URL raises `ValueError`. Only the Azure public cloud is supported, so sovereign cloud vaults (such as `vault.azure.cn` or `vault.usgovcloudapi.net`) are rejected. |
 | `certificate_name` | Yes | Name of the certificate in Key Vault. |
 | `scope` | No | Default scope for `get_access_token()`. Not needed if you always pass a scope, or only use the credential with semantic link or Azure SDK clients. |
 | `certificate_version` | No | Certificate version to sign with. Defaults to the latest version. See [Renewing the certificate](#renewing-the-certificate). |
@@ -699,7 +699,13 @@ To release:
 4. Add release notes, then select **Publish release**.
 5. Check the workflow run under **Actions**, and that the new version appears on [PyPI](https://pypi.org/project/fabric-python-helper/).
 
-If a step fails, nothing after it runs. PyPI never accepts the same version twice, so a release whose version is already on PyPI fails at the publish step rather than silently uploading nothing. To fix a failed release, delete the GitHub release and its tag, fix the problem, and publish the release again.
+If a step fails, nothing after it runs. PyPI never accepts the same version twice, so a release whose version is already on PyPI fails at the publish step rather than silently uploading nothing.
+
+How to recover depends on where the run failed. Check the **Publish to PyPI** step in the run, and whether the version is on [PyPI](https://pypi.org/project/fabric-python-helper/#history):
+
+- **Before publishing** (tests, tag check or build failed, nothing on PyPI): delete the GitHub release and its tag, fix the problem, and publish the release again.
+- **After publishing** (the version is on PyPI, but attaching files to the release failed): don't delete the release, as publishing it again would fail at the PyPI step. Open the run under **Actions** and select **Re-run failed jobs**. Only the failed job runs again, using the files already built.
+- **A published version is broken:** it can't be replaced. Fix it, increase the patch version (for example 0.4.1 to 0.4.2) and release that. Optionally [yank](https://pypi.org/help/#yanked) the broken version on PyPI so pip stops choosing it.
 
 #### Trusted Publishing setup
 

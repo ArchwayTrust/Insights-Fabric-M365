@@ -133,8 +133,9 @@ class KeyVaultCertificateCredential:
     REFRESH_MARGIN_SECONDS = 300  # Request a new access token when the current one has less than this left
     REQUEST_TIMEOUT_SECONDS = 30  # Timeout for each call to Entra ID and Key Vault
 
-    # Key Vault DNS suffixes in the public and sovereign clouds. The Key Vault token is only sent to these hosts.
-    AKV_DNS_SUFFIXES = (".vault.azure.net", ".vault.azure.cn", ".vault.usgovcloudapi.net", ".vault.microsoftazure.de")
+    # Key Vault DNS suffix in the Azure public cloud. The Key Vault token is only sent to these hosts. Sovereign clouds
+    # aren't supported, as the token endpoint, Scopes and Microsoft Graph URL are all public cloud.
+    AKV_DNS_SUFFIX = ".vault.azure.net"
 
     def __init__(self, tenant_id, client_id, akv_url, certificate_name, scope=None, certificate_version=None):
         """
@@ -167,7 +168,7 @@ class KeyVaultCertificateCredential:
     @classmethod
     def _validate_akv_url(cls, akv_url):
         """
-        Checks the Key Vault URL uses https and a Key Vault host name, as the Key Vault token is sent to it.
+        Checks the Key Vault URL uses https and a public cloud Key Vault host name, as the Key Vault token is sent to it.
 
         Parameters:
             akv_url (str): Azure Key Vault URL.
@@ -178,8 +179,11 @@ class KeyVaultCertificateCredential:
         parsed = urlparse(akv_url)
         host = (parsed.hostname or "").lower()
 
-        if parsed.scheme != "https" or parsed.username or parsed.password or not host.endswith(cls.AKV_DNS_SUFFIXES):
-            raise ValueError(f"akv_url must be a Key Vault URL such as https://{{key_vault_name}}.vault.azure.net/, not {akv_url}")
+        if parsed.scheme != "https" or parsed.username or parsed.password or not host.endswith(cls.AKV_DNS_SUFFIX):
+            raise ValueError(
+                f"akv_url must be a Key Vault URL such as https://{{key_vault_name}}.vault.azure.net/, not {akv_url}. "
+                "Only the Azure public cloud is supported."
+            )
 
         return host
 

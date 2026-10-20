@@ -128,12 +128,22 @@ def test_token_close_to_expiry_is_refreshed(fake_notebookutils):
 
 
 def test_expiry_is_measured_from_before_the_request(fake_notebookutils):
-    fake = FakeAzure(delay=1.1)
-    with mock.patch.multiple(auth.requests, get=fake.get, post=fake.post):
-        before = int(time.time())
+    # A fake clock that only moves while the token request is in flight, so the test doesn't depend on timing
+    clock = [1_000_000.0]
+    fake = FakeAzure()
+
+    def slow_token_post(url, **kwargs):
+        response = fake.post(url, **kwargs)
+        if not url.endswith("/sign"):
+            clock[0] += 5
+        return response
+
+    with mock.patch.multiple(auth.requests, get=fake.get, post=slow_token_post), \
+            mock.patch.object(auth.time, "time", lambda: clock[0]):
         token = make_credential().get_token("a")
 
-    assert token.expires_on == before + 3600
+    assert clock[0] == 1_000_005.0
+    assert token.expires_on == 1_000_000 + 3600
 
 
 def test_concurrent_callers_share_one_refresh(fake_notebookutils):
@@ -283,9 +293,6 @@ def test_token_error_includes_status_but_not_the_assertion(fake_notebookutils):
     "https://myvault.vault.azure.net",
     "https://myvault.vault.azure.net/",
     "https://MyVault.Vault.Azure.Net/",
-    "https://myvault.vault.azure.cn/",
-    "https://myvault.vault.usgovcloudapi.net",
-    "https://myvault.vault.microsoftazure.de/",
 ])
 def test_key_vault_urls_are_accepted(akv_url):
     make_credential(akv_url)
@@ -299,6 +306,9 @@ def test_key_vault_urls_are_accepted(akv_url):
     "https://evil.com/",
     "https://myvault.vault.azure.net@evil.com/",
     "https://user:password@myvault.vault.azure.net/",
+    # Sovereign clouds aren't supported, as tokens are always requested from the public cloud
+    "https://myvault.vault.azure.cn/",
+    "https://myvault.vault.usgovcloudapi.net/",
     "myvault.vault.azure.net",
     "",
 ])
