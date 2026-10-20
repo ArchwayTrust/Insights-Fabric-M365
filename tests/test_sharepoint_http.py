@@ -143,7 +143,7 @@ def test_post_redirect_is_followed_with_the_same_method(sleeps):
 
 def test_cross_host_redirect_is_refused():
     with patch_request(return_value=response(307, headers={"Location": "https://evil.example.com/steal"})):
-        with pytest.raises(requests.HTTPError, match="Refusing cross-host redirect"):
+        with pytest.raises(requests.HTTPError, match="Refusing cross-host"):
             _request_with_retry("POST", URL)
 
 
@@ -158,3 +158,9 @@ def test_redirect_loop_stops_at_the_hop_limit():
 def test_redirect_without_location_is_returned():
     with patch_request(return_value=response(302)):
         assert _request_with_retry("POST", URL).status_code == 302
+
+
+def test_redirect_from_https_to_http_is_refused():
+    with patch_request(return_value=response(301, headers={"Location": "http://contoso.sharepoint.com/sites/x"})):
+        with pytest.raises(requests.HTTPError, match="Refusing"):
+            _request_with_retry("POST", URL)

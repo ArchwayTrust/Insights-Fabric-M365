@@ -191,7 +191,7 @@ def test_prefix_lookup_returns_all_matches_and_unique_lookup_refuses_duplicates(
 
     groups = _groups._find_groups_by_name_prefix(TOKEN, "SP-ENG-")
 
-    assert sorted(groups) == ["SP-ENG-Auto-Read", "SP-ENG-Manual-Read"]
+    assert sorted(groups) == ["sp-eng-auto-read", "sp-eng-manual-read"]
     assert _groups._get_unique_group(groups, "SP-ENG-Auto-Read")["displayName"] == "SP-ENG-Auto-Read"
     assert _groups._get_unique_group(groups, "SP-ENG-Auto-Owner") is None
     with pytest.raises(ValueError):
@@ -405,3 +405,61 @@ def test_navigation_urls_normalise_to_one_key(value):
 
 def test_graph_base_url_matches_the_fake():
     assert _common.GRAPH_BASE_URL == GRAPH
+
+
+# Regression tests
+
+@pytest.mark.parametrize("name", ["Maths & Science Staff", "Year 7 #1", "C++ Club"])
+def test_group_names_with_query_characters_are_found(tenant, name):
+    group = tenant.add_group(name)
+
+    assert _groups._find_group_by_name(TOKEN, name)["id"] == group["id"]
+    assert _groups._find_groups_by_name_prefix(TOKEN, name[:6])[name.lower()][0]["id"] == group["id"]
+
+
+def test_group_names_match_case_insensitively_like_graph(tenant):
+    group = tenant.add_group("baa-sharepoint-MATH-Auto-Read")
+
+    groups = _groups._find_groups_by_name_prefix(TOKEN, "BAA-Sharepoint-MATH-")
+
+    assert _groups._get_unique_group(groups, "BAA-Sharepoint-MATH-Auto-Read")["id"] == group["id"]
+
+
+def test_prefix_lookup_sends_the_filter_as_a_parameter_on_the_first_page_only(tenant, monkeypatch):
+    pages = [
+        response(200, {"value": [], "@odata.nextLink": f"{GRAPH}/groups?$skiptoken=2"}),
+        response(200, {"value": []}),
+    ]
+    sent = []
+    monkeypatch.setattr(_common, "GRAPH_BASE_URL", GRAPH)
+    monkeypatch.setattr(requests, "request", lambda method, url, **kwargs: sent.append((url, kwargs)) or pages.pop(0))
+
+    _groups._find_groups_by_name_prefix(TOKEN, "SP-")
+
+    assert sent[0][0] == f"{GRAPH}/groups"
+    assert sent[0][1]["params"]["$filter"] == "startswith(displayName, 'SP-')"
+    assert sent[1][0] == f"{GRAPH}/groups?$skiptoken=2" and sent[1][1]["params"] is None
+
+
+def test_user_principal_name_cannot_change_the_graph_path(tenant):
+    tenant.add_group("Target")
+
+    with pytest.raises(UserResolutionError):
+        _groups._resolve_user_with_fallback(TOKEN, "../groups/x@contoso.com")
+
+    direct = [url for method, url, _ in tenant.calls if "/users/" in url]
+    assert direct == [f"{GRAPH}/users/..%2Fgroups%2Fx%40contoso.com"]
+
+
+@pytest.mark.parametrize("url", [
+    "http://contoso.sharepoint.com/sites/maths",
+    "https://evil.example.com/sites/maths",
+    "https://contoso.sharepoint.com.evil.example.com/sites/maths",
+])
+def test_site_urls_must_be_https_on_the_sharepoint_host(url):
+    with pytest.raises(ValueError, match="site_url"):
+        _common._validate_site_urls([url], sharepoint_hostname="contoso.sharepoint.com")
+
+
+def test_site_url_host_check_ignores_case():
+    _common._validate_site_urls(["https://Contoso.SharePoint.com/sites/maths"], sharepoint_hostname="contoso.sharepoint.com")

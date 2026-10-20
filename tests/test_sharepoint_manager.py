@@ -830,3 +830,34 @@ def test_grant_skips_a_site_whose_prefetch_fails(make_manager, tenant, site, lib
     )
 
     assert actions(results) == ["error"]
+
+
+# Regression tests
+
+def test_nested_group_with_an_ampersand_in_its_name(make_manager, tenant, site, library):
+    staff = tenant.add_group("Maths & Science Staff")
+    nested = pd.DataFrame({
+        "site_url": [site.url], "library_code": ["MATH"], "group_prefix": [PREFIX],
+        "member_group": ["Maths & Science Staff"], "permission": ["read"],
+    })
+
+    results = make_manager().update_memberships(memberships_df(site, []), nested_groups_df=nested)
+
+    assert rows(results, "error").empty
+    assert staff["id"] in tenant.group_named("BAA-Sharepoint-MATH-Auto-Read")["members"]
+
+
+def test_sharepoint_token_is_never_sent_to_another_host(make_manager, tenant):
+    with pytest.raises(ValueError, match="site_url"):
+        make_manager().enforce_site_sharing_lockdown(["https://evil.example.com/sites/x"])
+
+    assert tenant.calls == []
+
+
+def test_group_differing_only_in_case_is_reused_not_duplicated(make_manager, tenant, site, library):
+    tenant.group_named("BAA-Sharepoint-MATH-Auto-Contribute")["displayName"] = "baa-sharepoint-MATH-Auto-Contribute"
+    tenant.add_user("jo@contoso.com")
+
+    make_manager().update_memberships(memberships_df(site, [("MATH", "jo@contoso.com", "contribute")]))
+
+    assert len([g for g in tenant.groups.values() if g["displayName"].lower().endswith("-math-auto-contribute")]) == 1

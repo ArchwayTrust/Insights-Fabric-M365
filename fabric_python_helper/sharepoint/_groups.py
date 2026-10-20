@@ -75,13 +75,16 @@ def _find_group_by_name(token: str, display_name: str) -> dict | None:
     synced, silently picking one of several matches would be dangerous —
     multiple matches raise instead so a human can resolve the duplicate.
     """
-    # Use $filter with eq for exact match
-    url = (
-        f"{GRAPH_BASE_URL}/groups"
-        f"?$filter=displayName eq '{_odata_escape(display_name)}'"
-        f"&$select=id,displayName,description,mailNickname,securityEnabled,groupTypes"
+    # Use $filter with eq for exact match.  Passed as params so requests
+    # encodes it — a name containing '&', '#' or '+' would otherwise break
+    # the query string.
+    resp = _request_with_retry(
+        "GET", f"{GRAPH_BASE_URL}/groups", headers=_graph_headers(token),
+        params={
+            "$filter": f"displayName eq '{_odata_escape(display_name)}'",
+            "$select": "id,displayName,description,mailNickname,securityEnabled,groupTypes",
+        },
     )
-    resp = _request_with_retry("GET", url, headers=_graph_headers(token))
     resp.raise_for_status()
     groups = resp.json().get("value", [])
     if len(groups) > 1:
@@ -98,25 +101,31 @@ def _find_group_by_name(token: str, display_name: str) -> dict | None:
 def _find_groups_by_name_prefix(token: str, name_prefix: str) -> dict[str, list[dict]]:
     """Find Entra ID groups whose displayName starts with *name_prefix*.
 
-    Returns displayName -> list of matching group resources (Entra does not
-    enforce display-name uniqueness).  One paged startswith query replaces a
-    name-equality lookup per group, which matters in full-pass reconciles.
-    Resolve individual names through _get_unique_group so an unrelated
-    duplicate under the same prefix cannot fail the whole operation.
+    Returns lowercase displayName -> list of matching group resources (Entra
+    does not enforce display-name uniqueness).  One paged startswith query
+    replaces a name-equality lookup per group, which matters in full-pass
+    reconciles.  Resolve individual names through _get_unique_group so an
+    unrelated duplicate under the same prefix cannot fail the whole operation.
+
+    Keys are lowercase because Graph compares display names case-insensitively,
+    so this matches the groups _find_group_by_name would find.
     """
-    url = (
-        f"{GRAPH_BASE_URL}/groups"
-        f"?$filter=startswith(displayName, '{_odata_escape(name_prefix)}')"
-        f"&$select=id,displayName,description,mailNickname"
-    )
+    url: str | None = f"{GRAPH_BASE_URL}/groups"
+    # The first page takes the query as params (encoded by requests); the
+    # nextLink already carries it.
+    params: dict | None = {
+        "$filter": f"startswith(displayName, '{_odata_escape(name_prefix)}')",
+        "$select": "id,displayName,description,mailNickname",
+    }
     groups_by_name: dict[str, list[dict]] = {}
     while url:
-        resp = _request_with_retry("GET", url, headers=_graph_headers(token))
+        resp = _request_with_retry("GET", url, headers=_graph_headers(token), params=params)
         resp.raise_for_status()
         data = resp.json()
         for group in data.get("value", []):
-            groups_by_name.setdefault(group.get("displayName") or "", []).append(group)
+            groups_by_name.setdefault((group.get("displayName") or "").lower(), []).append(group)
         url = data.get("@odata.nextLink")
+        params = None
     return groups_by_name
 
 
@@ -129,7 +138,7 @@ def _get_unique_group(
     duplicated — the caller is about to grant permissions or sync membership
     against the group, so guessing between duplicates is never safe.
     """
-    matches = groups_by_name.get(display_name, [])
+    matches = groups_by_name.get(display_name.lower(), [])
     if len(matches) > 1:
         ids = ", ".join(g["id"] for g in matches)
         raise ValueError(
@@ -286,7 +295,9 @@ def _resolve_user_with_fallback(
     malformed = False
 
     # 1. Direct UPN lookup
-    url = f"{GRAPH_BASE_URL}/users/{requests.utils.quote(user_principal_name)}"
+    # safe="" also encodes '/', so a malformed value cannot reach another
+    # Graph path.
+    url = f"{GRAPH_BASE_URL}/users/{requests.utils.quote(user_principal_name, safe='')}"
     resp = _request_with_retry(
         "GET", url, headers=_graph_headers(token),
         params={"$select": "id,userPrincipalName"},

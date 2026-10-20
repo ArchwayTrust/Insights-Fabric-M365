@@ -125,9 +125,12 @@ def _request_with_retry(
                         f"Too many redirects ({hops}) for {method} {url}",
                         response=resp,
                     )
-                if urlparse(redirect_url).hostname != urlparse(url).hostname:
+                target, current = urlparse(redirect_url), urlparse(url)
+                if target.hostname != current.hostname or (
+                    current.scheme == "https" and target.scheme != "https"
+                ):
                     raise requests.HTTPError(
-                        f"Refusing cross-host redirect for {method}: "
+                        f"Refusing cross-host or https-to-http redirect for {method}: "
                         f"{url} → {redirect_url}",
                         response=resp,
                     )

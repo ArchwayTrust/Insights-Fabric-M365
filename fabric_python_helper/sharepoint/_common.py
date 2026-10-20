@@ -126,14 +126,26 @@ def _validate_required_columns(df: pd.DataFrame, required_columns: set[str]) -> 
     return df
 
 
-def _validate_site_urls(site_urls) -> None:
-    """Raise ValueError if any URL is malformed."""
+def _validate_site_urls(site_urls, sharepoint_hostname: str | None = None) -> None:
+    """Raise ValueError if any URL is malformed.
+
+    With *sharepoint_hostname*, each URL must also be https on that host:
+    the SharePoint bearer token is sent to the site URL, so a URL on any
+    other host (or over plain http) would hand the token to it.
+    """
     for site_url in site_urls:
         parsed = urlparse(site_url)
         if parsed.scheme not in ("http", "https") or not parsed.hostname:
             raise ValueError(
                 f"Malformed site_url: '{site_url}' "
                 f"— expected https://{{tenant}}.sharepoint.com/sites/{{name}}"
+            )
+        if sharepoint_hostname is not None and (
+            parsed.scheme != "https" or parsed.hostname.lower() != sharepoint_hostname.lower()
+        ):
+            raise ValueError(
+                f"site_url '{site_url}' is not on https://{sharepoint_hostname} — "
+                f"the SharePoint token is only sent to that host"
             )
 
 

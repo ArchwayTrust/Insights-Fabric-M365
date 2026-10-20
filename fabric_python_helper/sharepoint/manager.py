@@ -375,7 +375,7 @@ class SharePointLibraryManager:
 
         required = {"site_url", "library_code", "library_display_name", "group_prefix"}
         df = _validate_required_columns(df, required)
-        _validate_site_urls(df["site_url"].unique())
+        _validate_site_urls(df["site_url"].unique(), self.sharepoint_hostname)
 
         if "auto_groups" not in df.columns:
             df["auto_groups"] = True
@@ -543,7 +543,7 @@ class SharePointLibraryManager:
 
         required = {"site_url", "library_code"}
         df = _validate_required_columns(df, required)
-        _validate_site_urls(df["site_url"].unique())
+        _validate_site_urls(df["site_url"].unique(), self.sharepoint_hostname)
 
         has_source_system = "source_system" in df.columns
         has_source_id = "source_id" in df.columns
@@ -598,7 +598,7 @@ class SharePointLibraryManager:
         """
         required = {"site_url", "library_code"}
         df = _validate_required_columns(df, required)
-        _validate_site_urls(df["site_url"].unique())
+        _validate_site_urls(df["site_url"].unique(), self.sharepoint_hostname)
 
         site_ids = _resolve_site_ids(self._graph_token, df["site_url"].unique())
 
@@ -816,7 +816,7 @@ class SharePointLibraryManager:
 
         required = {"site_url", "library_code", "library_display_name", "group_prefix"}
         df = _validate_required_columns(df, required)
-        _validate_site_urls(df["site_url"].unique())
+        _validate_site_urls(df["site_url"].unique(), self.sharepoint_hostname)
 
         if "old_library_code" not in df.columns:
             df["old_library_code"] = None
@@ -1051,7 +1051,7 @@ class SharePointLibraryManager:
 
         required = {"site_url", "library_code", "group_prefix"}
         df = _validate_required_columns(df, required)
-        _validate_site_urls(df["site_url"].unique())
+        _validate_site_urls(df["site_url"].unique(), self.sharepoint_hostname)
 
         # Deduplicate like create_libraries — duplicate rows would race two
         # workers over the same library, groups, and navigation node.
@@ -1281,7 +1281,7 @@ class SharePointLibraryManager:
 
         required = {"site_url", "library_code", "group_prefix"}
         df = _validate_required_columns(df, required)
-        _validate_site_urls(df["site_url"].unique())
+        _validate_site_urls(df["site_url"].unique(), self.sharepoint_hostname)
         df = df.drop_duplicates(subset=["site_url", "library_code"], keep="first")
 
         action_log = _ThreadSafeLog()
@@ -1926,13 +1926,13 @@ class SharePointLibraryManager:
             "permission", "group_prefix",
         }
         df = _validate_required_columns(df, required)
-        _validate_site_urls(df["site_url"].unique())
+        _validate_site_urls(df["site_url"].unique(), self.sharepoint_hostname)
 
         if libraries_df is not None:
             libraries_df = _validate_required_columns(
                 libraries_df, {"site_url", "library_code", "group_prefix"},
             )
-            _validate_site_urls(libraries_df["site_url"].unique())
+            _validate_site_urls(libraries_df["site_url"].unique(), self.sharepoint_hostname)
             libraries_df = libraries_df.drop_duplicates(
                 subset=["site_url", "library_code"], keep="first",
             )
@@ -1941,7 +1941,7 @@ class SharePointLibraryManager:
         if nested_groups_df is None:
             nested_groups_df = pd.DataFrame(columns=sorted(nested_required))
         nested_groups_df = _validate_required_columns(nested_groups_df, nested_required)
-        _validate_site_urls(nested_groups_df["site_url"].unique())
+        _validate_site_urls(nested_groups_df["site_url"].unique(), self.sharepoint_hostname)
         nested_groups_df["member_group"] = nested_groups_df["member_group"].str.strip()
 
         # Effective prefix per (site_url, library_code): first from df, then
@@ -2145,7 +2145,7 @@ class SharePointLibraryManager:
 
         required = {"site_url", "library_code", "group_name", "permission"}
         df = _validate_required_columns(df, required)
-        _validate_site_urls(df["site_url"].unique())
+        _validate_site_urls(df["site_url"].unique(), self.sharepoint_hostname)
         df["permission"] = df["permission"].str.strip().str.lower()
         unknown = set(df["permission"]) - set(VALID_ROLES)
         if unknown:
@@ -2334,7 +2334,7 @@ class SharePointLibraryManager:
         dry_run_, max_workers_ = self._resolve_config(dry_run=dry_run, max_workers=max_workers)
 
         unique_urls = sorted(set(site_urls))
-        _validate_site_urls(unique_urls)
+        _validate_site_urls(unique_urls, self.sharepoint_hostname)
 
         action_log = _ThreadSafeLog()
         items = [(site_url, dry_run_) for site_url in unique_urls]
@@ -2381,7 +2381,7 @@ class SharePointLibraryManager:
             ``members_can_invite`` (True means the setting is on) and
             ``member_group_id``.
         """
-        _validate_site_urls([site_url])
+        _validate_site_urls([site_url], self.sharepoint_hostname)
         return _get_site_sharing_settings(self._sp_token, site_url)
 
     def get_navigation_link(
@@ -2406,7 +2406,7 @@ class SharePointLibraryManager:
             the label or the link does not exist.
         """
         (navigation_label_,) = self._resolve_config(navigation_label=navigation_label)
-        _validate_site_urls([site_url])
+        _validate_site_urls([site_url], self.sharepoint_hostname)
         found = _find_nav_label(self._sp_token, site_url, navigation_label_)
         if found is None:
             return None
