@@ -1,12 +1,12 @@
-# archwaytrust-fabric
+# ALT-Fabric-M365
 
-Python helpers for automation in Microsoft Fabric notebooks.
+Python helpers for automation in Microsoft Fabric notebooks, from Archway Learning Trust (ALT).
 
 Up to 0.5.0 this package was called `fabric_python_helper`. See [Moving from fabric_python_helper](#moving-from-fabric_python_helper).
 
-- **`archwaytrust_fabric.auth`** gets app-only access tokens for Microsoft APIs (Microsoft Graph, Power BI, Fabric, OneLake and others) as a service principal, using a certificate held in Azure Key Vault. Key Vault signs each request, so the certificate's private key never leaves the key vault.
-- **`archwaytrust_fabric.graph_api`** finds emails in a mailbox, downloads their attachments, deletes them and sends emails, using Microsoft Graph.
-- **`archwaytrust_fabric.sharepoint`** manages SharePoint document libraries and their permissions through Entra ID security groups: creating libraries, keeping group membership in sync, navigation links and site sharing settings.
+- **`alt_fabric_m365.auth`** gets app-only access tokens for Microsoft APIs (Microsoft Graph, Power BI, Fabric, OneLake and others) as a service principal, using a certificate held in Azure Key Vault. Key Vault signs each request, so the certificate's private key never leaves the key vault.
+- **`alt_fabric_m365.graph_api`** finds emails in a mailbox, downloads their attachments, deletes them and sends emails, using Microsoft Graph.
+- **`alt_fabric_m365.sharepoint`** manages SharePoint document libraries and their permissions through Entra ID security groups: creating libraries, keeping group membership in sync, navigation links and site sharing settings.
 
 The package is built for Fabric notebooks. `KeyVaultCertificateCredential` uses `notebookutils` to call Key Vault as the identity running the notebook, so it only works in Fabric (or Synapse) notebooks. The package itself can be imported anywhere.
 
@@ -46,29 +46,29 @@ The package is built for Fabric notebooks. `KeyVaultCertificateCredential` uses 
 
 ## Installation
 
-The package is published on PyPI as [`archwaytrust-fabric`](https://pypi.org/project/archwaytrust-fabric/) and imported as `archwaytrust_fabric`. Its dependencies, `azure-core`, `pandas` and `requests`, are already in the Fabric runtime.
+The package is published on PyPI as [`alt-fabric-m365`](https://pypi.org/project/alt-fabric-m365/) and imported as `alt_fabric_m365`. Its dependencies, `azure-core`, `pandas` and `requests`, are already in the Fabric runtime.
 
 **In a Fabric environment** (use this for scheduled notebooks and pipelines):
 
 1. Open the environment your notebooks use.
-2. Under **Public libraries**, select **Add from PyPI**, enter `archwaytrust-fabric` and choose a version, for example `0.6.0`.
+2. Under **Public libraries**, select **Add from PyPI**, enter `alt-fabric-m365` and choose a version, for example `0.6.0`.
 3. Select **Publish**. Notebooks pick up the new version when their next session starts.
 
 **In a single notebook session** (useful for testing a new version):
 
 ```python
-%pip install archwaytrust-fabric==0.6.0
+%pip install alt-fabric-m365==0.6.0
 ```
 
-Always pin a version. 0.4.0 has breaking changes from 0.3.x, see [Upgrading from 0.3.x](#upgrading-from-03x). 0.5.0 adds the `sharepoint` module and doesn't change anything that was already there. 0.6.0 renames the package from `fabric_python_helper` to `archwaytrust_fabric` and changes nothing else, see [Moving from fabric_python_helper](#moving-from-fabric_python_helper).
+Always pin a version. 0.4.0 has breaking changes from 0.3.x, see [Upgrading from 0.3.x](#upgrading-from-03x). 0.5.0 adds the `sharepoint` module and doesn't change anything that was already there. 0.6.0 renames the package from `fabric_python_helper` to `alt_fabric_m365` and changes nothing else, see [Moving from fabric_python_helper](#moving-from-fabric_python_helper).
 
 ## Quick start
 
 Read the latest report email from a mailbox, save its CSV attachment to a lakehouse and delete the email:
 
 ```python
-from archwaytrust_fabric.auth import KeyVaultCertificateCredential
-from archwaytrust_fabric.graph_api import Emails
+from alt_fabric_m365.auth import KeyVaultCertificateCredential
+from alt_fabric_m365.graph_api import Emails
 
 credential = KeyVaultCertificateCredential(
     tenant_id="<tenant-id>",
@@ -202,7 +202,7 @@ See the [Scopes](#scopes) table, and [Giving the app access to a mailbox](#givin
 ### Using the credential
 
 ```python
-from archwaytrust_fabric.auth import KeyVaultCertificateCredential, Scopes
+from alt_fabric_m365.auth import KeyVaultCertificateCredential, Scopes
 
 credential = KeyVaultCertificateCredential(
     tenant_id="<tenant-id>",
@@ -312,7 +312,7 @@ Certificates are recommended, but `Emails` and anything else in this package tha
 
 ```python
 from azure.identity import ClientSecretCredential
-from archwaytrust_fabric.graph_api import Emails
+from alt_fabric_m365.graph_api import Emails
 
 client_secret = notebookutils.credentials.getSecret("https://<key-vault-name>.vault.azure.net/", "<secret-name>")
 credential = ClientSecretCredential("<tenant-id>", "<client-id>", client_secret)
@@ -338,7 +338,7 @@ To avoid any failures between steps 1 and 2, first pin the current version with 
 
 ## Emails
 
-`archwaytrust_fabric.graph_api.Emails` works with mailboxes using Microsoft Graph, authenticating as the app rather than as a user.
+`alt_fabric_m365.graph_api.Emails` works with mailboxes using Microsoft Graph, authenticating as the app rather than as a user.
 
 ### Giving the app access to a mailbox
 
@@ -386,7 +386,7 @@ Roles needed by each method:
 ### Creating an Emails instance
 
 ```python
-from archwaytrust_fabric.graph_api import Emails
+from alt_fabric_m365.graph_api import Emails
 
 mailbox = Emails(credential, "reports@contoso.com")
 ```
@@ -422,7 +422,7 @@ With `only_return_latest=True` it returns the message ID as a string. With `Fals
 If nothing matches it raises `MessageNotFoundError`, with the message `No matching messages found.` Use this to handle emails that don't always arrive:
 
 ```python
-from archwaytrust_fabric.graph_api import MessageNotFoundError
+from alt_fabric_m365.graph_api import MessageNotFoundError
 
 try:
     message_id = mailbox.search_message_by_subject_and_sender("Weekly Exceptions", "noreply@supplier.com")
@@ -518,8 +518,8 @@ LAKEHOUSE = "abfss://<workspace>@onelake.dfs.fabric.microsoft.com/<lakehouse>.La
 ```
 
 ```python
-from archwaytrust_fabric.auth import KeyVaultCertificateCredential
-from archwaytrust_fabric.graph_api import Emails, MessageNotFoundError
+from alt_fabric_m365.auth import KeyVaultCertificateCredential
+from alt_fabric_m365.graph_api import Emails, MessageNotFoundError
 
 credential = KeyVaultCertificateCredential(TENANT_ID, CLIENT_ID, KEY_VAULT, CERTIFICATE_NAME)
 mailbox = Emails(credential, MAILBOX)
@@ -553,7 +553,7 @@ for subject, path in reports.items():
 
 ## SharePoint libraries
 
-`archwaytrust_fabric.sharepoint.SharePointLibraryManager` manages SharePoint document libraries and their permissions through Entra ID security groups. Each operation takes a pandas DataFrame describing the libraries or memberships you want, makes SharePoint match it, and returns an [action log](#the-action-log) of what it did.
+`alt_fabric_m365.sharepoint.SharePointLibraryManager` manages SharePoint document libraries and their permissions through Entra ID security groups. Each operation takes a pandas DataFrame describing the libraries or memberships you want, makes SharePoint match it, and returns an [action log](#the-action-log) of what it did.
 
 ### What it manages
 
@@ -586,8 +586,8 @@ SharePoint only accepts app-only tokens obtained with a certificate, so use `Key
 ### Creating a SharePointLibraryManager
 
 ```python
-from archwaytrust_fabric.auth import KeyVaultCertificateCredential
-from archwaytrust_fabric.sharepoint import SharePointLibraryManager
+from alt_fabric_m365.auth import KeyVaultCertificateCredential
+from alt_fabric_m365.sharepoint import SharePointLibraryManager
 
 credential = KeyVaultCertificateCredential(
     "<tenant-id>", "<client-id>", "https://<key-vault-name>.vault.azure.net/", "<certificate-name>",
@@ -654,7 +654,7 @@ Every operation returns a DataFrame with the columns `site_url`, `document_libra
 - `WARNING_ACTIONS`: for example `user_not_found`, `library_not_found` and `removal_guardrail_triggered`. Problems with the data that failing the run wouldn't fix.
 
 ```python
-from archwaytrust_fabric.sharepoint import FATAL_ACTIONS, WARNING_ACTIONS
+from alt_fabric_m365.sharepoint import FATAL_ACTIONS, WARNING_ACTIONS
 
 warnings = results[results["action"].isin(WARNING_ACTIONS)]
 failures = results[results["action"].isin(FATAL_ACTIONS)]
@@ -780,8 +780,8 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
-from archwaytrust_fabric.auth import KeyVaultCertificateCredential
-from archwaytrust_fabric.sharepoint import FATAL_ACTIONS, WARNING_ACTIONS, SharePointLibraryManager
+from alt_fabric_m365.auth import KeyVaultCertificateCredential
+from alt_fabric_m365.sharepoint import FATAL_ACTIONS, WARNING_ACTIONS, SharePointLibraryManager
 
 credential = KeyVaultCertificateCredential(TENANT_ID, CLIENT_ID, KEY_VAULT, CERTIFICATE_NAME)
 mgr = SharePointLibraryManager(
@@ -873,7 +873,7 @@ libraries = libraries[
 PROCESS = f"sharepoint_libraries|{','.join(sorted(SITES_IN_SCOPE))}"
 ```
 
-This needs `from archwaytrust_fabric.sharepoint import sanitise_for_group_name`. The code check compares sanitised codes, because that's how they appear in group names: `S-L-T` would otherwise share the leadership library's groups. The example notebook does the same filtering in Spark SQL instead, in its `eligible()` predicate, and also reports the excluded rows as warnings so they don't go unnoticed.
+This needs `from alt_fabric_m365.sharepoint import sanitise_for_group_name`. The code check compares sanitised codes, because that's how they appear in group names: `S-L-T` would otherwise share the leadership library's groups. The example notebook does the same filtering in Spark SQL instead, in its `eligible()` predicate, and also reports the excluded rows as warnings so they don't go unnoticed.
 
 **A leadership library on each site** (the example notebook's SLT library), before the gate. It's governed only by hand-curated Manual groups that a person (the headteacher) owns, so `app_owned=False`, and it has no Auto groups. A second pass grants those groups access to every library on their site:
 
@@ -958,22 +958,22 @@ Outside Fabric, `KeyVaultCertificateCredential` isn't available (it needs `noteb
 
 | | Up to 0.5.0 | From 0.6.0 |
 | --- | --- | --- |
-| PyPI project | [`fabric-python-helper`](https://pypi.org/project/fabric-python-helper/) | [`archwaytrust-fabric`](https://pypi.org/project/archwaytrust-fabric/) |
-| Import | `fabric_python_helper` | `archwaytrust_fabric` |
+| PyPI project | [`fabric-python-helper`](https://pypi.org/project/fabric-python-helper/) | [`alt-fabric-m365`](https://pypi.org/project/alt-fabric-m365/) |
+| Import | `fabric_python_helper` | `alt_fabric_m365` |
 
 The two import names are different, so both packages can be installed in the same environment. That lets you move notebooks over one at a time:
 
-1. In each Fabric environment, add `archwaytrust-fabric` `0.6.0` under **Public libraries**, keep `fabric_python_helper` `0.5.0` for now, and publish the environment.
-2. In each notebook, change `fabric_python_helper` to `archwaytrust_fabric` in every import, and run it:
+1. In each Fabric environment, add `alt-fabric-m365` `0.6.0` under **Public libraries**, keep `fabric_python_helper` `0.5.0` for now, and publish the environment.
+2. In each notebook, change `fabric_python_helper` to `alt_fabric_m365` in every import, and run it:
 
    ```python
-   from archwaytrust_fabric.auth import KeyVaultCertificateCredential
-   from archwaytrust_fabric.graph_api import Emails
+   from alt_fabric_m365.auth import KeyVaultCertificateCredential
+   from alt_fabric_m365.graph_api import Emails
    ```
 
 3. Once no notebook in the workspace imports `fabric_python_helper`, remove it from the environment and publish it again.
 
-Environments pinned to `fabric_python_helper` 0.5.0 or earlier keep working, and those versions stay on PyPI. There's one more release under the old name, `fabric_python_helper` 0.6.0, built from [`legacy/`](legacy). It contains no code of its own: it installs `archwaytrust-fabric` 0.6 and makes `fabric_python_helper` an alias for it, so old imports work but show a `FutureWarning`. There will be no later releases under the old name.
+Environments pinned to `fabric_python_helper` 0.5.0 or earlier keep working, and those versions stay on PyPI. There's one more release under the old name, `fabric_python_helper` 0.6.0, built from [`legacy/`](legacy). It contains no code of its own: it installs `alt-fabric-m365` 0.6 and makes `fabric_python_helper` an alias for it, so old imports work but show a `FutureWarning`. There will be no later releases under the old name.
 
 ## Upgrading from 0.3.x
 
@@ -993,8 +993,8 @@ email_account.connect()
 After:
 
 ```python
-from archwaytrust_fabric.auth import KeyVaultCertificateCredential
-from archwaytrust_fabric.graph_api import Emails
+from alt_fabric_m365.auth import KeyVaultCertificateCredential
+from alt_fabric_m365.graph_api import Emails
 
 tenant_id = "<tenant-id>"
 client_id = "<client-id>"
@@ -1037,7 +1037,7 @@ The tests mock Microsoft Entra ID, Key Vault, Graph and SharePoint, and replace 
 ```powershell
 python -m pip install -e .[test]
 python -m pytest
-python -m pyflakes archwaytrust_fabric legacy tests setup.py
+python -m pyflakes alt_fabric_m365 legacy tests setup.py
 ```
 
 The [Tests workflow](.github/workflows/tests.yml) runs the same checks on Python 3.10, 3.11 and 3.12, and builds the package, for every pull request into `main` and every push to `main`. It doesn't publish anything.
@@ -1068,13 +1068,13 @@ What they cover:
 | `test_faculty_notebook.py` | Runs the [example notebook](#example-notebook) cell by cell, with Spark SQL on SQLite and the real `KeyVaultCertificateCredential` |
 | `test_packaging.py` | The version, public names and that the README's examples are valid Python |
 
-The SharePoint tests run against `tests/sharepoint_fake.py`, an in-memory fake of the Graph and SharePoint endpoints the manager calls, which keeps state so a test can check what an operation changed. Add `--cov=archwaytrust_fabric` to see coverage.
+The SharePoint tests run against `tests/sharepoint_fake.py`, an in-memory fake of the Graph and SharePoint endpoints the manager calls, which keeps state so a test can check what an operation changed. Add `--cov=alt_fabric_m365` to see coverage.
 
 The tests can't show that the real services accept the requests, so test a new version in Fabric before releasing it (see [Testing a wheel in Fabric](#testing-a-wheel-in-fabric-before-publishing)). Get a token, find a known email and list its attachments. For the SharePoint manager, run the example notebook with `RUN_SMOKE_TEST = True`, first with `DRY_RUN = True`.
 
 ### Versioning
 
-The version number is only set in `archwaytrust_fabric/__init__.py`, as `__version__="0.6.0"`. `setup.py` reads it from there, so there's nothing else to keep in sync. Check it with `python setup.py --version`.
+The version number is only set in `alt_fabric_m365/__init__.py`, as `__version__="0.6.0"`. `setup.py` reads it from there, so there's nothing else to keep in sync. Check it with `python setup.py --version`.
 
 Versions follow [semantic versioning](https://semver.org/). While the major version is 0, increase the minor version (0.4.0 to 0.5.0) for breaking changes, and the patch version (0.4.0 to 0.4.1) for fixes. PyPI never accepts the same version twice, even if it's deleted.
 
@@ -1091,8 +1091,8 @@ python -m twine check dist/*
 
 This creates two files in `dist/`:
 
-- `archwaytrust_fabric-0.6.0-py3-none-any.whl`, the wheel
-- `archwaytrust_fabric-0.6.0.tar.gz`, the source distribution
+- `alt_fabric_m365-0.6.0-py3-none-any.whl`, the wheel
+- `alt_fabric_m365-0.6.0.tar.gz`, the source distribution
 
 `twine check` confirms the package metadata and this README will render on PyPI. Clearing `dist/` first stops old versions being uploaded by mistake.
 
@@ -1109,7 +1109,7 @@ trusted-host = files.pythonhosted.org
 Upload the `.whl` file to a lakehouse's `Files` folder, then in a notebook attached to that lakehouse:
 
 ```python
-%pip install /lakehouse/default/Files/archwaytrust_fabric-0.6.0-py3-none-any.whl
+%pip install /lakehouse/default/Files/alt_fabric_m365-0.6.0-py3-none-any.whl
 ```
 
 Or add it to an environment under **Custom libraries** > **Upload**.
@@ -1126,15 +1126,15 @@ This is the normal route. Merging to `main` never publishes anything; only publi
 
 To release:
 
-1. Update `__version__` in `archwaytrust_fabric/__init__.py`, merge it into `main` through a pull request.
+1. Update `__version__` in `alt_fabric_m365/__init__.py`, merge it into `main` through a pull request.
 2. On GitHub, go to **Releases** > **Draft a new release**.
 3. Create a tag matching the version, for example `v0.4.1`, targeting `main`.
 4. Add release notes, then select **Publish release**.
-5. Check the workflow run under **Actions**, and that the new version appears on [PyPI](https://pypi.org/project/archwaytrust-fabric/).
+5. Check the workflow run under **Actions**, and that the new version appears on [PyPI](https://pypi.org/project/alt-fabric-m365/).
 
 If a step fails, nothing after it runs. PyPI never accepts the same version twice, so a release whose version is already on PyPI fails at the publish step rather than silently uploading nothing.
 
-How to recover depends on where the run failed. Check the **Publish to PyPI** step in the run, and whether the version is on [PyPI](https://pypi.org/project/archwaytrust-fabric/#history):
+How to recover depends on where the run failed. Check the **Publish to PyPI** step in the run, and whether the version is on [PyPI](https://pypi.org/project/alt-fabric-m365/#history):
 
 - **Before publishing** (tests, tag check or build failed, nothing on PyPI): delete the GitHub release and its tag, fix the problem, and publish the release again.
 - **After publishing** (the version is on PyPI, but attaching files to the release failed): don't delete the release, as publishing it again would fail at the PyPI step. Open the run under **Actions** and select **Re-run failed jobs**. Only the failed job runs again, using the files already built.
@@ -1144,7 +1144,7 @@ How to recover depends on where the run failed. Check the **Publish to PyPI** st
 
 The workflow uploads to PyPI with [Trusted Publishing](https://docs.pypi.org/trusted-publishers/), so no PyPI API token is stored in GitHub. PyPI only accepts uploads from this repository's `release.yml` workflow running in the `pypi` environment. Set it up once:
 
-1. On PyPI, open the `archwaytrust-fabric` project, then **Manage** > **Publishing** > **Add a new publisher** > **GitHub**. Enter owner `ArchwayTrust`, repository `Insights-Fabric-PythonHelper`, workflow `release.yml` and environment `pypi`. Before the project's first release, when it doesn't exist yet, add a **pending publisher** instead: go to **Your account** > **Publishing**, and enter the same details with PyPI project name `archwaytrust-fabric`. The first release then creates the project.
+1. On PyPI, open the `alt-fabric-m365` project, then **Manage** > **Publishing** > **Add a new publisher** > **GitHub**. Enter owner `ArchwayTrust`, repository `Insights-Fabric-PythonHelper`, workflow `release.yml` and environment `pypi`. Before the project's first release, when it doesn't exist yet, add a **pending publisher** instead: go to **Your account** > **Publishing**, and enter the same details with PyPI project name `alt-fabric-m365`. The first release then creates the project.
 2. On GitHub, go to **Settings** > **Environments** > **New environment** and create `pypi`. Then, in the environment:
    - Under **Deployment branches and tags**, choose **Selected branches and tags**, select **Add deployment branch or tag rule**, set **Ref type** to **Tag** and enter the pattern `v*`. Only release tags can then publish, even if the workflow is started some other way.
    - Optionally, turn on **Required reviewers** and add the people who can approve a release, so each upload to PyPI waits for one of them.
@@ -1167,12 +1167,12 @@ python -m twine upload --repository testpypi dist/*
 ```
 
 ```python
-%pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ archwaytrust-fabric==0.6.0
+%pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ alt-fabric-m365==0.6.0
 ```
 
 ### Publishing the fabric_python_helper forwarding release
 
-This is needed once, for 0.6.0, after `archwaytrust-fabric` 0.6.0 is on PyPI (the forwarding release depends on it). [`legacy/`](legacy) holds the final release of the old name, `fabric_python_helper` 0.6.0, which only forwards to `archwaytrust_fabric`. The Tests workflow builds and checks it, but the Release workflow doesn't publish it, so upload it by hand:
+This is needed once, for 0.6.0, after `alt-fabric-m365` 0.6.0 is on PyPI (the forwarding release depends on it). [`legacy/`](legacy) holds the final release of the old name, `fabric_python_helper` 0.6.0, which only forwards to `alt_fabric_m365`. The Tests workflow builds and checks it, but the Release workflow doesn't publish it, so upload it by hand:
 
 1. On PyPI, open the `fabric-python-helper` project, go to **Manage** > **Settings** > **API tokens**, and create a token scoped to that project only.
 2. Build, check and upload it:
@@ -1185,7 +1185,7 @@ This is needed once, for 0.6.0, after `archwaytrust-fabric` 0.6.0 is on PyPI (th
 
    Enter `__token__` as the username and the token as the password.
 3. Delete the token on PyPI.
-4. Check that `%pip install fabric_python_helper==0.6.0` in a notebook installs `archwaytrust-fabric` too, and that `import fabric_python_helper` shows the `FutureWarning`.
+4. Check that `%pip install fabric_python_helper==0.6.0` in a notebook installs `alt-fabric-m365` too, and that `import fabric_python_helper` shows the `FutureWarning`.
 5. In the `fabric-python-helper` project's settings on PyPI, select **Archive project**. Archiving tells visitors the project won't be updated; every version stays installable. Don't delete the project or yank its versions, as environments pinned to them would stop working.
 
 ### After publishing
@@ -1194,7 +1194,7 @@ Update the version in each Fabric environment that uses the package (**Public li
 
 ### Release checklist
 
-1. Update `__version__` in `archwaytrust_fabric/__init__.py`.
+1. Update `__version__` in `alt_fabric_m365/__init__.py`.
 2. Update this README, including [Upgrading](#upgrading-from-03x) for breaking changes.
 3. Build, run the tests and `twine check`, and test the wheel in Fabric.
 4. Merge into `main` through a pull request, once the Tests workflow passes.

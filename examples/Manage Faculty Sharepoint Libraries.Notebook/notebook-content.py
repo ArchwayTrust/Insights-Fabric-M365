@@ -166,11 +166,11 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
-# The library manager lives in archwaytrust_fabric (pinned in the attached
+# The library manager lives in alt_fabric_m365 (pinned in the attached
 # environment): https://github.com/ArchwayTrust/Insights-Fabric-PythonHelper
-import archwaytrust_fabric
-from archwaytrust_fabric.auth import KeyVaultCertificateCredential
-from archwaytrust_fabric.sharepoint import (
+import alt_fabric_m365
+from alt_fabric_m365.auth import KeyVaultCertificateCredential
+from alt_fabric_m365.sharepoint import (
     ACTION_LOG_COLUMNS,
     FATAL_ACTIONS,
     WARNING_ACTIONS,
@@ -178,7 +178,7 @@ from archwaytrust_fabric.sharepoint import (
     sanitise_for_group_name,
 )
 
-print(f"archwaytrust_fabric {archwaytrust_fabric.__version__}")
+print(f"alt_fabric_m365 {alt_fabric_m365.__version__}")
 
 # METADATA ********************
 

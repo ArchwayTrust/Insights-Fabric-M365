@@ -37,7 +37,7 @@ jobs:
         pip install -e .[test] build twine
 
     - name: Lint
-      run: python -m pyflakes archwaytrust_fabric legacy tests setup.py
+      run: python -m pyflakes alt_fabric_m365 legacy tests setup.py
 
     - name: Run tests
       run: python -m pytest -v

@@ -10,8 +10,8 @@ from unittest import mock
 import pytest
 import requests
 
-from archwaytrust_fabric.sharepoint import _http
-from archwaytrust_fabric.sharepoint._http import _parse_retry_after, _request_with_retry
+from alt_fabric_m365.sharepoint import _http
+from alt_fabric_m365.sharepoint._http import _parse_retry_after, _request_with_retry
 
 from sharepoint_fake import response
 

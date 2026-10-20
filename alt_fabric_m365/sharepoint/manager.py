@@ -58,7 +58,7 @@ class SharePointLibraryManager:
 
     Args:
         credential:           Credential with a ``get_token(*scopes)`` method,
-                              normally ``archwaytrust_fabric.auth.KeyVaultCertificateCredential``,
+                              normally ``alt_fabric_m365.auth.KeyVaultCertificateCredential``,
                               created without a scope: Graph and SharePoint
                               tokens are requested from it as needed.  It must
                               use a certificate, as SharePoint rejects app-only
