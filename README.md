@@ -4,6 +4,7 @@ Python helpers for automation in Microsoft Fabric notebooks.
 
 - **`fabric_python_helper.auth`** gets app-only access tokens for Microsoft APIs (Microsoft Graph, Power BI, Fabric, OneLake and others) as a service principal, using a certificate held in Azure Key Vault. Key Vault signs each request, so the certificate's private key never leaves the key vault.
 - **`fabric_python_helper.graph_api`** finds emails in a mailbox, downloads their attachments, deletes them and sends emails, using Microsoft Graph.
+- **`fabric_python_helper.sharepoint`** manages SharePoint document libraries and their permissions through Entra ID security groups: creating libraries, keeping group membership in sync, navigation links and site sharing settings.
 
 The package is built for Fabric notebooks. `KeyVaultCertificateCredential` uses `notebookutils` to call Key Vault as the identity running the notebook, so it only works in Fabric (or Synapse) notebooks. The package itself can be imported anywhere.
 
@@ -17,6 +18,7 @@ The package is built for Fabric notebooks. `KeyVaultCertificateCredential` uses 
   - [Using the credential](#using-the-credential)
   - [Scopes](#scopes)
   - [Using a client secret instead](#using-a-client-secret-instead)
+  - [Using a certificate stored as Key Vault secrets](#using-a-certificate-stored-as-key-vault-secrets)
   - [Renewing the certificate](#renewing-the-certificate)
 - [Emails](#emails)
   - [Giving the app access to a mailbox](#giving-the-app-access-to-a-mailbox)
@@ -26,6 +28,14 @@ The package is built for Fabric notebooks. `KeyVaultCertificateCredential` uses 
   - [Deleting an email](#deleting-an-email)
   - [Sending an email](#sending-an-email)
   - [Full example](#full-example)
+- [SharePoint libraries](#sharepoint-libraries)
+  - [What it manages](#what-it-manages)
+  - [Giving the app access](#giving-the-app-access)
+  - [Creating a SharePointLibraryManager](#creating-a-sharepointlibrarymanager)
+  - [Operations](#operations)
+  - [The action log](#the-action-log)
+  - [Safety features](#safety-features)
+  - [Example notebook](#example-notebook)
 - [Troubleshooting](#troubleshooting)
 - [Upgrading from 0.3.x](#upgrading-from-03x)
 - [Building and publishing](#building-and-publishing)
@@ -33,21 +43,21 @@ The package is built for Fabric notebooks. `KeyVaultCertificateCredential` uses 
 
 ## Installation
 
-The package is published on PyPI as [`fabric_python_helper`](https://pypi.org/project/fabric-python-helper/). Its dependencies, `azure-core` and `requests`, are already in the Fabric runtime.
+The package is published on PyPI as [`fabric_python_helper`](https://pypi.org/project/fabric-python-helper/). Its dependencies, `azure-core`, `pandas` and `requests`, are already in the Fabric runtime, as is `msal`, which `PemCertificateCredential` needs.
 
 **In a Fabric environment** (use this for scheduled notebooks and pipelines):
 
 1. Open the environment your notebooks use.
-2. Under **Public libraries**, select **Add from PyPI**, enter `fabric_python_helper` and choose a version, for example `0.4.0`.
+2. Under **Public libraries**, select **Add from PyPI**, enter `fabric_python_helper` and choose a version, for example `0.5.0`.
 3. Select **Publish**. Notebooks pick up the new version when their next session starts.
 
 **In a single notebook session** (useful for testing a new version):
 
 ```python
-%pip install fabric_python_helper==0.4.0
+%pip install fabric_python_helper==0.5.0
 ```
 
-Always pin a version. 0.4.0 has breaking changes from 0.3.x, see [Upgrading from 0.3.x](#upgrading-from-03x).
+Always pin a version. 0.4.0 has breaking changes from 0.3.x, see [Upgrading from 0.3.x](#upgrading-from-03x). 0.5.0 adds `fabric_python_helper.sharepoint` and `PemCertificateCredential`, and doesn't change anything that was already there.
 
 ## Quick start
 
@@ -295,7 +305,7 @@ One credential can get tokens for any number of these APIs.
 
 ### Using a client secret instead
 
-Certificates are recommended, but anything in this package that takes a credential also accepts `azure.identity.ClientSecretCredential`, which is already in the Fabric runtime:
+Certificates are recommended, but `Emails` and anything else in this package that takes a credential, except `SharePointLibraryManager`, also accepts `azure.identity.ClientSecretCredential`, which is already in the Fabric runtime:
 
 ```python
 from azure.identity import ClientSecretCredential
@@ -312,6 +322,27 @@ The identity running the notebook needs **Get** on the secret. Compared with a c
 - The secret is read into the notebook's memory, whereas the certificate's private key never leaves Key Vault.
 - Client secrets expire after at most 2 years and have to be copied into Key Vault by hand when they're renewed.
 - SharePoint's REST API rejects client secrets for app-only access.
+
+### Using a certificate stored as Key Vault secrets
+
+If the certificate's private key (PEM) and thumbprint are stored as two Key Vault secrets, rather than imported into Key Vault as a certificate, use `PemCertificateCredential`. It signs with the private key in the notebook using MSAL, and can be used anywhere `KeyVaultCertificateCredential` can:
+
+```python
+from fabric_python_helper.auth import PemCertificateCredential
+
+akv_url = "https://<key-vault-name>.vault.azure.net/"
+
+credential = PemCertificateCredential(
+    tenant_id="<tenant-id>",
+    client_id="<client-id>",
+    thumbprint=notebookutils.credentials.getSecret(akv_url, "<thumbprint-secret-name>"),
+    private_key=notebookutils.credentials.getSecret(akv_url, "<private-key-secret-name>"),
+)
+```
+
+Formatting that secret stores often introduce, such as missing or escaped newlines in the PEM, is corrected. The identity running the notebook needs **Get** on both secrets.
+
+Like a client secret, the private key is read into the notebook's memory. Prefer `KeyVaultCertificateCredential`: [importing the certificate](https://learn.microsoft.com/en-us/azure/key-vault/certificates/tutorial-import-certificate) (PFX, with its private key) into Key Vault lets you switch with a one-line change and then delete the two secrets.
 
 ### Renewing the certificate
 
@@ -538,6 +569,129 @@ for subject, path in reports.items():
     print(f"Loaded '{subject}' ({file_name}).")
 ```
 
+## SharePoint libraries
+
+`fabric_python_helper.sharepoint.SharePointLibraryManager` manages SharePoint document libraries and their permissions through Entra ID security groups. Each operation takes a pandas DataFrame describing the libraries or memberships you want, makes SharePoint match it, and returns an [action log](#the-action-log) of what it did.
+
+### What it manages
+
+For each library (a row with a `site_url`, a `library_code` and a `group_prefix`):
+
+- **The library.** Created with the code as its URL slug (`/sites/<site>/<code>`), then given its display name. The slug never changes, so renaming a library only changes its display name. It is given its own permissions, not inherited from the site.
+- **Security groups**, named `{group_prefix}-{library_code}-{suffix}` (or `{group_prefix}-{site}-{library_code}-{suffix}` with `include_site_name=True`). Names are how the manager finds existing groups, so don't change the naming after rollout.
+  - `Auto-Read`, `Auto-Contribute` and `Auto-Owner` are owned by the automation. Their membership is synced from your data and they are emptied when the library is unlinked.
+  - `Manual-Read` and `Manual-Contribute` are optional, hand-curated groups. They are granted access and renamed with the library, but their membership is never changed.
+- **Navigation** (optional). A link to the library in the site's quick launch, under a heading such as "Document Libraries".
+- **Provenance** (optional). `source_system` and `source_id` stored in the library's property bag, invisible to users, so a library can be traced back to the record that created it.
+- **Site sharing** (optional). Turns off "Allow members to share", "Allow access requests" and "Allow members to invite others" on each site, so access only comes from the groups.
+
+### Giving the app access
+
+The app registration needs these application permissions, with admin consent:
+
+| API | Permission | Used for |
+| --- | --- | --- |
+| Microsoft Graph | `Sites.FullControl.All`, or `Sites.Selected` with full control on each site | Finding sites, creating and renaming libraries |
+| Microsoft Graph | `Group.ReadWrite.All` and `GroupMember.ReadWrite.All` | Creating and renaming groups, syncing membership |
+| Microsoft Graph | `User.Read.All` | Resolving users by UPN, mail or proxy address |
+| Microsoft Graph | `Files.ReadWrite.All` | Only for OneDrive shortcuts (`create_onedrive_shortcuts=True`) |
+| SharePoint | `Sites.FullControl.All`, or `Sites.Selected` with full control on each site | Permissions, property bag, navigation and sharing settings |
+
+SharePoint only accepts app-only tokens obtained with a certificate, so use `KeyVaultCertificateCredential` or `PemCertificateCredential`, not a client secret.
+
+### Creating a SharePointLibraryManager
+
+```python
+from fabric_python_helper.auth import KeyVaultCertificateCredential
+from fabric_python_helper.sharepoint import SharePointLibraryManager
+
+credential = KeyVaultCertificateCredential(
+    "<tenant-id>", "<client-id>", "https://<key-vault-name>.vault.azure.net/", "<certificate-name>",
+)
+
+mgr = SharePointLibraryManager(
+    credential,
+    sharepoint_hostname="contoso.sharepoint.com",
+    dry_run=True,                   # log what would change, change nothing
+    max_workers=4,                  # libraries processed in parallel
+    include_site_name=False,        # see group naming above; don't change after rollout
+    add_to_navigation=True,
+    navigation_label="Document Libraries",
+    max_removals_per_group=10,      # see Safety features
+)
+```
+
+The constructor gets a Graph and a SharePoint token straight away, so wrong credentials or permissions fail here rather than part way through. `dry_run`, `max_workers`, `include_site_name`, `add_to_navigation`, `navigation_label`, `create_onedrive_shortcuts`, `max_removals_per_group` and `allow_mass_removal` are defaults that each operation can override, for example `mgr.create_libraries(df, dry_run=False)`.
+
+### Operations
+
+| Method | What it does | DataFrame columns |
+| --- | --- | --- |
+| `create_libraries(df)` | Ensures each library exists with its own permissions, its groups, metadata and navigation link. Safe to re-run: existing libraries and groups are reused, and a changed display name is applied. | `site_url`, `library_code`, `library_display_name`, `group_prefix`. Optional: `auto_groups` (default True), `manual_read`, `manual_contribute`, `source_system`, `source_id` |
+| `update_memberships(df, libraries_df=None, nested_groups_df=None)` | Makes each library's Auto groups contain exactly the users (and nested groups) given. Users are matched by UPN, then mail, then proxy addresses, so aliased domains work. Libraries in `libraries_df` with no rows in `df` have their Auto groups emptied. | `site_url`, `library_code`, `user_principal_name`, `permission` (`read`, `contribute` or `owner`), `group_prefix` |
+| `unlink_libraries(df)` | For libraries removed at source: renames to `{code}_UNLINKED`, empties the Auto groups, keeps the Manual groups, removes the navigation link. Nothing is deleted. | `site_url`, `library_code`, `group_prefix` |
+| `retire_moved_libraries(df)` | For a library whose site changed: renames the copy on the **old** site to `{code}_MOVED` and removes the groups' access to it. | `site_url` (the old site), `library_code`, `group_prefix` |
+| `rename_libraries(df)` | Sets new display names and, when `old_library_code` is given, renames the groups to the new code. | `site_url`, `library_code`, `library_display_name`, `group_prefix`. Optional: `old_library_code` |
+| `grant_group_access(df)` | Grants existing groups a permission level on existing libraries, for example a leadership group on every library. Additive: never removes access. | `site_url`, `library_code`, `group_name`, `permission` |
+| `enforce_site_sharing_lockdown(site_urls)` | Turns off member sharing, access requests and member invites on each site, and checks the change stuck. | A list of site URLs |
+| `set_library_metadata(df)` / `get_library_metadata(df)` | Writes or reads `source_system` and `source_id` in each library's property bag. | `site_url`, `library_code`, and for set `source_system` and/or `source_id` |
+
+Read-only helpers: `mgr.group_name(group_prefix, site_url, library_code, suffix)` returns a group name exactly as the operations build it, and `mgr.get_navigation_link(site_url, library_code)` and `mgr.get_site_sharing_settings(site_url)` read back what is on the site.
+
+```python
+import pandas as pd
+
+site = "https://contoso.sharepoint.com/sites/Academy"
+
+libraries = pd.DataFrame({
+    "site_url": [site, site],
+    "library_code": ["MATH", "ENG"],
+    "library_display_name": ["Maths", "English"],
+    "group_prefix": "ACA-Sharepoint",
+    "manual_read": True,
+})
+results = mgr.create_libraries(libraries)
+
+members = pd.DataFrame({
+    "site_url": site,
+    "library_code": ["MATH", "MATH", "ENG"],
+    "user_principal_name": ["jo@contoso.com", "sam@contoso.com", "alex@contoso.com"],
+    "permission": "contribute",
+    "group_prefix": "ACA-Sharepoint",
+})
+results = mgr.update_memberships(members, libraries_df=libraries)
+```
+
+### The action log
+
+Every operation returns a DataFrame with the columns `site_url`, `document_library`, `group`, `user`, `action`, `permission` and `status`, one row per thing it did or (in a dry run) would do. Problems are rows too, so one bad library or user never stops the others. Two sets of action names help decide whether a run succeeded:
+
+- `FATAL_ACTIONS`: `error`, `add_failed`, `remove_failed`. Something failed and should be retried, so fail the run.
+- `WARNING_ACTIONS`: for example `user_not_found`, `library_not_found` and `removal_guardrail_triggered`. Problems with the data that failing the run wouldn't fix.
+
+```python
+from fabric_python_helper.sharepoint import FATAL_ACTIONS, WARNING_ACTIONS
+
+warnings = results[results["action"].isin(WARNING_ACTIONS)]
+failures = results[results["action"].isin(FATAL_ACTIONS)]
+if not failures.empty:
+    raise RuntimeError(f"{len(failures)} failed action(s)")
+```
+
+### Safety features
+
+- **Dry run.** With `dry_run=True` nothing is changed; the log shows what would be, with actions ending `(dry run)`.
+- **Removal guardrail.** If syncing a group would remove more than `max_removals_per_group` members, its removals are skipped and logged as `removal_guardrail_triggered` (additions still happen). Re-run with `allow_mass_removal=True` once you've checked the data.
+- **Incomplete data never drives removals.** If any user (or nested group) for a role can't be resolved, removals of that kind from that role's group are skipped (`removals_skipped`), as the "stale" member may be the one that failed to resolve.
+- **Manual groups are never synced or emptied,** and service principals and devices in Auto groups are left in place.
+- **No guessing between duplicates.** If two Entra groups share a name the manager would use, it stops for that library rather than pick one. Library codes that would produce the same group names (such as `PE-KS3` and `PEKS3`) are skipped with `group_name_collision`.
+- **Tokens only go to your tenant.** Every `site_url` must be `https://` on `sharepoint_hostname`, and redirects to another host or to plain http are refused.
+- **Throttling and transient errors are retried,** honouring `Retry-After`, with exponential backoff.
+
+### Example notebook
+
+[`examples/Manage Faculty Sharepoint Libraries.Notebook`](examples/Manage%20Faculty%20Sharepoint%20Libraries.Notebook/notebook-content.py) is a complete notebook, run from a pipeline, that drives every operation from curated lakehouse tables: incremental create, unlink and retire using a watermark, full membership and access passes, an audit table and a run outcome gate. [docs/faculty-sharepoint-notebook.md](docs/faculty-sharepoint-notebook.md) describes it cell by cell, and how it was moved onto this package.
+
 ## Troubleshooting
 
 | Error | Likely cause |
@@ -556,6 +710,12 @@ for subject, path in reports.items():
 | `get_attachment_ids_and_names` returns an empty list | The email has no file attachments. Inline images are left out unless you pass `include_inline=True`, and attached emails and cloud links are always left out. |
 | `Attachment ... is a #microsoft.graph.itemAttachment` | `download_attachment` was given the ID of an attached email, not a file. |
 | `ImportError: notebookutils is not available. KeyVaultCertificateCredential must be used in a Fabric notebook.` | The code is running outside Fabric. `KeyVaultCertificateCredential` only works in Fabric (or Synapse) notebooks. |
+| SharePoint `401` with `Unsupported app only token` | The token came from a client secret. SharePoint needs a certificate, see [Giving the app access](#giving-the-app-access). |
+| `ValueError: site_url '...' is not on https://...` | A `site_url` isn't on the `sharepoint_hostname` the manager was created with, or uses `http://`. |
+| `error` row: `Multiple Entra groups share displayName` | Two groups have the name the manager uses for a library. Delete or rename the duplicate. |
+| `user_not_found` rows | The address matches no user's UPN, mail or proxy addresses. Fix it in the source data; the next run picks the user up. |
+| `removal_guardrail_triggered` row | A sync would remove more members than `max_removals_per_group`. Check the input data, then re-run with `allow_mass_removal=True`. |
+| `library_not_found` row | The library doesn't exist on the site, for example it was deleted by hand. Recreate it with `create_libraries` or remove it from the input. |
 
 ## Upgrading from 0.3.x
 
@@ -614,7 +774,7 @@ Once every notebook has moved over, delete the refresh token secret from Key Vau
 
 ### Running the tests
 
-The tests mock Microsoft Entra ID, Key Vault and Graph, and replace `notebookutils`, so they run anywhere without credentials. From the repository root:
+The tests mock Microsoft Entra ID, Key Vault, Graph and SharePoint, and replace `notebookutils` and Spark, so they run anywhere without credentials. From the repository root:
 
 ```powershell
 python -m pip install -e .[test]
@@ -637,7 +797,21 @@ On its own, the Tests workflow only reports a result: GitHub still lets a pull r
 
 If the Python versions in `tests.yml` change, update the required checks to match, or pull requests will wait for a check that never runs.
 
-The tests can't show that the real services accept the requests, so test a new version in Fabric before releasing it (see [Testing a wheel in Fabric](#testing-a-wheel-in-fabric-before-publishing)). Get a token, find a known email and list its attachments.
+What they cover:
+
+| File | Covers |
+| --- | --- |
+| `test_auth.py`, `test_auth_pem.py` | Both credentials: token requests and caching, Key Vault signing, private key normalisation |
+| `test_graph_api.py` | `Emails` |
+| `test_sharepoint_http.py` | The retry wrapper: throttling, `Retry-After`, server and connection errors, redirects |
+| `test_sharepoint_helpers.py` | Group naming and collisions, input validation, user and group resolution, the property bag, navigation URLs |
+| `test_sharepoint_manager.py` | Every `SharePointLibraryManager` operation end to end, including re-runs, dry runs, guardrails and failures |
+| `test_faculty_notebook.py` | Runs the [example notebook](#example-notebook) cell by cell, with Spark SQL on SQLite |
+| `test_packaging.py` | The version, public names and that the README's examples are valid Python |
+
+The SharePoint tests run against `tests/sharepoint_fake.py`, an in-memory fake of the Graph and SharePoint endpoints the manager calls, which keeps state so a test can check what an operation changed. Add `--cov=fabric_python_helper` to see coverage.
+
+The tests can't show that the real services accept the requests, so test a new version in Fabric before releasing it (see [Testing a wheel in Fabric](#testing-a-wheel-in-fabric-before-publishing)). Get a token, find a known email and list its attachments. For the SharePoint manager, run the example notebook with `RUN_SMOKE_TEST = True`, first with `DRY_RUN = True`.
 
 ### Versioning
 
