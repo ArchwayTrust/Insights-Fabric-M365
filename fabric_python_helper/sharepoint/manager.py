@@ -20,10 +20,10 @@ from ._graph import (
 )
 from ._groups import (
     GroupResolutionError, UserResolutionError, _add_group_member, _create_security_group, _empty_group_members,
-    _ensure_app_owns_group, _ensure_security_group, _token_object_id, _find_existing_library_collisions, _find_group_by_name, _find_group_name_collisions,
-    _find_groups_by_name_prefix,
-    _get_group_members, _get_unique_group, _log_group_name_collisions, _remove_group_member,
-    _rename_security_group, _resolve_nestable_group, _resolve_user_with_fallback, build_group_name,
+    _ensure_app_owns_group, _ensure_security_group, _find_existing_library_collisions, _find_group_by_name,
+    _find_group_name_collisions, _find_groups_by_name_prefix, _get_group_members, _get_unique_group,
+    _log_group_name_collisions, _remove_group_member, _rename_security_group, _resolve_nestable_group,
+    _resolve_user_with_fallback, _set_group_description, _token_object_id, build_group_name,
 )
 from ._navigation import (
     _ensure_library_nav_link, _ensure_nav_label, _find_nav_label, _normalise_nav_url, _remove_library_nav_link,
@@ -401,14 +401,26 @@ class SharePointLibraryManager:
                         group=group_display_name, permission=role_key,
                     )
                 else:
-                    group_id, is_new = _ensure_security_group(
+                    group, is_new = _ensure_security_group(
                         self._graph_token, group_display_name, group_description,
                         self.service_principal_id if app_owned else None,
                     )
-                    if app_owned and not is_new and not self._check_group_owner(
-                        group_id, group_display_name, site_url, library_code, role_key, action_log,
-                    ):
-                        continue
+                    group_id = group["id"]
+                    if app_owned and not is_new:
+                        if not self._check_group_owner(
+                            group_id, group_display_name, site_url, library_code, role_key, action_log,
+                        ):
+                            continue
+                        # The name follows the code, which never changes, but the
+                        # description names the library, so it follows a rename.
+                        # Groups people own (app_owned False) are left as they are.
+                        if group.get("description") != group_description:
+                            _set_group_description(self._graph_token, group_id, group_description)
+                            _append_log(
+                                action_log, site_url, library_code, "group_description_updated",
+                                f"description set to: {group_description}",
+                                group=group_display_name, permission=role_key,
+                            )
                     created_groups.append((group_display_name, suffix, role_key, action_name, group_id, is_new))
 
             # Step 5: If any groups were newly created, wait once for Entra ID

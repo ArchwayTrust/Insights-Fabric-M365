@@ -192,23 +192,32 @@ def _create_security_group(
 
 def _ensure_security_group(
     token: str, display_name: str, description: str, owner_id: str | None = None,
-) -> tuple[str, bool]:
+) -> tuple[dict, bool]:
     """Ensure a security group exists, creating it if needed.
 
     *owner_id* is passed to _create_security_group for a new group.  An
-    existing group is returned as is; callers check its owner.
+    existing group is returned as is; callers check its owner and
+    description.
 
     Returns:
-        (group_id, newly_created) — *newly_created* is True when the group
-        was just created and downstream callers should allow for Entra ID
-        replication delay.
+        (group, newly_created) — the group resource (``id``,
+        ``description``, …), and True when it was just created and
+        downstream callers should allow for Entra ID replication delay.
     """
     existing = _find_group_by_name(token, display_name)
     if existing:
         logger.info("Security group '%s' already exists (id=%s)", display_name, existing["id"])
-        return existing["id"], False
-    group = _create_security_group(token, display_name, description, owner_id)
-    return group["id"], True
+        return existing, False
+    return _create_security_group(token, display_name, description, owner_id), True
+
+
+def _set_group_description(token: str, group_id: str, description: str) -> None:
+    """Update a group's description (its name is unchanged)."""
+    resp = _request_with_retry(
+        "PATCH", f"{GRAPH_BASE_URL}/groups/{group_id}", headers=_graph_headers(token),
+        json={"description": description},
+    )
+    resp.raise_for_status()
 
 
 def _get_group_owner_ids(token: str, group_id: str) -> set[str]:

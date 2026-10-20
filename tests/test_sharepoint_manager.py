@@ -1105,3 +1105,34 @@ def test_dry_run_reports_ownership_without_changing_it(make_manager, tenant, sit
         ["MATH", "group_owner_added (dry run)"], ["MATH", "ensure_group (dry run)"], ["MATH", "add_to_group (dry run)"],
         ["ENG", "group_not_owned"],
     ]
+
+
+def test_renaming_a_library_keeps_group_names_and_updates_descriptions(make_manager, tenant, site):
+    make_manager().create_libraries(libraries_df(site, "MATH", library_display_name="Maths", manual_read=True))
+    names = sorted(g["displayName"] for g in tenant.groups.values())
+
+    results = make_manager().create_libraries(
+        libraries_df(site, "MATH", library_display_name="Mathematics", manual_read=True),
+    )
+
+    assert sorted(g["displayName"] for g in tenant.groups.values()) == names
+    assert len(rows(results, "group_description_updated")) == 3
+    assert all("'Mathematics' (MATH)" in g["description"] for g in tenant.groups.values())
+    assert "NOT synced" in tenant.group_named("BAA-Sharepoint-MATH-Manual-Read")["description"]
+
+    tenant.calls.clear()
+    make_manager().create_libraries(libraries_df(site, "MATH", library_display_name="Mathematics", manual_read=True))
+    assert created(tenant, "/v1.0/groups/", method="PATCH") == []
+
+
+def test_descriptions_of_groups_people_own_are_left_alone(make_manager, tenant, site):
+    head = tenant.add_user("head@contoso.com")
+    slt_read = tenant.add_group("BAA-Sharepoint-SLT-Manual-Read", owners={head["id"]})
+    slt_read["description"] = "Curated by the headteacher"
+    df = libraries_df(site, "SLT", library_display_name="Senior Leadership", auto_groups=False,
+                      manual_read=True, app_owned=False)
+
+    results = make_manager().create_libraries(df)
+
+    assert "group_description_updated" not in actions(results)
+    assert slt_read["description"] == "Curated by the headteacher"

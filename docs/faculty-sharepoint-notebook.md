@@ -129,6 +129,7 @@ The core code moved over unchanged. A script compared every function and constan
 | Redirects from https to http were followed, with the token, and GET redirects weren't checked at all. | Every redirect hop, for every method, must stay on the same host and on https. Requests to SharePoint and Graph aren't redirected elsewhere in normal use. |
 | A user principal name containing `/` could change the path of the Graph user lookup. | The `/` is now encoded. Valid UPNs are sent exactly as before. |
 | Groups were found by name alone, and names are predictable, so a same-named group created by someone else would have been granted the library's access. | The app is made owner of the groups it creates, and an existing group is only granted or synced if the app owns it. Groups the notebook created before have no owner, so the app is added as their owner on first use (`group_owner_added`). A group owned only by others is skipped with a `group_not_owned` warning. The SLT groups are exempt (`app_owned=False`), as the headteacher owns them. No new permission is needed: `Group.ReadWrite.All` covers owners. |
+| A faculty rename changed the library's display name but left each group's description naming the old one. | The create pass now updates the descriptions of the groups the app owns. Group names never change, as they use the faculty code. |
 | Unlinking a library that doesn't exist (a faculty created and deleted between runs, or a library deleted by hand) was a fatal `error`. | Now a `library_not_found` warning, and the Auto groups are still emptied. Before, the run failed and the watermark never advanced past the event. |
 | Creating a group or navigation link was retried after a 5xx or timeout, even though it may have succeeded. | Only retried when the request certainly didn't arrive (429, connect timeout), so no duplicate group can block a library. |
 | The collision check only compared libraries in the same call, but create runs are incremental. | A new code that would share groups with a library already on the site (e.g. `PEKS3` after `PE-KS3`, or an unlinked library still holding the groups) is now skipped with `group_name_collision`. |
@@ -169,7 +170,7 @@ The old core cell said it was an inlined copy of `SharePointLibraryPermissions` 
 
 All tests run without credentials or a Fabric workspace: [`tests/sharepoint_fake.py`](../tests/sharepoint_fake.py) is an in-memory fake of the Graph and SharePoint REST endpoints the manager calls. It replaces `requests.request`, so the real request building, retries and response handling all run, and it keeps state (groups, members, libraries, role assignments, navigation, sharing settings), so tests check what an operation actually changed and that running it again changes nothing. Like the real services, it parses query strings out of the URL, which is how the `&` bug above was caught.
 
-The suite went from 102 to 311 tests. It passes on Python 3.10, 3.11, 3.12 and 3.13, and with pandas 2 and pandas 3.
+The suite went from 102 to 313 tests. It passes on Python 3.10, 3.11, 3.12 and 3.13, and with pandas 2 and pandas 3.
 
 | File | Tests | Covers |
 | --- | --- | --- |
