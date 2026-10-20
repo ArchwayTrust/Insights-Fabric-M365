@@ -396,3 +396,19 @@ def test_rows_landing_mid_run_are_left_for_the_next_run(tenant, run_notebook, sp
 
     assert hub.list_by_slug("MATHNEW")["displayName"] == "New Maths"
     assert spark.watermark() == {"faculty_sharepoint_sync|BAA|MATH%": "2026-10-03 09:00:00.000000"}
+
+
+def test_a_moved_faculty_keeps_its_old_library_until_the_new_one_exists(tenant, run_notebook, spark):
+    from sharepoint_fake import graph_error
+    seed_existing_libraries(tenant)
+    hub_id = tenant.sites[HUB.lower()].id
+    # Creating libraries on the new hub fails, so MATHMOVED isn't provisioned there
+    tenant.fail("POST", rf"/sites/{re.escape(hub_id)}/lists$", graph_error(503, "serviceNotAvailable"), times=99)
+
+    with pytest.raises(RuntimeError, match="failed action"):
+        run_notebook(spark)
+
+    old_hub = tenant.sites[OLD_HUB.lower()]
+    assert old_hub.list_by_slug("MATHMOVED")["displayName"] == "MATHMOVED"  # not retired
+    assert old_hub.list_by_slug("MATHMOVED")["role_assignments"]  # still has its access
+    assert spark.watermark() == {}

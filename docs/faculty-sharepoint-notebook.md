@@ -44,7 +44,7 @@ Cells are listed in order. **Changed** marks the cells that differ from the prev
 | 24-26 | *SLT Libraries* | One SLT library per hub, with Manual groups only, owned by the headteacher rather than the app (`app_owned=False`). Reports faculties whose code collides with the SLT code, and hubs shared by two academies | **Changed** (cell 25) |
 | 27-29 | *Create/Modify Libraries* | Faculties new or changed since the watermark | **Changed** (bounded by the run's upper watermark) |
 | 30-32 | *Unlink Deleted Faculties* | Faculties deleted at source since the watermark | **Changed** (bounded by the run's upper watermark) |
-| 33-35 | *Retire Moved Libraries* | Faculties whose hub changed since the watermark: retires the copy on the old hub | **Changed** (bounded by the run's upper watermark) |
+| 33-35 | *Retire Moved Libraries* | Faculties whose hub changed since the watermark: retires the copy on the old hub, once the library exists on the new one | **Changed** (bounded by the run's upper watermark; waits for the new library) |
 | 36-38 | *SLT Access to Faculty Libraries* | Grants each academy's SLT groups Contribute and Read on every faculty library, every run | **Changed** (cell 37) |
 | 39-41 | *Update Memberships* | Full membership sync for every in-scope faculty, including the all-staff nested groups | |
 | 42-43 | *Unresolved Users* | Appends users that couldn't be resolved to the unresolved users table, with academy and subject | |
@@ -130,6 +130,11 @@ The core code moved over unchanged. A script compared every function and constan
 | A user principal name containing `/` could change the path of the Graph user lookup. | The `/` is now encoded. Valid UPNs are sent exactly as before. |
 | Groups were found by name alone, and names are predictable, so a same-named group created by someone else would have been granted the library's access. | The app is made owner of the groups it creates, and an existing group is only granted or synced if the app owns it. Groups the notebook created before have no owner, so the app is added as their owner on first use (`group_owner_added`). A group owned only by others is skipped with a `group_not_owned` warning. The SLT groups are exempt (`app_owned=False`), as the headteacher owns them. No new permission is needed: `Group.ReadWrite.All` covers owners. |
 | A faculty rename changed the library's display name but left each group's description naming the old one. | The create pass now updates the descriptions of the groups the app owns. Group names never change, as they use the faculty code. |
+| The retire pass ran even when creating the faculty's library on its new hub had failed, removing the old library's access with no replacement. | The retire query passes `new_site_url`, and a library is only retired once it exists on the new hub (`retire_deferred` until then). A faculty deleted since its move is still retired. |
+| An ordinary SharePoint list whose URL ended in a faculty code (`/Lists/ENG`) was treated as that faculty's library. | Only document libraries are matched. |
+| Permission levels were looked up by their English names. | They're found by type, so renamed or translated levels still work. |
+| Unlink emptied Auto groups without checking who owns them. | Like the other passes, it only empties groups the app owns. |
+| A redirect that couldn't be followed, such as a POST 303, was returned as if it had worked. | It's an error. OneDrive shortcut creation, like group creation, is no longer repeated after a failure that may have succeeded. |
 | Unlinking a library that doesn't exist (a faculty created and deleted between runs, or a library deleted by hand) was a fatal `error`. | Now a `library_not_found` warning, and the Auto groups are still emptied. Before, the run failed and the watermark never advanced past the event. |
 | Creating a group or navigation link was retried after a 5xx or timeout, even though it may have succeeded. | Only retried when the request certainly didn't arrive (429, connect timeout), so no duplicate group can block a library. |
 | The collision check only compared libraries in the same call, but create runs are incremental. | A new code that would share groups with a library already on the site (e.g. `PEKS3` after `PE-KS3`, or an unlinked library still holding the groups) is now skipped with `group_name_collision`. |
@@ -170,7 +175,7 @@ The old core cell said it was an inlined copy of `SharePointLibraryPermissions` 
 
 All tests run without credentials or a Fabric workspace: [`tests/sharepoint_fake.py`](../tests/sharepoint_fake.py) is an in-memory fake of the Graph and SharePoint REST endpoints the manager calls. It replaces `requests.request`, so the real request building, retries and response handling all run, and it keeps state (groups, members, libraries, role assignments, navigation, sharing settings), so tests check what an operation actually changed and that running it again changes nothing. Like the real services, it parses query strings out of the URL, which is how the `&` bug above was caught.
 
-The suite went from 102 to 313 tests. It passes on Python 3.10, 3.11, 3.12 and 3.13, and with pandas 2 and pandas 3.
+The suite went from 102 to 323 tests. It passes on Python 3.10, 3.11, 3.12 and 3.13, and with pandas 2 and pandas 3.
 
 | File | Tests | Covers |
 | --- | --- | --- |

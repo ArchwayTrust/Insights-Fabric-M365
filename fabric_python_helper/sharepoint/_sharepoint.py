@@ -76,11 +76,13 @@ def _break_role_inheritance(token: str, site_url: str, list_id: str) -> None:
     logger.info("Broke role inheritance on library '%s'", list_id)
 
 
-# SharePoint role definition names for each permission level.
-SP_ROLE_NAMES = {
-    "read": "Read",
-    "contribute": "Contribute",
-    "owner": "Full Control",
+# SharePoint's built-in role definition for each permission level, by
+# RoleTypeKind (SP.RoleType).  Names are localised and can be renamed, so
+# they aren't used to find the roles.
+SP_ROLE_TYPES = {
+    "read": 2,        # Reader: "Read"
+    "contribute": 3,  # Contributor: "Contribute"
+    "owner": 5,       # Administrator: "Full Control"
 }
 
 
@@ -97,14 +99,15 @@ def _resolve_role_def_ids(token: str, site_url: str) -> dict[str, int]:
     """
     rest_url = _get_sharepoint_rest_url(site_url)
     resp = _request_with_retry(
-        "GET", f"{rest_url}/web/roledefinitions?$select=Id,Name", headers=_sharepoint_headers(token),
+        "GET", f"{rest_url}/web/roledefinitions?$select=Id,Name,RoleTypeKind",
+        headers=_sharepoint_headers(token),
     )
     resp.raise_for_status()
-    ids_by_name = {rd["Name"]: rd["Id"] for rd in resp.json()["d"]["results"]}
-    missing = [name for name in SP_ROLE_NAMES.values() if name not in ids_by_name]
+    ids_by_type = {rd["RoleTypeKind"]: rd["Id"] for rd in resp.json()["d"]["results"] if rd.get("RoleTypeKind")}
+    missing = [role for role in VALID_ROLES if SP_ROLE_TYPES[role] not in ids_by_type]
     if missing:
-        raise ValueError(f"Role definition(s) {missing} not found on {site_url}")
-    return {role: ids_by_name[SP_ROLE_NAMES[role]] for role in VALID_ROLES}
+        raise ValueError(f"Built-in role definition(s) for {missing} not found on {site_url}")
+    return {role: ids_by_type[SP_ROLE_TYPES[role]] for role in VALID_ROLES}
 
 
 def _resolve_group_principal_id(

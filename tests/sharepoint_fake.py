@@ -21,6 +21,8 @@ HOST = "contoso.sharepoint.com"
 APP_ID = "aaaaaaaa-0000-0000-0000-00000000a99a"  # the app's service principal object ID
 
 ROLE_DEFINITIONS = {"Read": 1073741826, "Contribute": 1073741827, "Full Control": 1073741829}
+# RoleTypeKind (SP.RoleType) of each built-in role definition
+ROLE_TYPES = {"Read": 2, "Contribute": 3, "Full Control": 5}
 
 USER = "#microsoft.graph.user"
 GROUP = "#microsoft.graph.group"
@@ -55,13 +57,14 @@ class FakeSite:
         # Set to make sharing writes succeed without changing anything, as SharePoint sometimes does
         self.ignore_sharing_writes = False
 
-    def add_list(self, display_name, slug=None, unique=False):
+    def add_list(self, display_name, slug=None, unique=False, template="documentLibrary"):
         list_id = str(uuid.uuid4())
         slug = slug or display_name
         self.lists[list_id] = {
             "id": list_id,
             "displayName": display_name,
             "slug": slug,
+            "template": template,
             "unique": unique,
             "role_assignments": {},  # principal id -> set of role definition ids
             "properties": {},
@@ -70,12 +73,14 @@ class FakeSite:
 
     def list_by_slug(self, slug):
         for lst in self.lists.values():
-            if lst["slug"].lower() == slug.lower():
+            if lst["slug"].lower() == slug.lower() and lst["template"] == "documentLibrary":
                 return lst
         return None
 
     def web_url(self, lst):
-        return f"{self.url}/{requests.utils.quote(lst['slug'])}"
+        # Ordinary lists live under /Lists/, document libraries at the site root
+        folder = "" if lst["template"] == "documentLibrary" else "Lists/"
+        return f"{self.url}/{folder}{requests.utils.quote(lst['slug'])}"
 
     def nav_node(self, title, url, is_external=False):
         node = {"Id": self.next_nav_id, "Title": title, "Url": url, "IsExternal": is_external, "Children": []}
@@ -213,7 +218,8 @@ class FakeTenant:
             site = next(s for s in self.sites.values() if s.id == m.group(1))
             if method == "GET" and m.group(2) is None:
                 values = [
-                    {"id": lst["id"], "displayName": lst["displayName"], "webUrl": site.web_url(lst), "list": {}}
+                    {"id": lst["id"], "displayName": lst["displayName"], "webUrl": site.web_url(lst),
+                     "list": {"template": lst["template"]}}
                     for lst in site.lists.values()
                 ]
                 skip = int(query.get("$skiptoken", 0))
@@ -356,7 +362,8 @@ class FakeTenant:
 
         if path == "web/roledefinitions" and method == "GET":
             return response(200, {"d": {"results": [
-                {"Id": role_id, "Name": name} for name, role_id in ROLE_DEFINITIONS.items()
+                {"Id": role_id, "Name": name, "RoleTypeKind": ROLE_TYPES[name]}
+                for name, role_id in ROLE_DEFINITIONS.items()
             ]}})
 
         if path == "web/ensureuser" and method == "POST":

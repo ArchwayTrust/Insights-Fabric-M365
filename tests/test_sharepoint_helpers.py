@@ -368,10 +368,36 @@ def test_role_definitions_are_read_in_one_request(tenant):
 
 def test_missing_role_definition_is_an_error(tenant):
     site = tenant.add_site("/sites/maths")
-    tenant.fail("GET", r"/roledefinitions", response(200, {"d": {"results": [{"Id": 1, "Name": "Read"}]}}))
+    tenant.fail("GET", r"/roledefinitions", response(200, {"d": {"results": [
+        {"Id": 1, "Name": "Read", "RoleTypeKind": 2},
+    ]}}))
 
-    with pytest.raises(ValueError, match="Contribute"):
+    with pytest.raises(ValueError, match="contribute"):
         _sharepoint._resolve_role_def_ids(TOKEN, site.url)
+
+
+def test_role_definitions_are_found_by_type_not_name(tenant):
+    site = tenant.add_site("/sites/maths")
+    tenant.fail("GET", r"/roledefinitions", response(200, {"d": {"results": [
+        {"Id": 11, "Name": "Lecture", "RoleTypeKind": 2},
+        {"Id": 12, "Name": "Collaboration", "RoleTypeKind": 3},
+        {"Id": 13, "Name": "Contrôle total", "RoleTypeKind": 5},
+        {"Id": 14, "Name": "Read", "RoleTypeKind": 0},  # a custom level reusing an English name
+    ]}}))
+
+    assert _sharepoint._resolve_role_def_ids(TOKEN, site.url) == {"read": 11, "contribute": 12, "owner": 13}
+
+
+def test_ordinary_lists_are_not_libraries_but_their_titles_count(tenant):
+    site = tenant.add_site("/sites/maths")
+    tasks = site.add_list("English tasks", slug="ENG", template="genericList")  # /Lists/ENG
+    titled = site.add_list("ART", slug="ArtList", template="genericList")
+
+    lists = _graph._list_existing_lists(TOKEN, site.id)
+
+    assert "eng" not in lists and lists["list:eng"]["id"] == tasks["id"]
+    assert _graph._find_title_conflict(lists, "ART")["id"] == titled["id"]
+    assert _groups._find_existing_library_collisions([(site.url, "LISTENG")], {site.url: lists}) == {}
 
 
 def test_group_roles_are_keyed_by_claims_login_name(tenant):

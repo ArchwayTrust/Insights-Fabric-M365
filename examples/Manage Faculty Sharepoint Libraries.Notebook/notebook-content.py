@@ -839,6 +839,11 @@ df_hub_moves = spark.sql(f"""
         f.previous_hub_url AS site_url
         ,f.static_faculty_code AS library_code
         ,f.academy_code || '-Sharepoint' AS group_prefix
+        -- The old library is only retired once its replacement exists on the
+        -- new hub; not checked for a faculty since deleted, whose leftover is
+        -- retired anyway.
+        ,CASE WHEN COALESCE(f.deleted_in_source, FALSE) THEN NULL
+              ELSE f.sharepoint_hub_url END AS new_site_url
         ,f.last_changed_ts
     FROM
         {curated_faculty_list} AS f

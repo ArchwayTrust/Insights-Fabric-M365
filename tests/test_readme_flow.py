@@ -51,18 +51,26 @@ class Spark:
 
     def __init__(self, tables):
         self.tables = tables
-        self.watermark = None
+        self.watermarks = {}  # process key -> last_processed_ts
         self.saved = []
+
+    @property
+    def watermark(self):
+        """The only watermark written so far, or None."""
+        assert len(self.watermarks) <= 1, self.watermarks
+        return next(iter(self.watermarks.values()), None)
 
     def table(self, name):
         return Frame(self.tables[name.rsplit(".", 1)[-1]])
 
     def sql(self, query):
         if "MERGE INTO" in query:
-            self.watermark = datetime.fromisoformat(re.search(r"TIMESTAMP'([^']+)'", query).group(1))
+            process = re.search(r"SELECT '((?:[^']|'')*)' AS process", query).group(1).replace("''", "'")
+            self.watermarks[process] = datetime.fromisoformat(re.search(r"TIMESTAMP'([^']+)'", query).group(1))
             return None
         assert "sharepoint_sync_state" in query
-        rows = [{"last_processed_ts": self.watermark}] if self.watermark else []
+        process = re.search(r"process = '((?:[^']|'')*)'", query).group(1).replace("''", "'")
+        rows = [{"last_processed_ts": self.watermarks[process]}] if process in self.watermarks else []
         return Frame(pd.DataFrame(rows, columns=["last_processed_ts"]))
 
     def createDataFrame(self, pdf):
@@ -190,3 +198,15 @@ def test_readme_setting_specific_steps(setting):
     assert all(principal in site.list_by_slug(code)["role_assignments"] for code in ("MATH", "ENG", "SLT"))
     # The newer rows were all out of scope, so the watermark only covers what this scope processed
     assert spark.watermark == datetime(2026, 10, 2)
+
+
+def test_a_scoped_rerun_reads_the_watermark_it_wrote(setting):
+    flow = with_setting_specific_steps(FLOW, setting.site.url)
+    setting.run(dry_run=False, flow=flow)
+    [process] = setting.spark.watermarks
+
+    namespace = setting.run(dry_run=False, flow=flow)
+
+    assert process == f"sharepoint_libraries|{setting.site.url}"
+    assert namespace["since"] == datetime(2026, 10, 2)
+    assert namespace["changed"].empty

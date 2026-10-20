@@ -45,6 +45,11 @@ def _list_existing_lists(token: str, site_id: str) -> dict[str, dict]:
     (the URL slug, which is the library code).  Display names are not keys:
     a library is only ever identified by its URL, so code 'ART' can never
     pick up an unrelated library merely titled 'Art'.
+
+    Only document libraries are keyed by slug.  Other lists (``/Lists/ENG``)
+    are keyed ``list:{slug}``, so a code never matches one, but their titles
+    still count for _find_title_conflict, as titles are unique across all of
+    a site's lists.
     """
     url: str | None = f"{GRAPH_BASE_URL}/sites/{site_id}/lists?$select=id,displayName,webUrl,list"
 
@@ -63,7 +68,9 @@ def _list_existing_lists(token: str, site_id: str) -> dict[str, dict]:
         web_url = lst.get("webUrl", "")
         if web_url:
             slug = unquote(web_url.rstrip("/").rsplit("/", 1)[-1]).lower()
-            lists_by_key[slug] = lst
+            template = (lst.get("list") or {}).get("template")
+            is_library = template is None or template == "documentLibrary"
+            lists_by_key[slug if is_library else f"list:{slug}"] = lst
     return lists_by_key
 
 
@@ -224,8 +231,10 @@ def _create_onedrive_shortcut(
     )
 
     url = f"{GRAPH_BASE_URL}/users/{user_object_id}/drive/root/children"
+    # Not repeated after a failure that may have created the shortcut:
+    # conflictBehavior 'rename' would add a second one.
     resp = _request_with_retry(
-        "POST", url, headers=_graph_headers(graph_token), json=body,
+        "POST", url, headers=_graph_headers(graph_token), json=body, idempotent=False,
     )
     if not resp.ok:
         logger.warning(

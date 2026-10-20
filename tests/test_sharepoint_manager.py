@@ -913,7 +913,7 @@ def test_unlinking_a_library_that_never_existed_is_a_warning(make_manager, tenan
 
     results = make_manager().unlink_libraries(libraries_df(site, "MATH"))
 
-    assert actions(results) == ["group_emptied", "library_not_found", "manual_groups_preserved"]
+    assert actions(results) == ["group_emptied", "group_owner_added", "library_not_found", "manual_groups_preserved"]
     assert not set(results["action"]) & FATAL_ACTIONS
     assert group["members"] == {}
 
@@ -1136,3 +1136,68 @@ def test_descriptions_of_groups_people_own_are_left_alone(make_manager, tenant, 
 
     assert "group_description_updated" not in actions(results)
     assert slt_read["description"] == "Curated by the headteacher"
+
+
+
+# Copilot re-review fixes
+
+def test_an_ordinary_list_with_the_code_as_its_url_is_not_adopted(make_manager, tenant, site):
+    tasks = site.add_list("English tasks", slug="ENG", template="genericList", unique=False)
+
+    make_manager().create_libraries(libraries_df(site, "ENG", library_display_name="English"))
+
+    assert tasks["displayName"] == "English tasks" and tasks["unique"] is False
+    library = site.list_by_slug("ENG")
+    assert library["template"] == "documentLibrary" and library["displayName"] == "English"
+
+
+def test_a_onedrive_shortcut_is_not_repeated_after_a_server_error(make_manager, tenant, site, library):
+    from sharepoint_fake import response
+    tenant.add_user("jo@contoso.com")
+    tenant.fail("POST", r"/drive/root/children$", response(503))
+
+    results = make_manager(create_onedrive_shortcuts=True).update_memberships(
+        memberships_df(site, [("MATH", "jo@contoso.com", "contribute")]),
+    )
+
+    assert len(created(tenant, "/drive/root/children")) == 1
+    assert "onedrive_shortcut_failed" in actions(results)
+
+
+def test_unlink_never_empties_a_group_the_app_doesnt_own(make_manager, tenant, site):
+    owner = tenant.add_user("someone@contoso.com")
+    member = tenant.add_user("member@contoso.com")
+    theirs = tenant.add_group("BAA-Sharepoint-MATH-Auto-Read", owners={owner["id"]})
+    theirs["members"][member["id"]] = member
+
+    for dry_run in (True, False):
+        results = make_manager(dry_run=dry_run).unlink_libraries(libraries_df(site, "MATH"))
+        assert "group_not_owned" in actions(results)
+
+    assert set(theirs["members"]) == {member["id"]}
+
+
+def test_retire_waits_for_the_library_on_the_new_site(make_manager, tenant, site):
+    new_site = tenant.add_site("/sites/BAANew")
+    make_manager().create_libraries(libraries_df(site, "MATH"))
+    df = libraries_df(site, "MATH").assign(new_site_url=new_site.url)
+
+    results = make_manager().retire_moved_libraries(df)
+
+    assert actions(results) == ["retire_deferred"]
+    assert "retire_deferred" in WARNING_ACTIONS
+    assert site.list_by_slug("MATH")["displayName"] == "MATH Faculty"  # left working
+
+    make_manager().create_libraries(libraries_df(new_site, "MATH"))
+    results = make_manager().retire_moved_libraries(df)
+
+    assert "library_retired" in actions(results)
+    assert site.list_by_slug("MATH")["displayName"] == "MATH_MOVED"
+
+
+def test_retire_without_a_new_site_retires_anyway(make_manager, tenant, site):
+    make_manager().create_libraries(libraries_df(site, "MATH"))
+
+    results = make_manager().retire_moved_libraries(libraries_df(site, "MATH").assign(new_site_url=None))
+
+    assert "library_retired" in actions(results)

@@ -611,7 +611,7 @@ Create the credential without a scope: the manager asks it for a Graph token and
 | `create_libraries(df)` | Ensures each library exists with its own permissions, its groups, metadata and navigation link. Safe to re-run: existing libraries and groups are reused, and a changed display name is applied. | `site_url`, `library_code`, `library_display_name`, `group_prefix`. Optional: `auto_groups` (default True), `manual_read`, `manual_contribute`, `app_owned` (default True), `source_system`, `source_id` |
 | `update_memberships(df, libraries_df=None, nested_groups_df=None)` | Makes each library's Auto groups contain exactly the users (and nested groups) given. Users are matched by UPN, then mail, then proxy addresses, so aliased domains work. Libraries in `libraries_df` with no rows in `df` have their Auto groups emptied. | `site_url`, `library_code`, `user_principal_name`, `permission` (`read`, `contribute` or `owner`), `group_prefix` |
 | `unlink_libraries(df)` | For libraries removed at source: renames to `{code}_UNLINKED`, empties the Auto groups, keeps the Manual groups, removes the navigation link. Nothing is deleted. | `site_url`, `library_code`, `group_prefix` |
-| `retire_moved_libraries(df)` | For a library whose site changed: renames the copy on the **old** site to `{code}_MOVED` and removes the groups' access to it. | `site_url` (the old site), `library_code`, `group_prefix` |
+| `retire_moved_libraries(df)` | For a library whose site changed: renames the copy on the **old** site to `{code}_MOVED` and removes the groups' access to it. With `new_site_url`, waits until the library exists there (`retire_deferred` until then). | `site_url` (the old site), `library_code`, `group_prefix`. Optional: `new_site_url` |
 | `rename_libraries(df)` | Sets new display names and, when `old_library_code` is given, renames the groups to the new code. | `site_url`, `library_code`, `library_display_name`, `group_prefix`. Optional: `old_library_code` |
 | `grant_group_access(df)` | Grants existing groups a permission level on existing libraries, for example a leadership group on every library. Additive: never removes access. | `site_url`, `library_code`, `group_name`, `permission` |
 | `enforce_site_sharing_lockdown(site_urls)` | Turns off member sharing, access requests and member invites on each site, and checks the change stuck. | A list of site URLs |
@@ -667,8 +667,11 @@ if not failures.empty:
 - **Manual groups are never synced or emptied,** and service principals and devices in Auto groups are left in place.
 - **No guessing between duplicates.** If two Entra groups share a name the manager would use, it stops for that library rather than pick one. Library codes that would produce the same group names (such as `PE-KS3` and `PEKS3`, or codes differing only in case) are skipped with `group_name_collision`, including when the other library was created by an earlier run. A library is only ever found by its URL, so a code is never matched to another library that merely has that title (`library_name_conflict`).
 - **Groups must be the app's.** Group names are predictable, so a group someone else creates with the name a library would use could otherwise be handed that library's access. The app is made owner of the groups it creates, and before it grants or syncs an existing group it checks the app is an owner: a group with no owner (as earlier versions created them) has the app added and is logged as `group_owner_added`; a group owned only by others is skipped with `group_not_owned`. The app's object ID is read from its Graph token, or can be passed as `service_principal_id`. Groups created with `app_owned=False` aren't owned or checked, and `grant_group_access` grants the groups it's given by name.
-- **Creating a group or navigation link is never repeated** after a failure that may have succeeded (a 5xx or timeout), so a retry can't make a duplicate. The next run finds what was created.
-- **Tokens only go to your tenant.** Every `site_url` must be `https://` on `sharepoint_hostname`, and redirects to another host or to plain http are refused.
+- **Creating a group, navigation link or OneDrive shortcut is never repeated** after a failure that may have succeeded (a 5xx or timeout), so a retry can't make a duplicate. The next run finds what was created.
+- **Only document libraries count as libraries.** An ordinary list whose URL ends in the code (`/Lists/ENG`) is never adopted, though its title still counts for `library_name_conflict`.
+- **A moved library keeps working until its replacement exists.** Given `new_site_url`, `retire_moved_libraries` leaves the old library alone (`retire_deferred`) until the library exists on the new site.
+- **Permission levels are found by type**, not by name, so sites in another language, or with renamed levels, work too.
+- **Tokens only go to your tenant.** Every `site_url` must be `https://` on `sharepoint_hostname`, and redirects to another host or to plain http are refused. A redirect that can't be followed is an error, never a success.
 - **Throttling and transient errors are retried,** honouring `Retry-After`, with exponential backoff.
 
 ### Using it in your own setting
@@ -744,11 +747,11 @@ Optionally, also write the `user_not_found` rows to a table of their own (`run_i
 
 Run the operations in this order, from a pipeline, with a dry run first whenever the inputs or the package version change:
 
-1. **Read the watermark**, and the newest `last_changed_ts` as an upper bound. Only rows between the two are "changed" in this run. Rows that land while it runs are left for the next one.
+1. **Read the libraries table, apply any scope, then read the watermark**, and the newest `last_changed_ts` as an upper bound. Only rows between the two are "changed" in this run. Rows that land while it runs are left for the next one.
 2. **Lock down site sharing** on every live site (full pass). It's independent of the rest, and corrects settings changed by hand.
 3. **Create** changed, not-deleted libraries (incremental). This also applies renames and new metadata. It runs before the grant and membership passes, which need the libraries to exist.
 4. **Unlink** changed, deleted libraries (incremental).
-5. **Retire** libraries whose site changed (incremental, on `previous_site_url`). This runs after the create pass, so the library on the new site has its access before the old one loses it.
+5. **Retire** libraries whose site changed (incremental, on `previous_site_url`). This runs after the create pass, and with `new_site_url` it only retires a library once its replacement exists on the new site, so a failed create never leaves the library without working access (`retire_deferred` until then).
 6. **Grant** the extra groups on every live library (full pass). Additive, so it also restores access removed by hand.
 7. **Sync memberships** for every live library (full pass), passing all live libraries as `libraries_df` so a library whose last member left has its groups emptied.
 8. **Save each operation's action log** straight after it runs, so a later failure doesn't lose it.
@@ -797,11 +800,12 @@ def save(operation, log):
 
 
 # Step 1: what changed since the last clean run, up to now
-state = spark.sql(f"SELECT last_processed_ts FROM {SCHEMA}.sharepoint_sync_state WHERE process = '{PROCESS}'").collect()
-since = state[0]["last_processed_ts"] if state else datetime(1900, 1, 1)
-
 libraries = spark.table(f"{SCHEMA}.sharepoint_libraries").toPandas()
 # Setting-specific: filter the rows in scope here (see "Adding setting-specific steps")
+
+# The watermark is read after any scope is applied, as the scope is part of its key
+state = spark.sql(f"SELECT last_processed_ts FROM {SCHEMA}.sharepoint_sync_state WHERE process = '{PROCESS}'").collect()
+since = state[0]["last_processed_ts"] if state else datetime(1900, 1, 1)
 until = libraries["last_changed_ts"].max() if not libraries.empty else since
 changed = libraries[(libraries["last_changed_ts"] > since) & (libraries["last_changed_ts"] <= until)]
 live = libraries[~libraries["deleted"]].assign(source_id=lambda df: df["library_id"])
@@ -810,8 +814,11 @@ save("site_sharing_lockdown", mgr.enforce_site_sharing_lockdown(live["site_url"]
 save("create_libraries", mgr.create_libraries(live[live["library_id"].isin(changed["library_id"])]))        # step 3
 save("unlink_libraries", mgr.unlink_libraries(changed[changed["deleted"]]))                                  # step 4
 
+# Step 5: new_site_url makes retire wait until the library exists on its new site (not for deleted ones)
 moved = changed[changed["previous_site_url"].notna() & (changed["previous_site_url"] != changed["site_url"])]
-save("retire_moved_libraries", mgr.retire_moved_libraries(moved.assign(site_url=moved["previous_site_url"])))  # step 5
+save("retire_moved_libraries", mgr.retire_moved_libraries(moved.assign(
+    site_url=moved["previous_site_url"], new_site_url=moved["site_url"].where(~moved["deleted"]),
+)))
 
 # Steps 6 and 7 read the optional tables too; leave out any you don't use
 keys = live[["library_id", "site_url", "library_code", "group_prefix"]]
@@ -939,6 +946,7 @@ Outside Fabric, `KeyVaultCertificateCredential` isn't available (it needs `noteb
 | `removal_guardrail_triggered` row | A sync would remove more members than `max_removals_per_group`. Check the input data, then re-run with `allow_mass_removal=True`. |
 | `library_not_found` row | The library doesn't exist on the site, for example it was deleted by hand. Recreate it with `create_libraries` or remove it from the input. When unlinking, its Auto groups are still emptied. |
 | `group_not_owned` row | A group with the name the manager uses is owned by someone, but not by the app registration, so it wasn't used. Check who created it: if it's legitimate, add the app's service principal as an owner; otherwise delete it. |
+| `retire_deferred` row | The library hasn't been created on its new site yet (for example the create failed), so the old one was left working. It's retired on a later run once the new one exists. |
 | `library_name_conflict` row | Another library on the site already has the code as its title, so the library can't be created. Rename that library's title. |
 
 ## Upgrading from 0.3.x

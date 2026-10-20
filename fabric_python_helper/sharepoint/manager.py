@@ -1150,6 +1150,12 @@ class SharePointLibraryManager:
                 if not existing_group:
                     logger.info("Group '%s' not found — skipping", group_name)
                     continue
+                # Emptying is destructive, so only for the app's own groups
+                if not self._check_group_owner(
+                    existing_group["id"], group_name, site_url, library_code, "", action_log,
+                    dry_run=dry_run,
+                ):
+                    continue
 
                 if dry_run:
                     logger.info("[DRY RUN] Would empty group '%s'", group_name)
@@ -1442,6 +1448,17 @@ class SharePointLibraryManager:
           - library_code:   Library code (URL slug)
           - group_prefix:   Prefix for security group names
 
+        Optional DataFrame columns:
+          - new_site_url:   The site the library moved to.  When given, the
+                            old library is only retired once the library
+                            exists there, so a failed create on the new site
+                            never leaves the faculty without a working
+                            library; until then the row is logged as
+                            ``retire_deferred`` (a warning).  Leave it null
+                            for a library deleted at source, whose leftover
+                            should be retired anyway.  Not checked in a dry
+                            run, where the create pass makes nothing.
+
         Args:
             df:               DataFrame with the required columns.
             dry_run:          Override instance default.
@@ -1465,8 +1482,18 @@ class SharePointLibraryManager:
         df = _validate_required_columns(df, required)
         _validate_site_urls(df["site_url"].unique(), self.sharepoint_hostname)
         df = df.drop_duplicates(subset=["site_url", "library_code"], keep="first")
+        if "new_site_url" not in df.columns:
+            df["new_site_url"] = None
+        new_site_urls = list(df["new_site_url"].dropna().unique())
+        _validate_site_urls(new_site_urls, self.sharepoint_hostname)
 
         action_log = _ThreadSafeLog()
+
+        # Libraries on the new sites, to check the move's replacement exists
+        new_sites = (
+            self._prefetch_sites(new_site_urls, _ThreadSafeLog())
+            if new_site_urls and not dry_run_ else {}
+        )
 
         # Old hubs may have been deleted since the move — those are skipped
         # (nothing to retire), not errors.
@@ -1481,6 +1508,21 @@ class SharePointLibraryManager:
             site_url = row["site_url"]
             if site_url not in sites:
                 continue  # site gone or couldn't be read — already logged
+            new_site_url = row["new_site_url"]
+            if (
+                not dry_run_ and pd.notna(new_site_url)
+                and row["library_code"].lower() not in new_sites.get(new_site_url, {}).get("lists", {})
+            ):
+                logger.warning(
+                    "Not retiring '%s' on '%s': no library on its new site %s yet",
+                    row["library_code"], site_url, new_site_url,
+                )
+                _append_log(
+                    action_log, site_url, row["library_code"], "retire_deferred",
+                    f"the library isn't on its new site ({new_site_url}) yet, so the old one keeps "
+                    f"its access — retire it once the new library has been created",
+                )
+                continue
             items.append((
                 site_url, sites[site_url]["site_id"],
                 row["library_code"],

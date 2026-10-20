@@ -155,9 +155,12 @@ def test_redirect_loop_stops_at_the_hop_limit():
     assert request.call_count == _http.MAX_REDIRECT_HOPS + 1
 
 
-def test_redirect_without_location_is_returned():
+@pytest.mark.parametrize("method", ["GET", "POST"])
+def test_redirect_without_location_is_an_error(method):
+    # raise_for_status() lets 3xx through, so returning it would look like success to a write helper
     with patch_request(return_value=response(302)):
-        assert _request_with_retry("POST", URL).status_code == 302
+        with pytest.raises(requests.HTTPError, match="Unfollowed redirect"):
+            _request_with_retry(method, URL)
 
 
 def test_redirect_from_https_to_http_is_refused():
@@ -184,9 +187,10 @@ def test_get_redirect_to_another_host_or_to_http_is_refused(location):
     assert request.call_count == 1
 
 
-def test_303_is_not_followed_for_post():
+def test_303_is_not_followed_for_post_and_is_an_error():
     with patch_request(return_value=response(303, headers={"Location": "/sites/x"})) as request:
-        assert _request_with_retry("POST", URL).status_code == 303
+        with pytest.raises(requests.HTTPError, match="Unfollowed redirect"):
+            _request_with_retry("POST", URL)
 
     assert request.call_count == 1
 

@@ -628,6 +628,8 @@ def _find_existing_library_collisions(
     for site_url, lists in lists_by_site.items():
         by_key = slugs_by_key.setdefault(site_url, {})
         for slug in lists:
+            if slug.startswith("list:"):
+                continue  # not a library (see _list_existing_lists)
             by_key.setdefault(sanitise_for_group_name(slug).lower(), []).append(slug)
 
     collisions: dict[tuple, tuple] = {}

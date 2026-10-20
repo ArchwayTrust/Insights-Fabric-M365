@@ -154,9 +154,16 @@ def _request_with_retry(
                 # Don't count the redirect as a retry — just re-issue
                 resp = requests.request(method, url, **kwargs)
 
-            # Success or non-retryable client error — return immediately
-            # (residual 3xx after the hop cap would be a broken response;
-            # callers treat non-2xx via raise_for_status as usual)
+            # A redirect that wasn't followed (no Location, or a 303 for a
+            # write) is a failure: raise_for_status() lets 3xx through, so
+            # returning it would let a write helper report success.
+            if follow_manually and resp.status_code in (301, 302, 303, 307, 308):
+                raise requests.HTTPError(
+                    f"Unfollowed redirect ({resp.status_code}) for {method} {url}", response=resp,
+                )
+
+            # Success or non-retryable client error — return immediately;
+            # callers treat non-2xx via raise_for_status as usual
             if resp.status_code < 500 and resp.status_code != 429:
                 return resp
             if not idempotent and resp.status_code != 429:
