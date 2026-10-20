@@ -34,6 +34,7 @@ The package is built for Fabric notebooks. `KeyVaultCertificateCredential` uses 
   - [Operations](#operations)
   - [The action log](#the-action-log)
   - [Safety features](#safety-features)
+  - [Using it in your own setting](#using-it-in-your-own-setting)
   - [Example notebook](#example-notebook)
 - [Troubleshooting](#troubleshooting)
 - [Upgrading from 0.3.x](#upgrading-from-03x)
@@ -669,6 +670,184 @@ if not failures.empty:
 - **Tokens only go to your tenant.** Every `site_url` must be `https://` on `sharepoint_hostname`, and redirects to another host or to plain http are refused.
 - **Throttling and transient errors are retried,** honouring `Retry-After`, with exponential backoff.
 
+### Using it in your own setting
+
+The manager only works with DataFrames, so it doesn't mind where the data comes from: a school's faculties, a company's departments, project teams or anything else that needs a library with its own access. This section suggests a set of tables to drive it from, the tables to record what it did, and the order to run the operations in. The [example notebook](#example-notebook) is one setting built this way.
+
+#### Input tables
+
+Keep the desired state in a few lakehouse tables, maintained by whatever feeds them (an MIS or HR extract, a hand-maintained table, a dataflow). Names and the extra columns used only by the flow are suggestions; the columns the manager reads are fixed.
+
+**`sharepoint_libraries`**: one row per library, holding its current state.
+
+| Column | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `library_id` | string | Yes | Stable ID from the source system. Stored on the library as `source_id`, so a library can be traced back to its record. |
+| `site_url` | string | Yes | Full URL of the site the library lives on, `https://<tenant>.sharepoint.com/sites/<site>`. |
+| `library_code` | string | Yes | Short code, used as the library's URL and in its group names (for example `MATH`). Never change it after the library is created; rename with `library_display_name` instead. |
+| `library_display_name` | string | Yes | Name shown in SharePoint (for example `Mathematics`). Can change; the next create pass applies it. |
+| `group_prefix` | string | Yes | Start of the group names, for example `ACA-Sharepoint`. Use one prefix per site. |
+| `auto_groups` | boolean | No (True) | Create the synced Auto-Read and Auto-Contribute groups. |
+| `manual_read`, `manual_contribute` | boolean | No (False) | Create hand-curated Manual-Read / Manual-Contribute groups. |
+| `app_owned` | boolean | No (True) | The app owns the groups. False for groups a person owns and curates. |
+| `previous_site_url` | string | Flow only | The site the library was on before a move, or null. |
+| `deleted` | boolean | Flow only | True once the library has been removed at source. Keep the row, so the unlink pass sees it. |
+| `last_changed_ts` | timestamp | Flow only | When the row last changed. Drives the incremental passes. |
+
+**`sharepoint_library_members`**: one row per person per library. The full desired membership, not changes.
+
+| Column | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `library_id` | string | Yes | Joins to `sharepoint_libraries`. |
+| `user_principal_name` | string | Yes | The person's sign-in name or email. Aliases and secondary addresses are resolved. |
+| `permission` | string | Yes | `read`, `contribute` or `owner`. |
+
+**`sharepoint_library_nested_groups`** (optional): existing Entra ID security groups to nest in a library's Auto groups, such as an all-staff group.
+
+| Column | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `library_id` | string | Yes | Joins to `sharepoint_libraries`. |
+| `member_group` | string | Yes | The group's object ID, or its exact display name. |
+| `permission` | string | Yes | `read`, `contribute` or `owner`. |
+
+**`sharepoint_library_grants`** (optional): existing groups that should hold a permission on a library without being synced, such as a leadership team on every library.
+
+| Column | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `library_id` | string | Yes | Joins to `sharepoint_libraries`. |
+| `group_name` | string | Yes | The group's exact display name. |
+| `permission` | string | Yes | `read`, `contribute` or `owner`. |
+
+#### Output tables
+
+**`sharepoint_action_log`**: every operation's action log, appended. The seven action log columns (`site_url`, `document_library`, `group`, `user`, `action`, `permission`, `status`, all strings), plus:
+
+| Column | Type | Meaning |
+| --- | --- | --- |
+| `run_id` | string | Identifies the run, to find everything it did. |
+| `operation` | string | Which operation logged the row, for example `update_memberships`. |
+| `dry_run` | boolean | Whether the run was a dry run. |
+| `logged_at` | timestamp | When the row was written. |
+
+**`sharepoint_sync_state`**: the watermark for the incremental passes.
+
+| Column | Type | Meaning |
+| --- | --- | --- |
+| `process` | string | Names the flow, for example `sharepoint_libraries`. Include the rollout scope in it if you filter the inputs, so a wider scope starts a fresh watermark. |
+| `last_processed_ts` | timestamp | The newest `last_changed_ts` a clean run has processed. |
+| `updated_at` | timestamp | When it was last advanced. |
+
+Optionally, also write the `user_not_found` rows to a table of their own (`run_id`, `site_url`, `library_code`, `user_principal_name`, `reason`, `logged_at`), so whoever owns the source data can fix the addresses.
+
+#### Recommended flow
+
+Run the operations in this order, from a pipeline, with a dry run first whenever the inputs or the package version change:
+
+1. **Read the watermark**, and the newest `last_changed_ts` as an upper bound. Only rows between the two are "changed" in this run. Rows that land while it runs are left for the next one.
+2. **Lock down site sharing** on every live site (full pass). It's independent of the rest, and corrects settings changed by hand.
+3. **Create** changed, not-deleted libraries (incremental). This also applies renames and new metadata. It runs before the grant and membership passes, which need the libraries to exist.
+4. **Unlink** changed, deleted libraries (incremental).
+5. **Retire** libraries whose site changed (incremental, on `previous_site_url`). This runs after the create pass, so the library on the new site has its access before the old one loses it.
+6. **Grant** the extra groups on every live library (full pass). Additive, so it also restores access removed by hand.
+7. **Sync memberships** for every live library (full pass), passing all live libraries as `libraries_df` so a library whose last member left has its groups emptied.
+8. **Save each operation's action log** straight after it runs, so a later failure doesn't lose it.
+9. **Fail the run** if any row's action is in `FATAL_ACTIONS`. Show the `WARNING_ACTIONS` rows, but don't fail on them: they're data problems that failing can't fix.
+10. **Advance the watermark** to the upper bound, only after a clean run that wasn't a dry run. A failed run leaves it alone, so its changes are retried.
+
+Every operation is safe to re-run, so a failed run is fixed by running it again.
+
+```python
+# Parameters cell
+DRY_RUN = True
+SCHEMA = "<workspace>.<lakehouse>.<schema>"
+TENANT_ID = "<tenant-id>"
+CLIENT_ID = "<client-id>"
+KEY_VAULT = "https://<key-vault-name>.vault.azure.net/"
+CERTIFICATE_NAME = "<certificate-name>"
+SHAREPOINT_HOSTNAME = "<tenant>.sharepoint.com"
+```
+
+```python
+import uuid
+from datetime import datetime, timezone
+
+import pandas as pd
+
+from fabric_python_helper.auth import KeyVaultCertificateCredential
+from fabric_python_helper.sharepoint import FATAL_ACTIONS, WARNING_ACTIONS, SharePointLibraryManager
+
+credential = KeyVaultCertificateCredential(TENANT_ID, CLIENT_ID, KEY_VAULT, CERTIFICATE_NAME)
+mgr = SharePointLibraryManager(
+    credential, SHAREPOINT_HOSTNAME,
+    dry_run=DRY_RUN, max_workers=4, include_site_name=False, add_to_navigation=True,
+)
+
+RUN_ID = str(uuid.uuid4())
+PROCESS = "sharepoint_libraries"
+logs = []
+
+
+def save(operation, log):
+    """Step 8: keep the log for the gate, and append it to the audit table."""
+    logs.append(log)
+    if not log.empty:
+        rows = log.assign(run_id=RUN_ID, operation=operation, dry_run=DRY_RUN, logged_at=datetime.now(timezone.utc))
+        spark.createDataFrame(rows).write.format("delta").mode("append").saveAsTable(f"{SCHEMA}.sharepoint_action_log")
+
+
+# Step 1: what changed since the last clean run, up to now
+state = spark.sql(f"SELECT last_processed_ts FROM {SCHEMA}.sharepoint_sync_state WHERE process = '{PROCESS}'").collect()
+since = state[0]["last_processed_ts"] if state else datetime(1900, 1, 1)
+
+libraries = spark.table(f"{SCHEMA}.sharepoint_libraries").toPandas()
+until = libraries["last_changed_ts"].max() if not libraries.empty else since
+changed = libraries[(libraries["last_changed_ts"] > since) & (libraries["last_changed_ts"] <= until)]
+live = libraries[~libraries["deleted"]].assign(source_id=lambda df: df["library_id"])
+
+save("site_sharing_lockdown", mgr.enforce_site_sharing_lockdown(live["site_url"]))                          # step 2
+save("create_libraries", mgr.create_libraries(live[live["library_id"].isin(changed["library_id"])]))        # step 3
+save("unlink_libraries", mgr.unlink_libraries(changed[changed["deleted"]]))                                  # step 4
+
+moved = changed[changed["previous_site_url"].notna() & (changed["previous_site_url"] != changed["site_url"])]
+save("retire_moved_libraries", mgr.retire_moved_libraries(moved.assign(site_url=moved["previous_site_url"])))  # step 5
+
+# Steps 6 and 7 read the optional tables too; leave out any you don't use
+keys = live[["library_id", "site_url", "library_code", "group_prefix"]]
+grants = spark.table(f"{SCHEMA}.sharepoint_library_grants").toPandas().merge(keys, on="library_id")
+save("grant_group_access", mgr.grant_group_access(grants))                                                  # step 6
+
+members = spark.table(f"{SCHEMA}.sharepoint_library_members").toPandas().merge(keys, on="library_id")
+nested = spark.table(f"{SCHEMA}.sharepoint_library_nested_groups").toPandas().merge(keys, on="library_id")
+save("update_memberships", mgr.update_memberships(members, libraries_df=keys, nested_groups_df=nested))      # step 7
+
+# Step 9: fail on failed actions, show warnings
+results = pd.concat(logs, ignore_index=True)
+display(results[results["action"].isin(WARNING_ACTIONS)])
+failed = results[results["action"].isin(FATAL_ACTIONS)]
+if not failed.empty:
+    raise RuntimeError(f"{len(failed)} failed action(s), see sharepoint_action_log where run_id = '{RUN_ID}'")
+
+# Step 10: advance the watermark after a clean live run
+if not DRY_RUN and not changed.empty:
+    spark.sql(f"""
+        MERGE INTO {SCHEMA}.sharepoint_sync_state AS t
+        USING (SELECT '{PROCESS}' AS process, TIMESTAMP'{until:%Y-%m-%d %H:%M:%S.%f}' AS last_processed_ts) AS s
+        ON t.process = s.process
+        WHEN MATCHED THEN UPDATE SET t.last_processed_ts = s.last_processed_ts, t.updated_at = current_timestamp()
+        WHEN NOT MATCHED THEN INSERT (process, last_processed_ts, updated_at)
+            VALUES (s.process, s.last_processed_ts, current_timestamp())
+    """)
+```
+
+Things to decide once, before the first live run, as changing them later orphans what was created:
+
+- **Group naming.** `group_prefix` and `include_site_name` make up every group name, and names are how the manager finds its groups. Use one prefix per site, so two sites never share a library's groups.
+- **Library codes.** A library's code is its URL and part of its group names. Treat it as permanent, and use `library_display_name` for renames. Codes that differ only in punctuation or case (`PE-KS3`, `peks3`) would share groups, so they're skipped with `group_name_collision`.
+- **Who owns the groups.** Leave `app_owned` on for groups the automation manages. Turn it off for groups a person owns and curates, and give those to `grant_group_access` rather than the membership sync.
+- **Scope.** If you roll out a few sites at a time, filter the input DataFrames and include the filter in the watermark's `process` key. Widening the scope then starts a fresh watermark, so the newly included rows are processed.
+
+Outside Fabric, `KeyVaultCertificateCredential` isn't available (it needs `notebookutils`). Pass any credential with a `get_token` method that uses a certificate, such as `azure.identity.CertificateCredential`, and run the same flow with the input tables read however suits.
+
 ### Example notebook
 
 [`examples/Manage Faculty Sharepoint Libraries.Notebook`](examples/Manage%20Faculty%20Sharepoint%20Libraries.Notebook/notebook-content.py) is a complete notebook, run from a pipeline, that drives every operation from curated lakehouse tables: incremental create, unlink and retire using a watermark, full membership and access passes, an audit table and a run outcome gate. [docs/faculty-sharepoint-notebook.md](docs/faculty-sharepoint-notebook.md) describes it cell by cell, and how it was moved onto this package.
@@ -789,6 +968,7 @@ What they cover:
 | `test_sharepoint_http.py` | The retry wrapper: throttling, `Retry-After`, server and connection errors, redirects |
 | `test_sharepoint_helpers.py` | Group naming and collisions, input validation, user and group resolution, the property bag, navigation URLs |
 | `test_sharepoint_manager.py` | Every `SharePointLibraryManager` operation end to end, including re-runs, dry runs, guardrails and failures, and authenticating with `KeyVaultCertificateCredential` |
+| `test_readme_flow.py` | Runs the [recommended flow](#recommended-flow) example against the suggested input tables: a dry run, a live run, a re-run and a deletion |
 | `test_faculty_notebook.py` | Runs the [example notebook](#example-notebook) cell by cell, with Spark SQL on SQLite and the real `KeyVaultCertificateCredential` |
 | `test_packaging.py` | The version, public names and that the README's examples are valid Python |
 
