@@ -13,13 +13,26 @@ import pytest
 
 import fabric_python_helper.auth
 import fabric_python_helper.sharepoint
-from fabric_python_helper.sharepoint import SharePointLibraryManager
+from fabric_python_helper.sharepoint import SharePointLibraryManager, sanitise_for_group_name
 
 from sharepoint_fake import APP_ID, HOST, FakeTenant
 
 README = (Path(__file__).resolve().parent.parent / "README.md").read_text(encoding="utf-8")
 SECTION = README.split("### Using it in your own setting", 1)[1].split("\n### ", 1)[0]
-PARAMETERS, FLOW = re.findall(r"^```python\n(.*?)^```", SECTION, re.S | re.M)
+PARAMETERS, FLOW, SCOPE, LEADERSHIP = re.findall(r"^```python\n(.*?)^```", SECTION, re.S | re.M)
+
+
+def with_setting_specific_steps(flow, site_url):
+    """Inserts the README's setting-specific snippets at the two places the skeleton marks."""
+    scope = SCOPE.replace("https://<tenant>.sharepoint.com/sites/Academy", site_url)
+    lines = []
+    for line in flow.splitlines(keepends=True):
+        lines.append(line)
+        if line.startswith("# Setting-specific: filter the rows in scope here"):
+            lines.append(scope)
+        elif line.startswith("# Setting-specific: extra passes go here"):
+            lines.append(LEADERSHIP)
+    return "".join(lines)
 
 
 class Frame:
@@ -104,11 +117,11 @@ def setting(monkeypatch):
         }),
     })
 
-    def run(dry_run):
-        namespace = {"spark": spark, "display": lambda *args: None}
+    def run(dry_run, flow=FLOW):
+        namespace = {"spark": spark, "display": lambda *args: None, "sanitise_for_group_name": sanitise_for_group_name}
         exec(PARAMETERS, namespace)
         namespace.update(DRY_RUN=dry_run, SHAREPOINT_HOSTNAME=HOST)
-        exec(FLOW, namespace)
+        exec(flow, namespace)
         return namespace
 
     return types.SimpleNamespace(tenant=tenant, site=site, spark=spark, run=run)
@@ -151,3 +164,29 @@ def test_readme_flow_rerun_and_delete(setting):
     assert site.list_by_slug("ENG")["displayName"] == "ENG_UNLINKED"
     assert tenant.member_upns("ACA-Sharepoint-ENG-Auto-Contribute") == []
     assert spark.watermark == datetime(2026, 10, 5)
+
+
+def test_readme_setting_specific_steps(setting):
+    tenant, site, spark = setting.tenant, setting.site, setting.spark
+    libraries = spark.tables["sharepoint_libraries"]
+    other_site = tenant.add_site("/sites/Other")
+    spark.tables["sharepoint_libraries"] = pd.concat([libraries, pd.DataFrame({
+        "library_id": ["L3", "L4", "L5"], "site_url": [site.url, site.url, other_site.url],
+        "library_code": ["S-L-T", "ART", "PE"], "library_display_name": ["Clash", "Art", "Out of scope"],
+        "group_prefix": "ACA-Sharepoint", "manual_read": False, "previous_site_url": None, "deleted": False,
+        "exclude": [False, True, False], "last_changed_ts": pd.Timestamp("2026-10-03"),
+    })], ignore_index=True)
+    flow = with_setting_specific_steps(FLOW, site.url)
+
+    setting.run(dry_run=False, flow=flow)
+
+    # Out of scope, excluded and the clashing code are all left alone
+    assert sorted(lst["slug"] for lst in site.lists.values()) == ["ENG", "MATH", "SLT"]
+    assert other_site.lists == {}
+    # The leadership library's groups are people's, not the app's, and have access to every library on the site
+    slt_read = tenant.group_named("ACA-Sharepoint-SLT-Manual-Read")
+    assert slt_read["owners"] == set()
+    principal = site.principals[f"c:0t.c|tenant|{slt_read['id']}"]
+    assert all(principal in site.list_by_slug(code)["role_assignments"] for code in ("MATH", "ENG", "SLT"))
+    # The newer rows were all out of scope, so the watermark only covers what this scope processed
+    assert spark.watermark == datetime(2026, 10, 2)

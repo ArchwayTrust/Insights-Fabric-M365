@@ -800,6 +800,7 @@ state = spark.sql(f"SELECT last_processed_ts FROM {SCHEMA}.sharepoint_sync_state
 since = state[0]["last_processed_ts"] if state else datetime(1900, 1, 1)
 
 libraries = spark.table(f"{SCHEMA}.sharepoint_libraries").toPandas()
+# Setting-specific: filter the rows in scope here (see "Adding setting-specific steps")
 until = libraries["last_changed_ts"].max() if not libraries.empty else since
 changed = libraries[(libraries["last_changed_ts"] > since) & (libraries["last_changed_ts"] <= until)]
 live = libraries[~libraries["deleted"]].assign(source_id=lambda df: df["library_id"])
@@ -820,6 +821,8 @@ members = spark.table(f"{SCHEMA}.sharepoint_library_members").toPandas().merge(k
 nested = spark.table(f"{SCHEMA}.sharepoint_library_nested_groups").toPandas().merge(keys, on="library_id")
 save("update_memberships", mgr.update_memberships(members, libraries_df=keys, nested_groups_df=nested))      # step 7
 
+# Setting-specific: extra passes go here, before the gate (see "Adding setting-specific steps")
+
 # Step 9: fail on failed actions, show warnings
 results = pd.concat(logs, ignore_index=True)
 display(results[results["action"].isin(WARNING_ACTIONS)])
@@ -838,6 +841,64 @@ if not DRY_RUN and not changed.empty:
             VALUES (s.process, s.last_processed_ts, current_timestamp())
     """)
 ```
+
+#### Adding setting-specific steps
+
+The skeleton is deliberately generic. Most settings add a few rules of their own, at the two places marked in it. These are the patterns the [example notebook](#example-notebook) uses for its school faculties; swap in your own names.
+
+**Scope and exclusions**, straight after reading the libraries table. Everything after it works on the filtered rows, so a filtered-out library is neither created nor synced. Include the scope in the watermark's `process` key, so widening it starts a fresh watermark and the newly included rows are processed:
+
+```python
+# Roll out a few sites at a time, let the source opt rows out, and keep the
+# leadership library's code (below) for that library alone
+SITES_IN_SCOPE = {"https://<tenant>.sharepoint.com/sites/Academy"}
+LEADERSHIP_CODE = "SLT"
+
+libraries = libraries[
+    libraries["site_url"].isin(SITES_IN_SCOPE)
+    & ~libraries.get("exclude", pd.Series(False, index=libraries.index)).astype("boolean").fillna(False)
+    & (libraries["library_code"].map(sanitise_for_group_name).str.upper() != LEADERSHIP_CODE)
+]
+PROCESS = f"sharepoint_libraries|{','.join(sorted(SITES_IN_SCOPE))}"
+```
+
+This needs `from fabric_python_helper.sharepoint import sanitise_for_group_name`. The code check compares sanitised codes, because that's how they appear in group names: `S-L-T` would otherwise share the leadership library's groups. The example notebook does the same filtering in Spark SQL instead, in its `eligible()` predicate, and also reports the excluded rows as warnings so they don't go unnoticed.
+
+**A leadership library on each site** (the example notebook's SLT library), before the gate. It's governed only by hand-curated Manual groups that a person (the headteacher) owns, so `app_owned=False`, and it has no Auto groups. A second pass grants those groups access to every library on their site:
+
+```python
+# One leadership library per site, with Manual groups only, owned by a person
+leadership = live[["site_url", "group_prefix"]].drop_duplicates().assign(
+    library_code=LEADERSHIP_CODE, library_display_name="Senior Leadership",
+    auto_groups=False, manual_read=True, manual_contribute=True, app_owned=False,
+)
+save("create_leadership_libraries", mgr.create_libraries(leadership))
+
+# Its groups get Contribute and Read on every library on their site. Names come
+# from mgr.group_name, so they always match the groups create_libraries made.
+leadership_grants = pd.DataFrame(
+    [
+        {
+            "site_url": row.site_url,
+            "library_code": row.library_code,
+            "group_name": mgr.group_name(row.group_prefix, row.site_url, LEADERSHIP_CODE, suffix),
+            "permission": permission,
+        }
+        for row in keys.itertuples(index=False)
+        for suffix, permission in (("Manual-Contribute", "contribute"), ("Manual-Read", "read"))
+    ],
+    columns=["site_url", "library_code", "group_name", "permission"],
+)
+save("grant_leadership_access", mgr.grant_group_access(leadership_grants))
+```
+
+The leadership library isn't in `sharepoint_libraries`, so the membership sync never touches its groups, and the grant pass is additive, so a library that's later unlinked keeps the leadership access. If two academies could share a site, give each its own code or skip the shared site, as `create_libraries` keeps only the first of two rows for the same library.
+
+**Other rules the example notebook adds**, which need no new operations:
+
+- **Group prefix from the source.** It builds `group_prefix` as `academy_code || '-Sharepoint'` in SQL, so each academy's groups are named after it.
+- **Nested groups from flags.** Instead of a nested-groups table, it builds the rows from two flag columns and a group column on the faculty list (`all_staff_read`, `all_staff_contribute`, `all_staff_security_group`), one row per flag that's set.
+- **Unresolved users with context.** It joins the `user_not_found` rows back to the source table, so each carries the academy and subject, which helps whoever fixes the address in the source system.
 
 Things to decide once, before the first live run, as changing them later orphans what was created:
 
@@ -968,7 +1029,7 @@ What they cover:
 | `test_sharepoint_http.py` | The retry wrapper: throttling, `Retry-After`, server and connection errors, redirects |
 | `test_sharepoint_helpers.py` | Group naming and collisions, input validation, user and group resolution, the property bag, navigation URLs |
 | `test_sharepoint_manager.py` | Every `SharePointLibraryManager` operation end to end, including re-runs, dry runs, guardrails and failures, and authenticating with `KeyVaultCertificateCredential` |
-| `test_readme_flow.py` | Runs the [recommended flow](#recommended-flow) example against the suggested input tables: a dry run, a live run, a re-run and a deletion |
+| `test_readme_flow.py` | Runs the [recommended flow](#recommended-flow) example against the suggested input tables (a dry run, a live run, a re-run and a deletion), and again with the [setting-specific steps](#adding-setting-specific-steps) inserted |
 | `test_faculty_notebook.py` | Runs the [example notebook](#example-notebook) cell by cell, with Spark SQL on SQLite and the real `KeyVaultCertificateCredential` |
 | `test_packaging.py` | The version, public names and that the README's examples are valid Python |
 
