@@ -8,6 +8,8 @@ Up to 0.5.0 this package was called `fabric_python_helper`. See [Moving from fab
 - **`alt_fabric_m365.graph_api`** finds emails in a mailbox, downloads their attachments, deletes them and sends emails, using Microsoft Graph.
 - **`alt_fabric_m365.sharepoint`** manages SharePoint document libraries and their permissions through Entra ID security groups: creating libraries, keeping group membership in sync, navigation links and site sharing settings.
 
+Use a Fabric [workspace identity](#use-a-workspace-identity-where-you-can) wherever Fabric supports one. This package is for Microsoft 365 work it can't do, such as Exchange mailboxes and SharePoint, see [Why Exchange and SharePoint need an app registration](#why-exchange-and-sharepoint-need-an-app-registration).
+
 The package is built for Fabric notebooks. `KeyVaultCertificateCredential` uses `notebookutils` to call Key Vault as the identity running the notebook, so it only works in Fabric (or Synapse) notebooks. The package itself can be imported anywhere.
 
 ## Contents
@@ -15,6 +17,8 @@ The package is built for Fabric notebooks. `KeyVaultCertificateCredential` uses 
 - [Installation](#installation)
 - [Quick start](#quick-start)
 - [Authentication](#authentication)
+  - [Use a workspace identity where you can](#use-a-workspace-identity-where-you-can)
+  - [Why Exchange and SharePoint need an app registration](#why-exchange-and-sharepoint-need-an-app-registration)
   - [How certificate authentication works](#how-certificate-authentication-works)
   - [Setting up a certificate](#setting-up-a-certificate)
   - [Using the credential](#using-the-credential)
@@ -99,6 +103,56 @@ mailbox.delete_email(message_id)
 Before this works you need to [set up a certificate](#setting-up-a-certificate) and [give the app access to the mailbox](#giving-the-app-access-to-a-mailbox).
 
 ## Authentication
+
+### Use a workspace identity where you can
+
+A [workspace identity](https://learn.microsoft.com/en-us/fabric/security/workspace-identity) is a service principal that Fabric creates for a workspace and manages for you. Fabric holds its credentials and rotates them itself, so there's no secret or certificate to store, renew or leak. When something in Fabric can authenticate as the workspace identity, use it rather than an app registration of your own, including the one this package uses.
+
+A workspace identity can be used for:
+
+| Use | How |
+| --- | --- |
+| OneLake shortcuts to Azure Data Lake Storage Gen2 | Choose **Workspace identity** as the shortcut's authentication method, and give the identity a role such as Storage Blob Data Reader on the storage account. |
+| Firewall-enabled storage accounts | [Trusted workspace access](https://learn.microsoft.com/en-us/fabric/security/security-trusted-workspace-access) lets shortcuts, pipelines and semantic models reach storage that only allows selected networks. Needs a purchased Fabric capacity (F SKU). |
+| Pipelines | Connections for the Copy, Lookup and GetMetadata activities, for sources such as ADLS Gen2, Blob Storage and Azure SQL. |
+| Semantic models (import mode) | A cloud connection using the workspace identity, chosen in the model's **Gateway and cloud connections** settings. |
+| Dataflows Gen2 (CI/CD) | The workspace identity as a connector's authentication method. |
+| Reading SharePoint Online lists | The SharePoint Online list connector in Dataflows Gen2, pipelines (Copy and Lookup) and copy jobs. Read only. |
+| Notebooks run from a pipeline | Set the Notebook activity's connection to the workspace identity. The notebook then runs as it, so `notebookutils.credentials.getToken()` returns its tokens for OneLake and Azure Storage (`storage`), Power BI and Fabric (`pbi`), Key Vault (`keyvault`) and Kusto (`kusto`), and `notebookutils.credentials.getSecret()` reads Key Vault as it. |
+| Azure resources that accept Microsoft Entra ID | Give the identity a role on the resource, as for any service principal: Key Vault, storage accounts, Azure SQL and so on. Its service principal has the same name as the workspace. |
+
+The [list of connectors that support it](https://learn.microsoft.com/en-us/fabric/data-factory/connector-overview) grows, so check it before setting up an app registration.
+
+Things to know before relying on one:
+
+- Only a workspace admin can create it, and not in a **My workspace**. Deleting the identity, or permanently deleting the workspace, breaks everything that uses it, and a deleted identity can't be restored.
+- Admins, members and contributors of the workspace can use it in connections, and the identity that runs a pipeline using it must hold one of those roles. Treat those roles as access to everything the workspace identity can reach.
+- Don't change its app registration or enterprise application in Entra ID, other than adding API permissions; Fabric may revert other changes, and they can stop it working.
+- If a Conditional Access policy for workload identities covers all service principals, exclude workspace identities from it, or they won't work.
+- It can't be used across tenants or with on-premises data gateway connections.
+
+### Why Exchange and SharePoint need an app registration
+
+This package's `Emails` and `SharePointLibraryManager` call Microsoft Graph and the SharePoint REST API. Those calls can't be made as a workspace identity, so they authenticate as an app registration you create, using `KeyVaultCertificateCredential`:
+
+- **Your code can't get a Graph or SharePoint token as a workspace identity.** Fabric only uses the identity's tokens inside the features in the table above, and `notebookutils.credentials.getToken()` only supports the `storage`, `pbi`, `keyvault` and `kusto` audiences. Fabric keeps the identity's credentials, so you can't request a token for `https://graph.microsoft.com` or `https://<tenant>.sharepoint.com` with them yourself. Granting it Graph permissions or an Exchange role wouldn't help, as nothing can use them.
+- **Fabric's connectors only cover reading data.** The Exchange Online connector only signs in as a user. The SharePoint Online list connector does accept the workspace identity, so use it if you only need to copy list data into Fabric. Neither can read and delete emails, send them, create libraries, manage groups or change permissions, which is what this package does.
+- **SharePoint only accepts app-only tokens obtained with a certificate.** That needs a certificate registered on the app, which you can't add to a workspace identity, and client secrets are rejected.
+- **The access is narrower than the workspace.** Mailbox access and SharePoint full control are powerful. Held by a dedicated app registration, they're limited to the mailboxes and sites it's been given (see [Giving the app access to a mailbox](#giving-the-app-access-to-a-mailbox)), and only identities with **Sign** on its key in Key Vault can use them.
+
+The two work together. Run the notebook as the workspace identity, and give the workspace identity permission to sign with the certificate in Key Vault. Key Vault is one of the audiences the workspace identity can get tokens for, so `KeyVaultCertificateCredential` uses it to sign as the app, and the app is what Exchange and SharePoint see. The workspace identity still does everything else in the notebook, such as writing to OneLake.
+
+Anyone who can run code as the workspace identity can then act as the app too, so keep notebooks that use the app in a workspace whose admins, members and contributors you'd trust with its mailboxes and sites.
+
+| Task | Authenticate as |
+| --- | --- |
+| Read or write OneLake, a lakehouse or Azure Storage | The workspace identity |
+| Call the Power BI or Fabric REST APIs, or Kusto | The workspace identity |
+| Copy SharePoint Online list data into Fabric | The workspace identity, through the SharePoint Online list connector |
+| Read secrets or sign with keys in Key Vault | The workspace identity |
+| Read, delete or send email (`Emails`) | An app registration, with `KeyVaultCertificateCredential` |
+| Manage SharePoint libraries and their groups (`SharePointLibraryManager`) | An app registration, with `KeyVaultCertificateCredential` (a certificate is required) |
+| Call any other Microsoft Graph or SharePoint API | An app registration, with `KeyVaultCertificateCredential` |
 
 ### How certificate authentication works
 
@@ -304,7 +358,7 @@ Entra ID issues a token whether or not the app has access to the API. If the API
 
 One credential can get tokens for any number of these APIs.
 
-**When you don't need this package:** `notebookutils.credentials.getToken()` already returns tokens for the identity running the notebook, for the `storage`, `pbi`, `keyvault` and `kusto` audiences. Use this package when you need another API (such as Graph or SharePoint) or need to act as a separate app.
+**When you don't need this package:** `notebookutils.credentials.getToken()` already returns tokens for the identity running the notebook, for the `storage`, `pbi`, `keyvault` and `kusto` audiences. For those APIs, prefer the workspace identity, see [Use a workspace identity where you can](#use-a-workspace-identity-where-you-can). Use this package when you need another API (such as Graph or SharePoint) or need to act as a separate app.
 
 ### Using a client secret instead
 
