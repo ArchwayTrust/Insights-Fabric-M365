@@ -55,16 +55,16 @@ The package is published on PyPI as [`alt-fabric-m365`](https://pypi.org/project
 **In a Fabric environment** (use this for scheduled notebooks and pipelines):
 
 1. Open the environment your notebooks use.
-2. Under **Public libraries**, select **Add from PyPI**, enter `alt-fabric-m365` and choose a version, for example `0.6.0`.
+2. Under **Public libraries**, select **Add from PyPI**, enter `alt-fabric-m365` and choose a version, for example `0.6.1`.
 3. Select **Publish**. Notebooks pick up the new version when their next session starts.
 
 **In a single notebook session** (useful for testing a new version):
 
 ```python
-%pip install alt-fabric-m365==0.6.0
+%pip install alt-fabric-m365==0.6.1
 ```
 
-Always pin a version. 0.4.0 has breaking changes from 0.3.x, see [Upgrading from 0.3.x](#upgrading-from-03x). 0.5.0 adds the `sharepoint` module and doesn't change anything that was already there. 0.6.0 renames the package from `fabric_python_helper` to `alt_fabric_m365` and changes nothing else, see [Moving from fabric_python_helper](#moving-from-fabric_python_helper).
+Always pin a version. 0.4.0 has breaking changes from 0.3.x, see [Upgrading from 0.3.x](#upgrading-from-03x). 0.5.0 adds the `sharepoint` module and doesn't change anything that was already there. 0.6.0 renames the package from `fabric_python_helper` to `alt_fabric_m365` and changes nothing else, see [Moving from fabric_python_helper](#moving-from-fabric_python_helper). 0.6.1 only updates the documentation.
 
 ## Quick start
 
@@ -138,7 +138,12 @@ This package's `Emails` and `SharePointLibraryManager` call Microsoft Graph and 
 - **Your code can't get a Graph or SharePoint token as a workspace identity.** Fabric only uses the identity's tokens inside the features in the table above, and `notebookutils.credentials.getToken()` only supports the `storage`, `pbi`, `keyvault` and `kusto` audiences. Fabric keeps the identity's credentials, so you can't request a token for `https://graph.microsoft.com` or `https://<tenant>.sharepoint.com` with them yourself. Granting it Graph permissions or an Exchange role wouldn't help, as nothing can use them.
 - **Fabric's connectors only cover reading data.** The Exchange Online connector only signs in as a user. The SharePoint Online list connector does accept the workspace identity, so use it if you only need to copy list data into Fabric. Neither can read and delete emails, send them, create libraries, manage groups or change permissions, which is what this package does.
 - **SharePoint only accepts app-only tokens obtained with a certificate.** That needs a certificate registered on the app, which you can't add to a workspace identity, and client secrets are rejected.
-- **The access is narrower than the workspace.** Mailbox access and SharePoint full control are powerful. Held by a dedicated app registration, they're limited to the mailboxes and sites it's been given (see [Giving the app access to a mailbox](#giving-the-app-access-to-a-mailbox)), and only identities with **Sign** on its key in Key Vault can use them.
+- **The permissions stay separate from the workspace identity's.** Mailbox and SharePoint access are powerful, so it's better held by an app registration that does only this job, where it can be reviewed and revoked on its own. How far it reaches depends on what you grant:
+  - Mail access is limited to the mailboxes in its Exchange role assignment (see [Giving the app access to a mailbox](#giving-the-app-access-to-a-mailbox)).
+  - SharePoint access is limited to chosen sites only with `Sites.Selected`. `Sites.FullControl.All` covers every site.
+  - `SharePointLibraryManager` also needs `Group.ReadWrite.All`, `GroupMember.ReadWrite.All` and `User.Read.All`, which apply to the whole tenant (see [Giving the app access](#giving-the-app-access)).
+
+  **Sign** on the key in Key Vault controls who can use the certificate this package signs with. It doesn't cover any other certificate or client secret on the app registration, which can also authenticate as the app, so remove those you don't need.
 
 The two work together. Run the notebook as the workspace identity, and give the workspace identity permission to sign with the certificate in Key Vault. Key Vault is one of the audiences the workspace identity can get tokens for, so `KeyVaultCertificateCredential` uses it to sign as the app, and the app is what Exchange and SharePoint see. The workspace identity still does everything else in the notebook, such as writing to OneLake.
 
@@ -1130,7 +1135,7 @@ The tests can't show that the real services accept the requests, so test a new v
 
 ### Versioning
 
-The version number is only set in `alt_fabric_m365/__init__.py`, as `__version__="0.6.0"`. `setup.py` reads it from there, so there's nothing else to keep in sync. Check it with `python setup.py --version`.
+The version number is only set in `alt_fabric_m365/__init__.py`, as `__version__="0.6.1"`. `setup.py` reads it from there, so there's nothing else to keep in sync. Check it with `python setup.py --version`.
 
 Versions follow [semantic versioning](https://semver.org/). While the major version is 0, increase the minor version (0.4.0 to 0.5.0) for breaking changes, and the patch version (0.4.0 to 0.4.1) for fixes. PyPI never accepts the same version twice, even if it's deleted.
 
@@ -1147,8 +1152,8 @@ python -m twine check dist/*
 
 This creates two files in `dist/`:
 
-- `alt_fabric_m365-0.6.0-py3-none-any.whl`, the wheel
-- `alt_fabric_m365-0.6.0.tar.gz`, the source distribution
+- `alt_fabric_m365-0.6.1-py3-none-any.whl`, the wheel
+- `alt_fabric_m365-0.6.1.tar.gz`, the source distribution
 
 `twine check` confirms the package metadata and this README will render on PyPI. Clearing `dist/` first stops old versions being uploaded by mistake.
 
@@ -1165,7 +1170,7 @@ trusted-host = files.pythonhosted.org
 Upload the `.whl` file to a lakehouse's `Files` folder, then in a notebook attached to that lakehouse:
 
 ```python
-%pip install /lakehouse/default/Files/alt_fabric_m365-0.6.0-py3-none-any.whl
+%pip install /lakehouse/default/Files/alt_fabric_m365-0.6.1-py3-none-any.whl
 ```
 
 Or add it to an environment under **Custom libraries** > **Upload**.
@@ -1223,7 +1228,7 @@ python -m twine upload --repository testpypi dist/*
 ```
 
 ```python
-%pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ alt-fabric-m365==0.6.0
+%pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ alt-fabric-m365==0.6.1
 ```
 
 ### Publishing the fabric_python_helper forwarding release
