@@ -59,16 +59,16 @@ The package is published on PyPI as [`alt-fabric-m365`](https://pypi.org/project
 **In a Fabric environment** (use this for scheduled notebooks and pipelines):
 
 1. Open the environment your notebooks use.
-2. Under **Public libraries**, select **Add from PyPI**, enter `alt-fabric-m365` and choose a version, for example `0.7.0`.
+2. Under **Public libraries**, select **Add from PyPI**, enter `alt-fabric-m365` and choose a version, for example `0.7.1`.
 3. Select **Publish**. Notebooks pick up the new version when their next session starts.
 
 **In a single notebook session** (useful for testing a new version):
 
 ```python
-%pip install alt-fabric-m365==0.7.0
+%pip install alt-fabric-m365==0.7.1
 ```
 
-Always pin a version. 0.4.0 has breaking changes from 0.3.x, see [Upgrading from 0.3.x](#upgrading-from-03x). 0.5.0 adds the `sharepoint` module and doesn't change anything that was already there. 0.6.0 renames the package from `fabric_python_helper` to `alt_fabric_m365` and changes nothing else, see [Moving from fabric_python_helper](#moving-from-fabric_python_helper). 0.6.1 only updates the documentation. 0.7.0 renames the `graph_api` module to `exchange`, and the old name still works with a warning, see [Upgrading to 0.7.0](#upgrading-to-070).
+Always pin a version. 0.4.0 has breaking changes from 0.3.x, see [Upgrading from 0.3.x](#upgrading-from-03x). 0.5.0 adds the `sharepoint` module and doesn't change anything that was already there. 0.6.0 renames the package from `fabric_python_helper` to `alt_fabric_m365` and changes nothing else, see [Moving from fabric_python_helper](#moving-from-fabric_python_helper). 0.6.1 only updates the documentation. 0.7.0 renames the `graph_api` module to `exchange`, and the old name still works with a warning, see [Upgrading to 0.7.0](#upgrading-to-070). 0.7.1 only updates the documentation.
 
 ## Quick start
 
@@ -1369,7 +1369,7 @@ The tests can't show that the real services accept the requests, so test a new v
 
 ### Versioning
 
-The version number is only set in `alt_fabric_m365/__init__.py`, as `__version__="0.7.0"`. `setup.py` reads it from there, so there's nothing else to keep in sync. Check it with `python setup.py --version`.
+The version number is only set in `alt_fabric_m365/__init__.py`, as `__version__="0.7.1"`. `setup.py` reads it from there, so there's nothing else to keep in sync. Check it with `python setup.py --version`.
 
 Versions follow [semantic versioning](https://semver.org/). While the major version is 0, increase the minor version (0.4.0 to 0.5.0) for breaking changes, and the patch version (0.4.0 to 0.4.1) for fixes. PyPI never accepts the same version twice, even if it's deleted.
 
@@ -1386,8 +1386,8 @@ python -m twine check dist/*
 
 This creates two files in `dist/`:
 
-- `alt_fabric_m365-0.7.0-py3-none-any.whl`, the wheel
-- `alt_fabric_m365-0.7.0.tar.gz`, the source distribution
+- `alt_fabric_m365-0.7.1-py3-none-any.whl`, the wheel
+- `alt_fabric_m365-0.7.1.tar.gz`, the source distribution
 
 `twine check` confirms the package metadata and this README will render on PyPI. Clearing `dist/` first stops old versions being uploaded by mistake.
 
@@ -1404,7 +1404,7 @@ trusted-host = files.pythonhosted.org
 Upload the `.whl` file to a lakehouse's `Files` folder, then in a notebook attached to that lakehouse:
 
 ```python
-%pip install /lakehouse/default/Files/alt_fabric_m365-0.7.0-py3-none-any.whl
+%pip install /lakehouse/default/Files/alt_fabric_m365-0.7.1-py3-none-any.whl
 ```
 
 Or add it to an environment under **Custom libraries** > **Upload**.
@@ -1462,7 +1462,7 @@ python -m twine upload --repository testpypi dist/*
 ```
 
 ```python
-%pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ alt-fabric-m365==0.7.0
+%pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ alt-fabric-m365==0.7.1
 ```
 
 ### Publishing the fabric_python_helper forwarding release
