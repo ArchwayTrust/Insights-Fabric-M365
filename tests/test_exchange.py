@@ -5,9 +5,9 @@ import pytest
 import requests
 
 import alt_fabric_m365
-from alt_fabric_m365 import graph_api
+from alt_fabric_m365.exchange import emails as emails_module
 from alt_fabric_m365.auth import Scopes
-from alt_fabric_m365.graph_api import Emails, MessageNotFoundError
+from alt_fabric_m365.exchange import Emails, MessageNotFoundError
 
 from conftest import make_response
 
@@ -26,7 +26,7 @@ def emails(credential):
 
 
 def patch_get(**kwargs):
-    return mock.patch.object(graph_api.requests, "get", **kwargs)
+    return mock.patch.object(emails_module.requests, "get", **kwargs)
 
 
 def file_attachment(attachment_id, name, is_inline=False):
@@ -62,7 +62,7 @@ def test_mailbox_is_optional_when_each_call_passes_one(credential):
     lambda e: e._check_if_message_exists("m"),
 ])
 def test_no_mailbox_raises_before_any_request(credential, call):
-    with mock.patch.multiple(graph_api.requests, get=mock.DEFAULT, post=mock.DEFAULT, delete=mock.DEFAULT) as mocks:
+    with mock.patch.multiple(emails_module.requests, get=mock.DEFAULT, post=mock.DEFAULT, delete=mock.DEFAULT) as mocks:
         with pytest.raises(ValueError, match="shared_mailbox_email"):
             call(Emails(credential, None))
 
@@ -177,20 +177,20 @@ def test_download_of_non_file_attachment_raises(emails):
 # Deleting and sending
 
 def test_delete_email(emails):
-    with mock.patch.object(graph_api.requests, "delete", return_value=make_response(204)) as delete:
+    with mock.patch.object(emails_module.requests, "delete", return_value=make_response(204)) as delete:
         assert emails.delete_email("m") is True
 
     assert delete.call_args.args[0] == f"{GRAPH}/users/{MAILBOX}/messages/m"
 
 
 def test_delete_failure_raises(emails):
-    with mock.patch.object(graph_api.requests, "delete", return_value=make_response(403)):
+    with mock.patch.object(emails_module.requests, "delete", return_value=make_response(403)):
         with pytest.raises(Exception, match="Status code: 403"):
             emails.delete_email("m")
 
 
 def test_send_email(emails):
-    with mock.patch.object(graph_api.requests, "post", return_value=make_response(202)) as post:
+    with mock.patch.object(emails_module.requests, "post", return_value=make_response(202)) as post:
         emails.send_email("Subject", "Body", ["a@contoso.com", "b@contoso.com"])
 
     assert post.call_args.args[0] == f"{GRAPH}/users/{MAILBOX}/sendMail"
@@ -201,7 +201,7 @@ def test_send_email(emails):
 
 
 def test_send_failure_raises(emails):
-    with mock.patch.object(graph_api.requests, "post", return_value=make_response(403)):
+    with mock.patch.object(emails_module.requests, "post", return_value=make_response(403)):
         with pytest.raises(Exception, match="Status code: 403"):
             emails.send_email("Subject", "Body", ["a@contoso.com"])
 
@@ -243,10 +243,10 @@ def test_other_errors_are_raised_not_reported_as_missing(emails, response, expec
 def test_every_request_has_a_timeout(emails):
     pages = {"value": [{"id": "1", "receivedDateTime": "2026-01-01"}]}
     attachment = {"@odata.type": FILE, "name": "a.csv", "contentBytes": "aGk="}
-    with mock.patch.object(graph_api.requests, "get", side_effect=[
+    with mock.patch.object(emails_module.requests, "get", side_effect=[
         make_response(200, pages), make_response(200, {"value": []}), make_response(200, attachment), make_response(200, {"id": "m"}),
-    ]) as get, mock.patch.object(graph_api.requests, "delete", return_value=make_response(204)) as delete, \
-            mock.patch.object(graph_api.requests, "post", return_value=make_response(202)) as post:
+    ]) as get, mock.patch.object(emails_module.requests, "delete", return_value=make_response(204)) as delete, \
+            mock.patch.object(emails_module.requests, "post", return_value=make_response(202)) as post:
         emails.search_message_by_subject_and_sender("s", "a@b.c")
         emails.get_attachment_ids_and_names("m")
         emails.download_attachment("m", "a")
@@ -256,3 +256,15 @@ def test_every_request_has_a_timeout(emails):
 
     for call in get.call_args_list + delete.call_args_list + post.call_args_list:
         assert call.kwargs["timeout"] == TIMEOUT
+
+
+def test_graph_api_still_works_but_warns():
+    from alt_fabric_m365 import graph_api
+
+    with pytest.warns(FutureWarning, match="moved to alt_fabric_m365.exchange"):
+        from alt_fabric_m365.graph_api import Emails as OldEmails
+    with pytest.warns(FutureWarning, match="moved to alt_fabric_m365.exchange"):
+        assert graph_api.MessageNotFoundError is MessageNotFoundError
+    assert OldEmails is Emails
+    with pytest.raises(AttributeError):
+        graph_api.Mailbox

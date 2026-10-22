@@ -22,7 +22,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-import alt_fabric_m365.auth
+import alt_fabric_m365.auth.keyvault
 from alt_fabric_m365.auth import Scopes
 
 from conftest import FakeAzure
@@ -159,8 +159,8 @@ def tenant(monkeypatch):
 def azure(monkeypatch):
     """Entra ID and Key Vault, for the notebook's KeyVaultCertificateCredential."""
     fake = FakeAzure(object_id=APP_ID)
-    monkeypatch.setattr(alt_fabric_m365.auth.requests, "get", fake.get)
-    monkeypatch.setattr(alt_fabric_m365.auth.requests, "post", fake.post)
+    monkeypatch.setattr(alt_fabric_m365.auth.keyvault.requests, "get", fake.get)
+    monkeypatch.setattr(alt_fabric_m365.auth.keyvault.requests, "post", fake.post)
     return fake
 
 
