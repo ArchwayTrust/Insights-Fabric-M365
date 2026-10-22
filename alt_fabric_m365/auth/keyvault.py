@@ -1,45 +1,9 @@
 """
-Authentication helpers for calling Microsoft APIs from Fabric notebooks as a service principal.
+KeyVaultCertificateCredential: app-only access tokens using a certificate held in Azure Key Vault.
 
-KeyVaultCertificateCredential gets app-only access tokens using a certificate held in Azure Key Vault.
-Key Vault signs each client assertion, so the private key never leaves the key vault.
-
-Scopes and audiences:
-    Tokens are requested with the client credentials flow, so the scope is always the API's resource
-    URI followed by /.default, for example https://graph.microsoft.com/.default. The token that comes
-    back has that resource as its audience (aud claim). /.default means every permission the app has
-    been granted on that API. An app can't request individual delegated scopes such as Mail.Read.
-
-    Common scopes are in the Scopes class, with where to give the service principal access to each.
-    One credential can get tokens for any number of APIs, as tokens are cached per scope.
-
-    Some APIs use a scope specific to your tenant or environment:
-        SharePoint REST API: https://{tenant}.sharepoint.com/.default
-            Grant SharePoint application permissions (Sites.Selected where possible) on the app registration.
-            SharePoint only allows app-only access with a certificate, so client secrets are rejected.
-        Dataverse: your environment URL followed by /.default, for example https://{org}.crm11.dynamics.com/.default
-            Add the app as an application user in the Power Platform admin center.
-
-Tokens for the identity running the notebook:
-    notebookutils.credentials.getToken() returns tokens for the user or workspace identity running the
-    notebook, but only for the storage, pbi, keyvault and kusto audiences. Use this module when you need
-    another API, such as Graph or SharePoint, or need to act as a separate app.
-
-Semantic link and Azure SDK clients:
-    KeyVaultCertificateCredential implements azure.core.credentials.TokenCredential, so it can be passed as
-    the credential to semantic link (sempy) functions and Azure SDK clients. They request the scopes they
-    need, so no scope is needed when creating the credential:
-        fabric.refresh_dataset("Sales", workspace="Finance", credential=credential)
-
-Client secrets:
-    This module only covers certificates. For a client secret use azure.identity.ClientSecretCredential,
-    which is already in the Fabric runtime, with the secret read from Key Vault. It has the same get_token
-    method, so it can be used anywhere this credential can:
-        secret = notebookutils.credentials.getSecret(akv_url, secret_name)
-        credential = ClientSecretCredential(tenant_id, client_id, secret)
-    Certificates are preferred: the private key never leaves the key vault, whereas a secret is read into
-    the notebook.
+See the alt_fabric_m365.auth package docstring for how scopes, notebookutils tokens and client secrets fit in.
 """
+
 import requests
 import json
 import base64
@@ -50,46 +14,6 @@ import uuid
 from urllib.parse import urlparse
 from azure.core.credentials import AccessToken
 
-class Scopes:
-    """
-    Scopes for common Microsoft APIs, for use with KeyVaultCertificateCredential or any other credential.
-
-    The comment above each says where to give the service principal access. Entra ID issues a token
-    whether or not that access exists, but the API rejects requests made without it.
-    """
-
-    # Microsoft Graph. Grant application permissions on the app registration, with admin consent.
-    # For mailboxes use Exchange RBAC for Applications instead, which can limit the app to specific mailboxes.
-    GRAPH = "https://graph.microsoft.com/.default"
-
-    # Power BI REST API. Add the service principal to the workspace, and allow service principals to use
-    # the APIs in the Fabric admin portal tenant settings (Developer settings). Access comes from workspace
-    # roles, not from API permissions on the app registration.
-    POWER_BI = "https://analysis.windows.net/powerbi/api/.default"
-
-    # Fabric REST API. Access is granted the same way as for Power BI.
-    FABRIC = "https://api.fabric.microsoft.com/.default"
-
-    # Azure Storage and OneLake (OneLake only accepts this audience). For OneLake give the service principal
-    # a workspace role or item permissions, for storage accounts an Azure RBAC role such as Storage Blob Data Reader.
-    STORAGE = "https://storage.azure.com/.default"
-
-    # Azure Key Vault. Azure RBAC role or access policy on the key vault.
-    KEY_VAULT = "https://vault.azure.net/.default"
-
-    # Azure SQL, and Fabric warehouses, SQL analytics endpoints and SQL databases over TDS. In Fabric give the
-    # service principal a workspace role or item permissions, in Azure SQL create a user FROM EXTERNAL PROVIDER.
-    SQL = "https://database.windows.net/.default"
-
-    # Azure Data Explorer and Fabric Eventhouse / KQL databases. Give the service principal a workspace role, or add
-    # it as a database principal, for example .add database <db> viewers ('aadapp=<client_id>;<tenant_id>').
-    KUSTO = "https://api.kusto.windows.net/.default"
-
-    # Azure Resource Manager, for managing Azure resources. Azure RBAC role on the subscription, resource group or resource.
-    AZURE_MANAGEMENT = "https://management.azure.com/.default"
-
-    # Azure Monitor Log Analytics query API. Log Analytics Reader on the Log Analytics workspace.
-    LOG_ANALYTICS = "https://api.loganalytics.io/.default"
 
 class KeyVaultCertificateCredential:
     """
@@ -399,7 +323,7 @@ class KeyVaultCertificateCredential:
         """
         Returns headers for calling Azure Key Vault as the identity running the notebook.
 
-        notebookutils is imported here rather than at the top of the module, so the module (and Scopes)
+        notebookutils is imported here rather than at the top of the module, so the package (and Scopes)
         can be imported outside a Fabric notebook.
         """
         try:

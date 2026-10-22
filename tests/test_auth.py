@@ -7,7 +7,7 @@ from unittest import mock
 
 import pytest
 
-from alt_fabric_m365 import auth
+from alt_fabric_m365.auth import keyvault
 from alt_fabric_m365.auth import KeyVaultCertificateCredential, Scopes
 
 from conftest import CERT_DER, KID, FakeAzure, make_response
@@ -19,7 +19,7 @@ TIMEOUT = KeyVaultCertificateCredential.REQUEST_TIMEOUT_SECONDS
 @pytest.fixture
 def azure(fake_notebookutils):
     fake = FakeAzure()
-    with mock.patch.multiple(auth.requests, get=fake.get, post=fake.post):
+    with mock.patch.multiple(keyvault.requests, get=fake.get, post=fake.post):
         yield fake
 
 
@@ -78,7 +78,7 @@ def test_different_scopes_are_cached_separately(azure):
 def test_token_close_to_expiry_is_refreshed(fake_notebookutils):
     # Tokens with less than REFRESH_MARGIN_SECONDS left are treated as expired
     fake = FakeAzure(expires_in=KeyVaultCertificateCredential.REFRESH_MARGIN_SECONDS - 1)
-    with mock.patch.multiple(auth.requests, get=fake.get, post=fake.post):
+    with mock.patch.multiple(keyvault.requests, get=fake.get, post=fake.post):
         credential = make_credential()
         credential.get_token("a")
         credential.get_token("a")
@@ -97,8 +97,8 @@ def test_expiry_is_measured_from_before_the_request(fake_notebookutils):
             clock[0] += 5
         return response
 
-    with mock.patch.multiple(auth.requests, get=fake.get, post=slow_token_post), \
-            mock.patch.object(auth.time, "time", lambda: clock[0]):
+    with mock.patch.multiple(keyvault.requests, get=fake.get, post=slow_token_post), \
+            mock.patch.object(keyvault.time, "time", lambda: clock[0]):
         token = make_credential().get_token("a")
 
     assert clock[0] == 1_000_005.0
@@ -107,7 +107,7 @@ def test_expiry_is_measured_from_before_the_request(fake_notebookutils):
 
 def test_concurrent_callers_share_one_refresh(fake_notebookutils):
     fake = FakeAzure(delay=0.2)
-    with mock.patch.multiple(auth.requests, get=fake.get, post=fake.post):
+    with mock.patch.multiple(keyvault.requests, get=fake.get, post=fake.post):
         credential = make_credential()
         barrier = threading.Barrier(10)
         results, errors = [], []
@@ -237,7 +237,7 @@ def test_each_assertion_is_unique(azure):
 
 def test_token_error_includes_status_but_not_the_assertion(fake_notebookutils):
     fake = FakeAzure(token_status=401, token_body={"error": "invalid_client", "error_description": "AADSTS700027"})
-    with mock.patch.multiple(auth.requests, get=fake.get, post=fake.post):
+    with mock.patch.multiple(keyvault.requests, get=fake.get, post=fake.post):
         with pytest.raises(Exception) as error:
             make_credential().get_token("a")
 
@@ -286,7 +286,7 @@ def test_other_urls_are_rejected(akv_url):
 ])
 def test_key_vault_token_is_not_sent_to_another_host(fake_notebookutils, kid):
     fake = FakeAzure(kid=kid)
-    with mock.patch.multiple(auth.requests, get=fake.get, post=fake.post):
+    with mock.patch.multiple(keyvault.requests, get=fake.get, post=fake.post):
         with pytest.raises(Exception, match="not in key vault"):
             make_credential().get_token("a")
 
@@ -299,7 +299,7 @@ def test_key_vault_token_is_not_sent_to_another_host(fake_notebookutils, kid):
 ])
 def test_equivalent_key_ids_are_accepted(fake_notebookutils, kid):
     fake = FakeAzure(kid=kid)
-    with mock.patch.multiple(auth.requests, get=fake.get, post=fake.post):
+    with mock.patch.multiple(keyvault.requests, get=fake.get, post=fake.post):
         make_credential().get_token("a")
 
     assert len(fake.sign_calls) == 1

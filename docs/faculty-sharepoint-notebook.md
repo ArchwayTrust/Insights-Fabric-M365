@@ -160,7 +160,7 @@ Membership sync and the SLT passes run over every faculty on every run, so work 
 | --- | --- |
 | Constants, thread-safe action log, shared validation helpers | [`sharepoint/_common.py`](../alt_fabric_m365/sharepoint/_common.py) |
 | Resilient HTTP wrapper | [`sharepoint/_http.py`](../alt_fabric_m365/sharepoint/_http.py) |
-| Authentication (`_build_msal_app`, `_token_from_app`, `_validate_and_normalise_certificate`) | Replaced by the package's existing [`auth.KeyVaultCertificateCredential`](../alt_fabric_m365/auth.py) |
+| Authentication (`_build_msal_app`, `_token_from_app`, `_validate_and_normalise_certificate`) | Replaced by the package's existing [`auth.KeyVaultCertificateCredential`](../alt_fabric_m365/auth/keyvault.py) |
 | Graph API helpers, OneDrive shortcut helpers | [`sharepoint/_graph.py`](../alt_fabric_m365/sharepoint/_graph.py) |
 | Entra ID security group management, group-name collisions | [`sharepoint/_groups.py`](../alt_fabric_m365/sharepoint/_groups.py) |
 | SharePoint REST: permissions, property bag, site sharing settings | [`sharepoint/_sharepoint.py`](../alt_fabric_m365/sharepoint/_sharepoint.py) |

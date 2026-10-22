@@ -4,8 +4,10 @@ Python helpers for automation in Microsoft Fabric notebooks, from Archway Learni
 
 Up to 0.5.0 this package was called `fabric_python_helper`. See [Moving from fabric_python_helper](#moving-from-fabric_python_helper).
 
+The package has a module for each Microsoft 365 service, plus `auth`, which they share:
+
 - **`alt_fabric_m365.auth`** gets app-only access tokens for Microsoft APIs (Microsoft Graph, Power BI, Fabric, OneLake and others) as a service principal, using a certificate held in Azure Key Vault. Key Vault signs each request, so the certificate's private key never leaves the key vault.
-- **`alt_fabric_m365.graph_api`** finds emails in a mailbox, downloads their attachments, deletes them and sends emails, using Microsoft Graph.
+- **`alt_fabric_m365.exchange`** finds emails in an Exchange Online mailbox, downloads their attachments, deletes them and sends emails, using Microsoft Graph. Up to 0.6.x this module was called `graph_api`, see [Upgrading to 0.7.0](#upgrading-to-070).
 - **`alt_fabric_m365.sharepoint`** manages SharePoint document libraries and their permissions through Entra ID security groups: creating libraries, keeping group membership in sync, navigation links and site sharing settings.
 
 Use a Fabric [workspace identity](#use-a-workspace-identity-where-you-can) wherever Fabric supports one. This package is for Microsoft 365 work it can't do, such as Exchange mailboxes and SharePoint, see [Why Exchange and SharePoint need an app registration](#why-exchange-and-sharepoint-need-an-app-registration).
@@ -43,6 +45,7 @@ The package is built for Fabric notebooks. `KeyVaultCertificateCredential` uses 
   - [Using it in your own setting](#using-it-in-your-own-setting)
   - [Example notebook](#example-notebook)
 - [Troubleshooting](#troubleshooting)
+- [Upgrading to 0.7.0](#upgrading-to-070)
 - [Moving from fabric_python_helper](#moving-from-fabric_python_helper)
 - [Upgrading from 0.3.x](#upgrading-from-03x)
 - [Building and publishing](#building-and-publishing)
@@ -55,16 +58,16 @@ The package is published on PyPI as [`alt-fabric-m365`](https://pypi.org/project
 **In a Fabric environment** (use this for scheduled notebooks and pipelines):
 
 1. Open the environment your notebooks use.
-2. Under **Public libraries**, select **Add from PyPI**, enter `alt-fabric-m365` and choose a version, for example `0.6.1`.
+2. Under **Public libraries**, select **Add from PyPI**, enter `alt-fabric-m365` and choose a version, for example `0.7.0`.
 3. Select **Publish**. Notebooks pick up the new version when their next session starts.
 
 **In a single notebook session** (useful for testing a new version):
 
 ```python
-%pip install alt-fabric-m365==0.6.1
+%pip install alt-fabric-m365==0.7.0
 ```
 
-Always pin a version. 0.4.0 has breaking changes from 0.3.x, see [Upgrading from 0.3.x](#upgrading-from-03x). 0.5.0 adds the `sharepoint` module and doesn't change anything that was already there. 0.6.0 renames the package from `fabric_python_helper` to `alt_fabric_m365` and changes nothing else, see [Moving from fabric_python_helper](#moving-from-fabric_python_helper). 0.6.1 only updates the documentation.
+Always pin a version. 0.4.0 has breaking changes from 0.3.x, see [Upgrading from 0.3.x](#upgrading-from-03x). 0.5.0 adds the `sharepoint` module and doesn't change anything that was already there. 0.6.0 renames the package from `fabric_python_helper` to `alt_fabric_m365` and changes nothing else, see [Moving from fabric_python_helper](#moving-from-fabric_python_helper). 0.6.1 only updates the documentation. 0.7.0 renames the `graph_api` module to `exchange`, and the old name still works with a warning, see [Upgrading to 0.7.0](#upgrading-to-070).
 
 ## Quick start
 
@@ -72,7 +75,7 @@ Read the latest report email from a mailbox, save its CSV attachment to a lakeho
 
 ```python
 from alt_fabric_m365.auth import KeyVaultCertificateCredential
-from alt_fabric_m365.graph_api import Emails
+from alt_fabric_m365.exchange import Emails
 
 credential = KeyVaultCertificateCredential(
     tenant_id="<tenant-id>",
@@ -371,7 +374,7 @@ Certificates are recommended, but `Emails` and anything else in this package tha
 
 ```python
 from azure.identity import ClientSecretCredential
-from alt_fabric_m365.graph_api import Emails
+from alt_fabric_m365.exchange import Emails
 
 client_secret = notebookutils.credentials.getSecret("https://<key-vault-name>.vault.azure.net/", "<secret-name>")
 credential = ClientSecretCredential("<tenant-id>", "<client-id>", client_secret)
@@ -397,7 +400,7 @@ To avoid any failures between steps 1 and 2, first pin the current version with 
 
 ## Emails
 
-`alt_fabric_m365.graph_api.Emails` works with mailboxes using Microsoft Graph, authenticating as the app rather than as a user.
+`alt_fabric_m365.exchange.Emails` works with mailboxes using Microsoft Graph, authenticating as the app rather than as a user.
 
 ### Giving the app access to a mailbox
 
@@ -445,7 +448,7 @@ Roles needed by each method:
 ### Creating an Emails instance
 
 ```python
-from alt_fabric_m365.graph_api import Emails
+from alt_fabric_m365.exchange import Emails
 
 mailbox = Emails(credential, "reports@contoso.com")
 ```
@@ -481,7 +484,7 @@ With `only_return_latest=True` it returns the message ID as a string. With `Fals
 If nothing matches it raises `MessageNotFoundError`, with the message `No matching messages found.` Use this to handle emails that don't always arrive:
 
 ```python
-from alt_fabric_m365.graph_api import MessageNotFoundError
+from alt_fabric_m365.exchange import MessageNotFoundError
 
 try:
     message_id = mailbox.search_message_by_subject_and_sender("Weekly Exceptions", "noreply@supplier.com")
@@ -578,7 +581,7 @@ LAKEHOUSE = "abfss://<workspace>@onelake.dfs.fabric.microsoft.com/<lakehouse>.La
 
 ```python
 from alt_fabric_m365.auth import KeyVaultCertificateCredential
-from alt_fabric_m365.graph_api import Emails, MessageNotFoundError
+from alt_fabric_m365.exchange import Emails, MessageNotFoundError
 
 credential = KeyVaultCertificateCredential(TENANT_ID, CLIENT_ID, KEY_VAULT, CERTIFICATE_NAME)
 mailbox = Emails(credential, MAILBOX)
@@ -1011,6 +1014,23 @@ Outside Fabric, `KeyVaultCertificateCredential` isn't available (it needs `noteb
 | `retire_deferred` row | The library hasn't been created on its new site yet (for example the create failed), so the old one was left working. It's retired on a later run once the new one exists. |
 | `library_name_conflict` row | Another library on the site already has the code as its title, so the library can't be created. Rename that library's title. |
 
+## Upgrading to 0.7.0
+
+0.7.0 gives each part of the package the same layout: a folder per area, with everything you need importable from the folder's name. The only name that changes is `graph_api`, which only ever held the email code, so it's now `exchange`, alongside `sharepoint`:
+
+| Up to 0.6.x | From 0.7.0 |
+| --- | --- |
+| `from alt_fabric_m365.graph_api import Emails, MessageNotFoundError` | `from alt_fabric_m365.exchange import Emails, MessageNotFoundError` |
+| `from alt_fabric_m365.auth import KeyVaultCertificateCredential, Scopes` | Unchanged |
+| `from alt_fabric_m365.sharepoint import SharePointLibraryManager` | Unchanged |
+| `from alt_fabric_m365 import Emails, KeyVaultCertificateCredential, ...` | Unchanged |
+
+Nothing else changes, and `alt_fabric_m365.graph_api` still works: using it shows a `FutureWarning` asking you to change the import. It will be removed in a later release, so change `graph_api` to `exchange` in your notebooks when you next edit them.
+
+0.7.0 also adds the licence to the package's metadata, so PyPI shows it.
+
+If an environment still has the `fabric_python_helper` 0.6.0 forwarding release, remove it first: it requires `alt-fabric-m365` 0.6, so it can't be installed alongside 0.7.0. See [Moving from fabric_python_helper](#moving-from-fabric_python_helper).
+
 ## Moving from fabric_python_helper
 
 0.6.0 renames the package. Its code is the same as 0.5.0's.
@@ -1022,12 +1042,12 @@ Outside Fabric, `KeyVaultCertificateCredential` isn't available (it needs `noteb
 
 The two import names are different, so both packages can be installed in the same environment. That lets you move notebooks over one at a time:
 
-1. In each Fabric environment, add `alt-fabric-m365` `0.6.0` under **Public libraries**, keep `fabric_python_helper` `0.5.0` for now, and publish the environment.
-2. In each notebook, change `fabric_python_helper` to `alt_fabric_m365` in every import, and run it:
+1. In each Fabric environment, add `alt-fabric-m365` `0.7.0` under **Public libraries**, keep `fabric_python_helper` `0.5.0` for now, and publish the environment.
+2. In each notebook, change `fabric_python_helper` to `alt_fabric_m365` in every import, and `graph_api` to `exchange`, and run it:
 
    ```python
    from alt_fabric_m365.auth import KeyVaultCertificateCredential
-   from alt_fabric_m365.graph_api import Emails
+   from alt_fabric_m365.exchange import Emails
    ```
 
 3. Once no notebook in the workspace imports `fabric_python_helper`, remove it from the environment and publish it again.
@@ -1038,7 +1058,7 @@ Environments pinned to `fabric_python_helper` 0.5.0 or earlier keep working, and
 
 0.4.0 removes the delegated (signed-in user) authentication, which stored a user's refresh token in Key Vault, and the `pbi_admin` module.
 
-The examples below use the package's current name, `alt_fabric_m365` (0.6.0 or later). On 0.4.x or 0.5.x, import from `fabric_python_helper` instead.
+The examples below use the package's current names, `alt_fabric_m365` and its `exchange` module (0.7.0 or later). On 0.6.x, import `Emails` from `alt_fabric_m365.graph_api`, and on 0.4.x or 0.5.x from `fabric_python_helper.graph_api`.
 
 **Emails**
 
@@ -1055,7 +1075,7 @@ After:
 
 ```python
 from alt_fabric_m365.auth import KeyVaultCertificateCredential
-from alt_fabric_m365.graph_api import Emails
+from alt_fabric_m365.exchange import Emails
 
 tenant_id = "<tenant-id>"
 client_id = "<client-id>"
@@ -1121,7 +1141,7 @@ What they cover:
 | File | Covers |
 | --- | --- |
 | `test_auth.py` | `KeyVaultCertificateCredential`: token requests and caching, Key Vault signing, the client assertion |
-| `test_graph_api.py` | `Emails` |
+| `test_exchange.py` | `Emails`, and the deprecated `graph_api` name |
 | `test_sharepoint_http.py` | The retry wrapper: throttling, `Retry-After`, server and connection errors, redirects |
 | `test_sharepoint_helpers.py` | Group naming and collisions, input validation, user and group resolution, the property bag, navigation URLs |
 | `test_sharepoint_manager.py` | Every `SharePointLibraryManager` operation end to end, including re-runs, dry runs, guardrails and failures, and authenticating with `KeyVaultCertificateCredential` |
@@ -1135,7 +1155,7 @@ The tests can't show that the real services accept the requests, so test a new v
 
 ### Versioning
 
-The version number is only set in `alt_fabric_m365/__init__.py`, as `__version__="0.6.1"`. `setup.py` reads it from there, so there's nothing else to keep in sync. Check it with `python setup.py --version`.
+The version number is only set in `alt_fabric_m365/__init__.py`, as `__version__="0.7.0"`. `setup.py` reads it from there, so there's nothing else to keep in sync. Check it with `python setup.py --version`.
 
 Versions follow [semantic versioning](https://semver.org/). While the major version is 0, increase the minor version (0.4.0 to 0.5.0) for breaking changes, and the patch version (0.4.0 to 0.4.1) for fixes. PyPI never accepts the same version twice, even if it's deleted.
 
@@ -1152,8 +1172,8 @@ python -m twine check dist/*
 
 This creates two files in `dist/`:
 
-- `alt_fabric_m365-0.6.1-py3-none-any.whl`, the wheel
-- `alt_fabric_m365-0.6.1.tar.gz`, the source distribution
+- `alt_fabric_m365-0.7.0-py3-none-any.whl`, the wheel
+- `alt_fabric_m365-0.7.0.tar.gz`, the source distribution
 
 `twine check` confirms the package metadata and this README will render on PyPI. Clearing `dist/` first stops old versions being uploaded by mistake.
 
@@ -1170,7 +1190,7 @@ trusted-host = files.pythonhosted.org
 Upload the `.whl` file to a lakehouse's `Files` folder, then in a notebook attached to that lakehouse:
 
 ```python
-%pip install /lakehouse/default/Files/alt_fabric_m365-0.6.1-py3-none-any.whl
+%pip install /lakehouse/default/Files/alt_fabric_m365-0.7.0-py3-none-any.whl
 ```
 
 Or add it to an environment under **Custom libraries** > **Upload**.
@@ -1228,7 +1248,7 @@ python -m twine upload --repository testpypi dist/*
 ```
 
 ```python
-%pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ alt-fabric-m365==0.6.1
+%pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ alt-fabric-m365==0.7.0
 ```
 
 ### Publishing the fabric_python_helper forwarding release
@@ -1265,4 +1285,4 @@ Update the version in each Fabric environment that uses the package (**Public li
 
 ## Licence
 
-BSD 3-Clause. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+BSD 3-Clause, copyright Archway Learning Trust. See [LICENSE](LICENSE). The software is provided "as is", without warranty, and the licence excludes liability for any damage arising from its use.

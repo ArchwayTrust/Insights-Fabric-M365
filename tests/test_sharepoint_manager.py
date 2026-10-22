@@ -91,13 +91,13 @@ def test_constructor_gets_graph_and_sharepoint_tokens_up_front(credential, tenan
 
 
 def test_works_with_key_vault_certificate_credential(fake_notebookutils, tenant, site, monkeypatch):
-    from alt_fabric_m365 import auth
+    from alt_fabric_m365.auth import keyvault
     from alt_fabric_m365.auth import KeyVaultCertificateCredential
     from conftest import FakeAzure
 
     azure = FakeAzure(object_id=APP_ID)
-    monkeypatch.setattr(auth.requests, "get", azure.get)
-    monkeypatch.setattr(auth.requests, "post", azure.post)
+    monkeypatch.setattr(keyvault.requests, "get", azure.get)
+    monkeypatch.setattr(keyvault.requests, "post", azure.post)
     credential = KeyVaultCertificateCredential("tenant", "client", "https://myvault.vault.azure.net/", "sp-cert")
 
     manager = SharePointLibraryManager(credential, HOST, include_site_name=False)
