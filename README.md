@@ -38,6 +38,7 @@ The package is built for Fabric notebooks. `KeyVaultCertificateCredential` uses 
 - [SharePoint libraries](#sharepoint-libraries)
   - [What it manages](#what-it-manages)
   - [Giving the app access](#giving-the-app-access)
+  - [Limiting the app to chosen sites with Sites.Selected](#limiting-the-app-to-chosen-sites-with-sitesselected)
   - [Creating a SharePointLibraryManager](#creating-a-sharepointlibrarymanager)
   - [Operations](#operations)
   - [The action log](#the-action-log)
@@ -143,7 +144,7 @@ This package's `Emails` and `SharePointLibraryManager` call Microsoft Graph and 
 - **SharePoint only accepts app-only tokens obtained with a certificate.** That needs a certificate registered on the app, which you can't add to a workspace identity, and client secrets are rejected.
 - **The permissions stay separate from the workspace identity's.** Mailbox and SharePoint access are powerful, so it's better held by an app registration that does only this job, where it can be reviewed and revoked on its own. How far it reaches depends on what you grant:
   - Mail access is limited to the mailboxes in its Exchange role assignment (see [Giving the app access to a mailbox](#giving-the-app-access-to-a-mailbox)).
-  - SharePoint access is limited to chosen sites only with `Sites.Selected`. `Sites.FullControl.All` covers every site.
+  - SharePoint access is limited to chosen sites only with `Sites.Selected` (see [Limiting the app to chosen sites with Sites.Selected](#limiting-the-app-to-chosen-sites-with-sitesselected)). `Sites.FullControl.All` covers every site.
   - `SharePointLibraryManager` also needs `Group.ReadWrite.All`, `GroupMember.ReadWrite.All` and `User.Read.All`, which apply to the whole tenant (see [Giving the app access](#giving-the-app-access)).
 
   **Sign** on the key in Key Vault controls who can use the certificate this package signs with. It doesn't cover any other certificate or client secret on the app registration, which can also authenticate as the app, so remove those you don't need.
@@ -259,7 +260,7 @@ Avoid broader roles such as Key Vault Certificate User, Key Vault Secrets User o
 
 **5. Give the app access to the API you're calling**
 
-See the [Scopes](#scopes) table, and [Giving the app access to a mailbox](#giving-the-app-access-to-a-mailbox) for email.
+See the [Scopes](#scopes) table, [Giving the app access to a mailbox](#giving-the-app-access-to-a-mailbox) for email, and [Limiting the app to chosen sites with Sites.Selected](#limiting-the-app-to-chosen-sites-with-sitesselected) for SharePoint.
 
 ### Using the credential
 
@@ -346,9 +347,74 @@ If a client passes `claims` to `get_token` (for example after a Continuous Acces
 
 ### Scopes
 
-Tokens are requested with the client credentials flow, so a scope is always an API's resource URI followed by `/.default`. `/.default` means "every permission this app has been granted on that API". Apps can't request individual permissions such as `Mail.Read`.
+If you've used Microsoft Graph as a signed-in user, you'll know scopes as permission names such as `User.Read.All` or `Mail.Read`. This package uses scopes differently. Here a scope picks **which API** a token is for. **What** the app can do in that API is set up separately, by an administrator.
 
-Entra ID issues a token whether or not the app has access to the API. If the API then returns 401 or 403, check the last column.
+#### What a scope is
+
+Every scope has two parts: the API's resource URI, and a permission on that API.
+
+```text
+https://graph.microsoft.com/User.Read.All
+└──────── resource ───────┘└─permission─┘
+```
+
+When you ask for `User.Read.All` on its own, Entra ID reads it as `https://graph.microsoft.com/User.Read.All`. Graph is the default resource when the prefix is left out, which is why the resource part is easy to miss.
+
+#### Why every scope here ends in `/.default`
+
+There are two ways to get a token:
+
+- **Delegated.** A user signs in and the app acts on their behalf. The app asks for the permissions it wants (`User.Read.All Mail.Read`), the user or an administrator consents, and the token carries them in its `scp` claim. The app can never do more than the signed-in user could.
+- **App-only** (the client credentials flow). There's no user. The app signs in as itself, here with a certificate, as its service principal.
+
+`KeyVaultCertificateCredential` only does app-only. In that flow you can't ask for individual permissions, so the permission part of the scope must be the literal `.default`:
+
+```text
+https://graph.microsoft.com/.default
+```
+
+`.default` means "every application permission an administrator has already granted this app on this API". So the scope only says which API the token is for. That becomes the token's audience (its `aud` claim), and the API rejects any token whose audience isn't itself. A Graph token can't be used for SharePoint, and a SharePoint token can't be used for Graph.
+
+| | Delegated | App-only (this package) |
+| --- | --- | --- |
+| Signs in as | A user | The app's service principal |
+| You request | Permission names, such as `User.Read.All Mail.Read` | `{resource}/.default`, such as `https://graph.microsoft.com/.default` |
+| What it can do is decided by | The scopes requested, consent, and the user's own access | What an administrator granted the app ahead of time |
+| Permissions appear in the token as | The `scp` claim | The `roles` claim |
+
+#### Where `User.Read.All` goes instead
+
+Permissions move from request time to setup time. If the app needs `User.Read.All`, an administrator adds it to the app registration as an **application** permission (**API permissions** > **Add a permission** > **Microsoft Graph** > **Application permissions**) and grants admin consent. Your code doesn't change: it still asks for `Scopes.GRAPH`, and the token that comes back lists `User.Read.All` in its `roles` claim.
+
+Permissions on the app registration only apply to APIs that use them, mainly Microsoft Graph and SharePoint. Many of the APIs below ignore them, and access comes from somewhere else:
+
+- **Role-based APIs** (Power BI, Fabric, OneLake, Azure Storage, Key Vault, SQL, Kusto, Azure Resource Manager, Log Analytics). Give the service principal a role on the thing it needs: a Fabric workspace role, an Azure role assignment, or a database user. The token's `roles` claim is empty, and the API looks up the service principal's roles itself on each request.
+- **Exchange mailboxes.** Although the calls go through Graph, give the app an Exchange role limited to particular mailboxes, not Graph `Mail.*` permissions. See [Giving the app access to a mailbox](#giving-the-app-access-to-a-mailbox).
+- **SharePoint sites with `Sites.Selected`.** The permission on the app registration grants nothing on its own. Each site must also be granted to the app. See [Limiting the app to chosen sites with Sites.Selected](#limiting-the-app-to-chosen-sites-with-sitesselected).
+
+In every case, **Entra ID issues a token whether or not the app has access.** A token just says "this is app X, for API Y". If access isn't set up, the API rejects the request with 401 or 403, so getting a token proves the certificate works, not that permissions are right. If you get a 401 or 403, check the last column of the table below.
+
+#### Checking what a token contains
+
+To see which API a token is for and which permissions it carries, decode its payload. This only reads the token; it doesn't check the signature:
+
+```python
+import base64
+import json
+
+def token_claims(token):
+    payload = token.split(".")[1]
+    payload += "=" * (-len(payload) % 4)
+    return json.loads(base64.urlsafe_b64decode(payload))
+
+claims = token_claims(credential.get_access_token(Scopes.GRAPH))
+print(claims["aud"])            # https://graph.microsoft.com
+print(claims.get("roles", []))  # for example ['Sites.Selected', 'Group.ReadWrite.All', 'User.Read.All']
+```
+
+A permission missing from `roles` hasn't been granted, or hasn't had admin consent. After granting one, new tokens pick it up. Tokens already issued keep their old `roles` until they expire, usually within an hour, so start a new notebook session or create a new credential to get a token with the change straight away.
+
+#### Common scopes
 
 | Constant | Scope | API | How to give the app access |
 | --- | --- | --- | --- |
@@ -361,10 +427,21 @@ Entra ID issues a token whether or not the app has access to the API. If the API
 | `Scopes.KUSTO` | `https://api.kusto.windows.net/.default` | Azure Data Explorer, Fabric Eventhouse and KQL databases | A workspace role, or a database role such as `.add database <db> viewers ('aadapp=<client-id>;<tenant-id>')`. |
 | `Scopes.AZURE_MANAGEMENT` | `https://management.azure.com/.default` | Azure Resource Manager | An Azure role on the subscription, resource group or resource. |
 | `Scopes.LOG_ANALYTICS` | `https://api.loganalytics.io/.default` | Azure Monitor Log Analytics | Log Analytics Reader on the Log Analytics workspace. |
-| (none) | `https://<tenant>.sharepoint.com/.default` | SharePoint REST API | SharePoint application permissions, ideally `Sites.Selected`. SharePoint only allows app-only access with a certificate; client secrets are rejected. |
+| (none) | `https://<tenant>.sharepoint.com/.default` | SharePoint REST API | SharePoint application permissions, ideally [`Sites.Selected`](#limiting-the-app-to-chosen-sites-with-sitesselected) with each site granted to the app. SharePoint only allows app-only access with a certificate; client secrets are rejected. |
 | (none) | `https://<org>.crm11.dynamics.com/.default` | Dataverse | Use your environment URL. Add the app as an application user in the Power Platform admin center. |
 
-One credential can get tokens for any number of these APIs.
+One credential can get tokens for any number of these APIs. Each token is cached per scope, so a notebook that calls Graph and SharePoint gets one token for each and reuses them until they're about to expire.
+
+The `scope` you pass when creating the credential is only a default for `get_access_token()`. `get_token()` always takes the scope as an argument, which is how semantic link, Azure SDK clients and `SharePointLibraryManager` ask for the tokens they need.
+
+#### Other things called scope
+
+This README uses "scope" in two other senses that have nothing to do with tokens:
+
+- **Azure role assignment scope**, as in `az role assignment create --scope ...` in [Setting up a certificate](#setting-up-a-certificate). This is the resource a role applies to, such as one key vault or one certificate.
+- **Exchange management scope**, as in `New-ManagementScope` in [Giving the app access to a mailbox](#giving-the-app-access-to-a-mailbox). This is the set of mailboxes an Exchange role assignment covers.
+
+Both limit where a permission applies. An OAuth scope only picks the API a token is for.
 
 **When you don't need this package:** `notebookutils.credentials.getToken()` already returns tokens for the identity running the notebook, for the `storage`, `pbi`, `keyvault` and `kusto` audiences. For those APIs, prefer the workspace identity, see [Use a workspace identity where you can](#use-a-workspace-identity-where-you-can). Use this package when you need another API (such as Graph or SharePoint) or need to act as a separate app.
 
@@ -637,13 +714,146 @@ The app registration needs these application permissions, with admin consent:
 
 | API | Permission | Used for |
 | --- | --- | --- |
-| Microsoft Graph | `Sites.FullControl.All`, or `Sites.Selected` with full control on each site | Finding sites, creating and renaming libraries |
+| Microsoft Graph | `Sites.Selected` with full control on each site (recommended), or `Sites.FullControl.All` | Finding sites, creating and renaming libraries |
 | Microsoft Graph | `Group.ReadWrite.All` and `GroupMember.ReadWrite.All` | Creating and renaming groups, syncing membership |
 | Microsoft Graph | `User.Read.All` | Resolving users by UPN, mail or proxy address |
 | Microsoft Graph | `Files.ReadWrite.All` | Only for OneDrive shortcuts (`create_onedrive_shortcuts=True`) |
-| SharePoint | `Sites.FullControl.All`, or `Sites.Selected` with full control on each site | Permissions, property bag, navigation and sharing settings |
+| SharePoint | `Sites.Selected` with full control on each site (recommended), or `Sites.FullControl.All` | Permissions, property bag, navigation and sharing settings |
+
+`Sites.FullControl.All` gives the app full control of every site in the tenant, including every user's OneDrive. Use `Sites.Selected` instead, so the app can only touch the sites it manages, see [Limiting the app to chosen sites with Sites.Selected](#limiting-the-app-to-chosen-sites-with-sitesselected). The group and user permissions have no per-site equivalent and always apply to the whole tenant.
 
 SharePoint only accepts app-only tokens obtained with a certificate, so use `KeyVaultCertificateCredential`, not a client secret. Set up the certificate as in [Setting up a certificate](#setting-up-a-certificate), uploading it to this app registration. The identity running the notebook (for a pipeline, whatever the notebook activity runs as) needs **Get** on the certificate and **Sign** on its key.
+
+### Limiting the app to chosen sites with Sites.Selected
+
+`Sites.Selected` is an application permission that grants nothing by itself. Admin consent for it lets SharePoint grant the app access one site at a time, and the app can only reach the sites it has been granted. Any other site returns 403, as if the app had no SharePoint permissions at all.
+
+It works in three layers, and the app only has access to a site when all three are in place:
+
+1. **Consent.** `Sites.Selected` is on the app registration, for each API the app calls, with admin consent. `SharePointLibraryManager` calls both Microsoft Graph and the SharePoint REST API, so it needs it on both.
+2. **A grant on the site.** The app is given a role on each site, such as `fullcontrol`. The grant is stored on the site in SharePoint, not on the app registration, so you won't see it in Entra ID. One grant covers both Graph and the SharePoint REST API.
+3. **The token.** The app's token lists `Sites.Selected` in its `roles` claim, which it does once step 1 is done, see [Checking what a token contains](#checking-what-a-token-contains).
+
+This gives you two ways to remove access: remove one site's grant to block that site, or remove the consent on the app registration to block every site at once.
+
+#### Roles
+
+| Role | Allows |
+| --- | --- |
+| `read` | Reading lists, libraries, items and files |
+| `write` | `read`, plus creating, changing and deleting items and files |
+| `owner` | `write`, plus managing lists and libraries. PnP PowerShell calls this **Manage**. |
+| `fullcontrol` | Everything, including permissions and site settings |
+
+`SharePointLibraryManager` needs `fullcontrol`. It gives libraries their own permissions, grants groups access to them, and changes the site's sharing settings and members group, which the lower roles can't do. For your own code, grant the lowest role that works, for example `read` to read a list or `write` to upload files.
+
+#### 1. Add the permission to the app registration
+
+In the Microsoft Entra admin center, open the app registration and go to **API permissions**:
+
+1. **Add a permission** > **Microsoft Graph** > **Application permissions**, select **Sites.Selected** and add it.
+2. **Add a permission** > **SharePoint** > **Application permissions**, select **Sites.Selected** and add it.
+3. Select **Grant admin consent for <your organisation>**. This needs a Privileged Role Administrator or Global Administrator.
+4. If the app has `Sites.FullControl.All`, `Sites.ReadWrite.All`, `Sites.Read.All` or `Sites.Manage.All` under either API, remove them. Permissions add up, so leaving one there would keep the app's access to every site.
+
+With the Azure CLI. `00000003-0000-0000-c000-000000000000` is Microsoft Graph and `00000003-0000-0ff1-ce00-000000000000` is SharePoint, and each permission's ID is looked up by name:
+
+```bash
+for api in 00000003-0000-0000-c000-000000000000 00000003-0000-0ff1-ce00-000000000000; do
+    role_id=$(az ad sp show --id $api --query "appRoles[?value=='Sites.Selected'].id" --output tsv)
+    az ad app permission add --id <client-id> --api $api --api-permissions $role_id=Role
+done
+
+az ad app permission admin-consent --id <client-id>
+```
+
+#### 2. Grant the app each site
+
+Granting a site needs `Sites.FullControl.All`, as a site grant can include full control. You don't need to give that to this app: a SharePoint Administrator does this once per site from their own session, using the [Microsoft Graph PowerShell SDK](https://learn.microsoft.com/en-us/powershell/microsoftgraph/installation) (the `Microsoft.Graph.Sites` module).
+
+```powershell
+Connect-MgGraph -Scopes "Sites.FullControl.All"
+
+$appId   = "<client-id>"
+$appName = "<app-name>"   # only a label stored with the grant; use the app registration's name
+
+$sites = @(
+    "contoso.sharepoint.com:/sites/hr",
+    "contoso.sharepoint.com:/sites/finance"
+)
+
+foreach ($path in $sites) {
+    $site = Get-MgSite -SiteId $path
+    New-MgSitePermission -SiteId $site.Id -BodyParameter @{
+        roles               = @("fullcontrol")
+        grantedToIdentities = @(@{ application = @{ id = $appId; displayName = $appName } })
+    }
+}
+```
+
+Each site is given as `<hostname>:/sites/<name>`, the site URL with `:` after the hostname. `Connect-MgGraph -Scopes` is the delegated kind of scope from [Scopes](#scopes): the administrator signs in as themselves, and the session can only do what both the scope and their own role allow. The first time anyone uses it, Entra ID asks for consent to the Microsoft Graph Command Line Tools app having `Sites.FullControl.All`, which an administrator who can grant tenant-wide consent has to accept. Microsoft also says the person granting must have access to the site. If `New-MgSitePermission` returns 403, add yourself to the site as an owner, or as a site collection administrator in the SharePoint admin center, and try again.
+
+If you use [PnP PowerShell](https://pnp.github.io/powershell/), this does the same:
+
+```powershell
+Grant-PnPEntraIDAppSitePermission -AppId <client-id> -DisplayName "<app-name>" -Permissions FullControl `
+    -Site https://contoso.sharepoint.com/sites/hr
+```
+
+#### 3. Check the grant
+
+List the apps granted a site, and their roles. Listing a site's permissions doesn't return their roles, so each one is fetched by ID:
+
+```powershell
+$site = Get-MgSite -SiteId "contoso.sharepoint.com:/sites/hr"
+
+Get-MgSitePermission -SiteId $site.Id | ForEach-Object {
+    $permission = Get-MgSitePermission -SiteId $site.Id -PermissionId $_.Id
+    [pscustomobject]@{
+        App   = $permission.GrantedToIdentitiesV2.Application.DisplayName -join ", "
+        Roles = $permission.Roles -join ", "
+        Id    = $permission.Id
+    }
+}
+```
+
+Then check from a notebook, as the app. A granted site returns 200, and any other site 403:
+
+```python
+import requests
+from alt_fabric_m365.auth import Scopes
+
+token = credential.get_access_token(Scopes.GRAPH)
+for site in ["contoso.sharepoint.com:/sites/hr", "contoso.sharepoint.com:/sites/not-granted"]:
+    response = requests.get(f"https://graph.microsoft.com/v1.0/sites/{site}",
+                            headers={"Authorization": f"Bearer {token}"})
+    print(site, response.status_code)
+```
+
+A new grant usually works within a few minutes. Finally, run the manager with `dry_run=True`: sites the app can't read show up as `error` rows.
+
+#### Changing or removing a grant
+
+Use the `Id` from the check above:
+
+```powershell
+# Change the role
+Update-MgSitePermission -SiteId $site.Id -PermissionId <id> -Roles @("write")
+
+# Remove the app's access to the site
+Remove-MgSitePermission -SiteId $site.Id -PermissionId <id>
+```
+
+To block every site at once, remove `Sites.Selected` from the app registration, or revoke its admin consent.
+
+#### Things to know
+
+- **Grant a new site before the manager uses it.** When your data adds a library on a site the app hasn't been granted, that site gets one `error` row and its libraries are skipped. The rest of the run carries on. In the [recommended flow](#recommended-flow) the watermark isn't advanced, so once you've granted the site the next run picks them up.
+- **Keep the old site's grant until retiring is done.** `retire_moved_libraries` treats a 403 from the old site the same as a deleted site: it logs `retire_skipped` ("old site no longer resolves") and leaves the old library as it is. Only remove the grant after the old libraries have been retired.
+- **A grant covers the whole site collection**, including any subsites, and doesn't change who else can use the site. It doesn't break permission inheritance on anything.
+- **The app can't find sites it hasn't been granted.** It can only work with the site URLs you give it, which is all `SharePointLibraryManager` needs.
+- **Other permissions still reach the whole tenant.** `Group.ReadWrite.All`, `GroupMember.ReadWrite.All` and `User.Read.All` aren't limited by `Sites.Selected`. Nor is `Files.ReadWrite.All`, which covers every user's OneDrive, so only add it if you use `create_onedrive_shortcuts=True`.
+- **Lists, libraries and files can be granted too**, with `Lists.SelectedOperations.Selected`, `ListItems.SelectedOperations.Selected` and `Files.SelectedOperations.Selected`. `SharePointLibraryManager` creates libraries, so it needs a grant on the site. See Microsoft's [overview of Selected permissions](https://learn.microsoft.com/en-us/graph/permissions-selected-overview).
 
 ### Creating a SharePointLibraryManager
 
@@ -1005,6 +1215,10 @@ Outside Fabric, `KeyVaultCertificateCredential` isn't available (it needs `noteb
 | `Attachment ... is a #microsoft.graph.itemAttachment` | `download_attachment` was given the ID of an attached email, not a file. |
 | `ImportError: notebookutils is not available. KeyVaultCertificateCredential must be used in a Fabric notebook.` | The code is running outside Fabric. `KeyVaultCertificateCredential` only works in Fabric (or Synapse) notebooks. |
 | SharePoint `401` with `Unsupported app only token` | The token came from a client secret. SharePoint needs a certificate, see [Giving the app access](#giving-the-app-access). |
+| Graph or SharePoint `403` (`accessDenied`) for some sites but not others | The app has `Sites.Selected` but hasn't been granted those sites, see [Grant the app each site](#2-grant-the-app-each-site). |
+| Graph or SharePoint `403` for every site | `Sites.Selected` (or another `Sites.*` permission) is missing from that API on the app registration, or lacks admin consent. Graph and SharePoint each need their own. Check the token's `roles` claim, see [Checking what a token contains](#checking-what-a-token-contains). |
+| `403` when running `New-MgSitePermission` | The account running it needs `Sites.FullControl.All` consented for Microsoft Graph PowerShell, a SharePoint Administrator role, and access to the site. |
+| Graph `403` after granting a permission | Tokens issued before the change don't include it. Create a new credential or start a new session to get a fresh token. |
 | `ValueError: site_url '...' is not on https://...` | A `site_url` isn't on the `sharepoint_hostname` the manager was created with, or uses `http://`. |
 | `error` row: `Multiple Entra groups share displayName` | Two groups have the name the manager uses for a library. Delete or rename the duplicate. |
 | `user_not_found` rows | The address matches no user's UPN, mail or proxy addresses. Fix it in the source data; the next run picks the user up. |
