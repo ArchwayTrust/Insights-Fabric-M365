@@ -16,6 +16,7 @@ Scopes and audiences:
     Some APIs use a scope specific to your tenant or environment:
         SharePoint REST API: https://{tenant}.sharepoint.com/.default
             Grant SharePoint application permissions (Sites.Selected where possible) on the app registration.
+            Sites.Selected grants nothing until each site is also granted to the app, see the README.
             SharePoint only allows app-only access with a certificate, so client secrets are rejected.
         Dataverse: your environment URL followed by /.default, for example https://{org}.crm11.dynamics.com/.default
             Add the app as an application user in the Power Platform admin center.
