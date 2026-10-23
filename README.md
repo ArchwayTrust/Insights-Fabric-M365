@@ -720,7 +720,7 @@ The app registration needs these application permissions, with admin consent:
 | Microsoft Graph | `Files.ReadWrite.All` | Only for OneDrive shortcuts (`create_onedrive_shortcuts=True`) |
 | SharePoint | `Sites.Selected` with full control on each site (recommended), or `Sites.FullControl.All` | Permissions, property bag, navigation and sharing settings |
 
-`Sites.FullControl.All` gives the app full control of every site in the tenant, including every user's OneDrive. Use `Sites.Selected` instead, so the app can only touch the sites it manages, see [Limiting the app to chosen sites with Sites.Selected](#limiting-the-app-to-chosen-sites-with-sitesselected). The group and user permissions have no per-site equivalent and always apply to the whole tenant.
+`Sites.FullControl.All` gives the app full control of every site in the tenant, including every user's OneDrive. Use `Sites.Selected` instead, so the app can only touch the sites it manages, see [Limiting the app to chosen sites with Sites.Selected](#limiting-the-app-to-chosen-sites-with-sitesselected). The group and user permissions have no per-site equivalent and always apply to the whole tenant. So does `Files.ReadWrite.All`, which reaches files on every site as well as every OneDrive, so turning on OneDrive shortcuts gives up per-site isolation for files.
 
 SharePoint only accepts app-only tokens obtained with a certificate, so use `KeyVaultCertificateCredential`, not a client secret. Set up the certificate as in [Setting up a certificate](#setting-up-a-certificate), uploading it to this app registration. The identity running the notebook (for a pipeline, whatever the notebook activity runs as) needs **Get** on the certificate and **Sign** on its key.
 
@@ -734,7 +734,7 @@ It works in three layers, and the app only has access to a site when all three a
 2. **A grant on the site.** The app is given a role on each site, such as `fullcontrol`. The grant is stored on the site in SharePoint, not on the app registration, so you won't see it in Entra ID. One grant covers both Graph and the SharePoint REST API.
 3. **The token.** The app's token lists `Sites.Selected` in its `roles` claim, which it does once step 1 is done, see [Checking what a token contains](#checking-what-a-token-contains).
 
-This gives you two ways to remove access: remove one site's grant to block that site, or remove the consent on the app registration to block every site at once.
+This gives you two ways to remove access: remove one site's grant to block that site, or revoke the app's admin consent for `Sites.Selected` to block every site, see [Changing or removing a grant](#changing-or-removing-a-grant).
 
 #### Roles
 
@@ -754,7 +754,9 @@ In the Microsoft Entra admin center, open the app registration and go to **API p
 1. **Add a permission** > **Microsoft Graph** > **Application permissions**, select **Sites.Selected** and add it.
 2. **Add a permission** > **SharePoint** > **Application permissions**, select **Sites.Selected** and add it.
 3. Select **Grant admin consent for <your organisation>**. This needs a Privileged Role Administrator or Global Administrator.
-4. If the app has `Sites.FullControl.All`, `Sites.ReadWrite.All`, `Sites.Read.All` or `Sites.Manage.All` under either API, remove them. Permissions add up, so leaving one there would keep the app's access to every site.
+4. If the app has `Sites.FullControl.All`, `Sites.ReadWrite.All`, `Sites.Read.All` or `Sites.Manage.All` under either API, revoke them. Permissions add up, so leaving one granted would keep the app's access to every site. Removing a permission from the configured list doesn't revoke its admin consent: the app keeps it, and the page then lists it under **Other permissions granted for <your organisation>**. For each one, select **...** > **Revoke admin consent** (for one still in the configured list, revoke it and then remove it). Check under **Enterprise applications** > the app > **Permissions** that none of them are left.
+
+Then get a fresh token and check its `roles` claim lists `Sites.Selected` and none of the broader permissions, see [Checking what a token contains](#checking-what-a-token-contains). Tokens issued before the change keep their old permissions until they expire, usually within an hour.
 
 With the Azure CLI. `00000003-0000-0000-c000-000000000000` is Microsoft Graph and `00000003-0000-0ff1-ce00-000000000000` is SharePoint, and each permission's ID is looked up by name:
 
@@ -844,7 +846,7 @@ Update-MgSitePermission -SiteId $site.Id -PermissionId <id> -Roles @("write")
 Remove-MgSitePermission -SiteId $site.Id -PermissionId <id>
 ```
 
-To block every site at once, remove `Sites.Selected` from the app registration, or revoke its admin consent.
+To block every site, revoke the admin consent for `Sites.Selected` on both APIs, as in step 1. Removing it from the configured list on its own isn't enough. This isn't immediate: tokens the app already holds keep working until they expire, usually within an hour. Removing a site's grant is the quicker way to cut off one site.
 
 #### Things to know
 
@@ -852,7 +854,7 @@ To block every site at once, remove `Sites.Selected` from the app registration, 
 - **Keep the old site's grant until retiring is done.** `retire_moved_libraries` treats a 403 from the old site the same as a deleted site: it logs `retire_skipped` ("old site no longer resolves") and leaves the old library as it is. Only remove the grant after the old libraries have been retired.
 - **A grant covers the whole site collection**, including any subsites, and doesn't change who else can use the site. It doesn't break permission inheritance on anything.
 - **The app can't find sites it hasn't been granted.** It can only work with the site URLs you give it, which is all `SharePointLibraryManager` needs.
-- **Other permissions still reach the whole tenant.** `Group.ReadWrite.All`, `GroupMember.ReadWrite.All` and `User.Read.All` aren't limited by `Sites.Selected`. Nor is `Files.ReadWrite.All`, which covers every user's OneDrive, so only add it if you use `create_onedrive_shortcuts=True`.
+- **Other permissions still reach the whole tenant.** `Group.ReadWrite.All`, `GroupMember.ReadWrite.All` and `User.Read.All` aren't limited by `Sites.Selected`. Nor is `Files.ReadWrite.All`: as an application permission it can read and write files in every document library on every site, as well as every user's OneDrive. Adding it for `create_onedrive_shortcuts=True` therefore gives the app file access to sites it hasn't been granted, so only add it if you use shortcuts and accept that.
 - **Lists, libraries and files can be granted too**, with `Lists.SelectedOperations.Selected`, `ListItems.SelectedOperations.Selected` and `Files.SelectedOperations.Selected`. `SharePointLibraryManager` creates libraries, so it needs a grant on the site. See Microsoft's [overview of Selected permissions](https://learn.microsoft.com/en-us/graph/permissions-selected-overview).
 
 ### Creating a SharePointLibraryManager
