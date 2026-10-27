@@ -12,6 +12,24 @@ class MessageNotFoundError(Exception):
     """
 
 
+def _graph_error(response):
+    """
+    Returns the error code and message from a Microsoft Graph error response.
+
+    Either value is None if the response body isn't a Graph error, such as an empty or non-JSON body.
+    """
+    try:
+        body = response.json()
+    except ValueError:
+        return None, None
+
+    error = body.get('error') if isinstance(body, dict) else None
+    if not isinstance(error, dict):
+        return None, None
+
+    return error.get('code'), error.get('message')
+
+
 class Emails:
     """
     A class to interact with Microsoft Graph API for managing emails in a mailbox.
@@ -75,24 +93,6 @@ class Emails:
             raise ValueError("No mailbox given. Pass shared_mailbox_email or set a default mailbox when creating Emails.")
 
         return f"{self.GRAPH_URL}/users/{mailbox}"
-
-    @staticmethod
-    def _graph_error(response):
-        """
-        Returns the error code and message from a Microsoft Graph error response.
-
-        Either value is None if the response body isn't a Graph error, such as an empty or non-JSON body.
-        """
-        try:
-            body = response.json()
-        except ValueError:
-            return None, None
-
-        error = body.get('error') if isinstance(body, dict) else None
-        if not isinstance(error, dict):
-            return None, None
-
-        return error.get('code'), error.get('message')
 
     def search_message_by_subject_and_sender(self, subject, sender_email, only_search_inbox=True, only_return_latest=True, shared_mailbox_email=None):
         """
@@ -339,7 +339,7 @@ class Emails:
         if response.ok:
             return True
 
-        error_code, error_message = self._graph_error(response)
+        error_code, error_message = _graph_error(response)
 
         # The mailbox was found, but the message wasn't
         if response.status_code == 404 and error_code == 'ErrorItemNotFound':

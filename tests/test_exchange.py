@@ -238,6 +238,17 @@ def test_other_errors_are_raised_not_reported_as_missing(emails, response, expec
     assert expected in str(error.value)
 
 
+@pytest.mark.parametrize("response, expected", [
+    (make_response(404, {"error": {"code": "ErrorItemNotFound", "message": "Not found."}}), ("ErrorItemNotFound", "Not found.")),
+    (make_response(404, {"error": "a string, not a Graph error"}), (None, None)),
+    (make_response(404, ["not", "a", "dict"]), (None, None)),
+    (make_response(503, text="<html>Service Unavailable</html>"), (None, None)),
+    (make_response(204), (None, None)),
+])
+def test_graph_error_reads_only_graph_error_bodies(response, expected):
+    assert emails_module._graph_error(response) == expected
+
+
 # Timeouts
 
 def test_every_request_has_a_timeout(emails):

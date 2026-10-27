@@ -15,6 +15,35 @@ from urllib.parse import urlparse
 from azure.core.credentials import AccessToken
 
 
+def _base64url(data):
+    """
+    Encodes bytes as unpadded base64url, as used in JWTs.
+    """
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def _describe_error(response):
+    """
+    Summarises an error response from Microsoft Entra ID or Azure Key Vault without including request data.
+    """
+    try:
+        body = response.json()
+    except ValueError:
+        return f"Status code: {response.status_code}"
+
+    # Only summarise the documented error formats. Leave out anything else, such as a JSON list or string
+    if not isinstance(body, dict) or body.get("error") is None:
+        return f"Status code: {response.status_code}"
+
+    error = body.get("error")
+
+    # Key Vault nests the error as an object, Entra ID returns error and error_description at the top level
+    if isinstance(error, dict):
+        return f"Status code: {response.status_code}, {error.get('code')}: {error.get('message')}"
+
+    return f"Status code: {response.status_code}, {error}: {body.get('error_description')}"
+
+
 class KeyVaultCertificateCredential:
     """
     Authenticates as a service principal using a certificate held in Azure Key Vault.
@@ -214,7 +243,7 @@ class KeyVaultCertificateCredential:
         response = requests.post(self.token_endpoint, data=data, timeout=self.REQUEST_TIMEOUT_SECONDS)
 
         if response.status_code != 200:
-            raise Exception(f"Failed to get access token for {self.client_id} with scope {scope}. {self._describe_error(response)}")
+            raise Exception(f"Failed to get access token for {self.client_id} with scope {scope}. {_describe_error(response)}")
 
         token_response = response.json()
 
@@ -238,7 +267,7 @@ class KeyVaultCertificateCredential:
         header = {
             "alg": "PS256",
             "typ": "JWT",
-            "x5t#S256": self._base64url(hashlib.sha256(certificate_der).digest())
+            "x5t#S256": _base64url(hashlib.sha256(certificate_der).digest())
         }
 
         claims = {
@@ -252,7 +281,7 @@ class KeyVaultCertificateCredential:
         }
 
         # Key Vault signs a digest rather than the message, so hash the JWT's signing input here
-        signing_input = f"{self._base64url(json.dumps(header).encode())}.{self._base64url(json.dumps(claims).encode())}"
+        signing_input = f"{_base64url(json.dumps(header).encode())}.{_base64url(json.dumps(claims).encode())}"
         digest = hashlib.sha256(signing_input.encode("ascii")).digest()
 
         signature = self._sign_digest(key_id, digest, akv_headers)
@@ -281,7 +310,7 @@ class KeyVaultCertificateCredential:
         )
 
         if response.status_code != 200:
-            raise Exception(f"Failed to get certificate {self.certificate_name} from key vault. {self._describe_error(response)}")
+            raise Exception(f"Failed to get certificate {self.certificate_name} from key vault. {_describe_error(response)}")
 
         certificate = response.json()
 
@@ -310,12 +339,12 @@ class KeyVaultCertificateCredential:
             f"{key_id}/sign",
             headers=akv_headers,
             params={"api-version": self.AKV_API_VERSION},
-            json={"alg": "PS256", "value": self._base64url(digest)},
+            json={"alg": "PS256", "value": _base64url(digest)},
             timeout=self.REQUEST_TIMEOUT_SECONDS
         )
 
         if response.status_code != 200:
-            raise Exception(f"Failed to sign client assertion with key vault key {self.certificate_name}. {self._describe_error(response)}")
+            raise Exception(f"Failed to sign client assertion with key vault key {self.certificate_name}. {_describe_error(response)}")
 
         return response.json()["value"]
 
@@ -337,32 +366,3 @@ class KeyVaultCertificateCredential:
             "Authorization": f"Bearer {akv_cred}",
             "Content-Type": "application/json"
         }
-
-    @staticmethod
-    def _base64url(data):
-        """
-        Encodes bytes as unpadded base64url, as used in JWTs.
-        """
-        return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
-
-    @staticmethod
-    def _describe_error(response):
-        """
-        Summarises an error response from Microsoft Entra ID or Azure Key Vault without including request data.
-        """
-        try:
-            body = response.json()
-        except ValueError:
-            return f"Status code: {response.status_code}"
-
-        # Only summarise the documented error formats. Leave out anything else, such as a JSON list or string
-        if not isinstance(body, dict) or body.get("error") is None:
-            return f"Status code: {response.status_code}"
-
-        error = body.get("error")
-
-        # Key Vault nests the error as an object, Entra ID returns error and error_description at the top level
-        if isinstance(error, dict):
-            return f"Status code: {response.status_code}, {error.get('code')}: {error.get('message')}"
-
-        return f"Status code: {response.status_code}, {error}: {body.get('error_description')}"
