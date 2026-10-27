@@ -16,6 +16,6 @@ setup(
     description="Renamed alt-fabric-m365. This release only forwards to it.",
     long_description=open(os.path.join(HERE, 'README.md'), encoding='utf-8').read(),
     long_description_content_type='text/markdown',
-    url="https://github.com/ArchwayTrust/Insights-Fabric-PythonHelper",
+    url="https://github.com/ArchwayTrust/Insights-Fabric-M365",
     license="BSD-3-Clause",
 )

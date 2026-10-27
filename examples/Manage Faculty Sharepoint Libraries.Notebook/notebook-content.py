@@ -167,7 +167,7 @@ from datetime import datetime, timezone
 import pandas as pd
 
 # The library manager lives in alt_fabric_m365 (pinned in the attached
-# environment): https://github.com/ArchwayTrust/Insights-Fabric-PythonHelper
+# environment): https://github.com/ArchwayTrust/Insights-Fabric-M365
 import alt_fabric_m365
 from alt_fabric_m365.auth import KeyVaultCertificateCredential
 from alt_fabric_m365.sharepoint import (

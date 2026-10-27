@@ -14,4 +14,4 @@ To move over:
 
 This final release, 0.6.0, contains no code of its own. It installs `alt-fabric-m365` 0.6 and makes `fabric_python_helper` an alias for it, so existing imports keep working but show a `FutureWarning`. Versions up to 0.5.0 are unchanged and stay installable.
 
-See the [documentation](https://github.com/ArchwayTrust/Insights-Fabric-PythonHelper#readme).
+See the [documentation](https://github.com/ArchwayTrust/Insights-Fabric-M365#readme).
