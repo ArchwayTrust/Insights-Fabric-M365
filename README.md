@@ -210,10 +210,12 @@ Save this policy as `policy.json`:
 }
 ```
 
+You can use ```code policy.json```
+
 Then create the certificate:
 
 ```bash
-az keyvault certificate create --vault-name <key-vault-name> --name <certificate-name> --policy @policy.json
+az keyvault certificate create --vault-name <key-vault-name> --name <certificate-name> --policy "@policy.json"
 ```
 
 `"exportable": false` means nobody, including Key Vault administrators, can download the private key. The lifetime action emails the vault's certificate contacts 30 days before expiry. Add yourself as a contact if you aren't one already:
