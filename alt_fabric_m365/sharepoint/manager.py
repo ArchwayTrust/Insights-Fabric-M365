@@ -3,6 +3,7 @@ SharePointLibraryManager: manages SharePoint document libraries and their permis
 """
 import logging
 import time
+from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
@@ -199,7 +200,7 @@ class SharePointLibraryManager:
 
     def _prefetch_sites(
         self,
-        site_urls,
+        site_urls: Iterable[str],
         action_log: _ThreadSafeLog,
         *,
         role_definitions: bool = False,
@@ -242,7 +243,7 @@ class SharePointLibraryManager:
             sites[site_url] = site
         return sites
 
-    def _resolve_users(self, user_principal_names) -> dict[str, tuple]:
+    def _resolve_users(self, user_principal_names: Iterable[str]) -> dict[str, tuple]:
         """Resolve each distinct user once, in parallel.
 
         Staff in several faculties would otherwise cost up to three Graph
@@ -2499,7 +2500,7 @@ class SharePointLibraryManager:
 
     def enforce_site_sharing_lockdown(
         self,
-        site_urls,
+        site_urls: Iterable[str],
         *,
         dry_run: bool | None = None,
         max_workers: int | None = None,

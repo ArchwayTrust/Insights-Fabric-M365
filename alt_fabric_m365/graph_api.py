@@ -11,7 +11,7 @@ from . import exchange
 _MOVED = ("Emails", "MessageNotFoundError")
 
 
-def __getattr__(name):
+def __getattr__(name: str) -> object:
     if name in _MOVED:
         warnings.warn(
             "alt_fabric_m365.graph_api has moved to alt_fabric_m365.exchange. "

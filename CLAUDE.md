@@ -40,10 +40,29 @@ CI also runs `python -m build` and `python -m twine check --strict dist/*`, and 
 
 ## Style
 
-- Match the file you're in: its docstring format, comment density and naming. `auth` and `exchange` docstrings use `Parameters:` / `Returns:` / `Raises:` blocks; `sharepoint` uses `Args:` blocks, double-backtick code markup and type hints. Don't convert a file from one to the other as part of an unrelated change.
+- Docstrings use [Google style](https://google.github.io/styleguide/pyguide.html#38-comments-and-docstrings):
+  - The summary sentence starts on the same line as the opening quotes. Module docstrings are the exception: they start on the line after, naming the module's main class or purpose.
+  - Sections are `Args:`, `Returns:`, `Raises:` and, for classes, `Attributes:`. Don't use `Parameters:`.
+  - Types go in type hints on the signature, not in `Args:` or `Returns:`. `Attributes:` entries give their type in brackets, `tenant_id (str):`, as attributes aren't annotated.
+  - Mark an optional argument "Optional." and say what it defaults to.
+  - Example:
+
+    ```python
+    def _get_certificate(self, akv_headers: dict) -> tuple[str, bytes]:
+        """Retrieves the public part of the certificate from Azure Key Vault.
+
+        Args:
+            akv_headers: Headers for calling Azure Key Vault, from _akv_headers().
+
+        Returns:
+            The key identifier (URL including version) to sign with, and the certificate's DER encoded bytes.
+        """
+    ```
+- Every function and method has type hints for its arguments and return value, using Python 3.10 syntax (`str | None`, `list[dict]`). A credential is left unannotated, as anything with a `get_token` method works.
 - Every public class, function and method has a docstring, including what the app registration needs (permissions, roles) to use it.
+- Otherwise match the file you're in, for comment density, naming and quote style.
 - Comments say why, not what: a constraint of the API, a security reason, a case the code handles that isn't obvious.
-- British spelling in names, messages and docs: `sanitise`, `summarise`, `normalise`, `licence`.
+- British spelling in names, messages and docs: `sanitise`, `summarise`, `normalise`, `initialise`, `honour`, `licence`. Keep the spelling of names that aren't ours: "Microsoft Entra admin center", "BSD 3-Clause License", `str.capitalize()`, Graph's `conflictBehavior`.
 - Keep lines to about 120 characters.
 - Constants are `UPPER_CASE`: module-level in `sharepoint/_common.py` and `_http.py`, class attributes in `auth` and `exchange` (`REQUEST_TIMEOUT_SECONDS`).
 - The only runtime dependencies are `azure-core`, `pandas` and `requests`. Don't add another without a strong reason, as each one has to be installed in every Fabric environment.

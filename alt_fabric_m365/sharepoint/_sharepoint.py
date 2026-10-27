@@ -35,8 +35,7 @@ def _sharepoint_headers(token: str) -> dict:
 
 
 def _sharepoint_post_headers(token: str) -> dict:
-    """
-    Return headers for SharePoint REST API POST (write) calls.
+    """Return headers for SharePoint REST API POST (write) calls.
 
     With app-only OAuth bearer tokens (client-credentials flow), the form
     digest is not required for CSRF protection — that mechanism is only
@@ -61,8 +60,7 @@ def _has_unique_permissions(token: str, site_url: str, list_id: str) -> bool:
 
 
 def _break_role_inheritance(token: str, site_url: str, list_id: str) -> None:
-    """
-    Break role inheritance on a document library so it has its own permissions.
+    """Break role inheritance on a document library so it has its own permissions.
 
     The 'false' parameter means we do NOT copy existing role assignments.
     """
@@ -113,8 +111,7 @@ def _resolve_role_def_ids(token: str, site_url: str) -> dict[str, int]:
 def _resolve_group_principal_id(
     token: str, site_url: str, group_name: str, *, is_new_group: bool = False
 ) -> int:
-    """
-    Resolve an Entra ID security group to a SharePoint principal ID.
+    """Resolve an Entra ID security group to a SharePoint principal ID.
 
     Uses the ensureuser endpoint with the group's claims-based identity
     (c:0t.c|tenant|group-id).
@@ -251,8 +248,7 @@ def _ensure_group_assigned_to_library(
     is_new_group: bool = False,
     existing_roles: dict[str, set[int]] | None = None,
 ) -> bool:
-    """
-    Ensure a security group is assigned to a library with the given role.
+    """Ensure a security group is assigned to a library with the given role.
 
     Uses the Entra ID group's claims-based identity to register it as a
     SharePoint principal, then grants the role on the library.

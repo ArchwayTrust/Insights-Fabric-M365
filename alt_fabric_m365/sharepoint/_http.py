@@ -73,8 +73,7 @@ def _request_with_retry(
     idempotent: bool = True,
     **kwargs,
 ) -> requests.Response:
-    """
-    Make an HTTP request with automatic retry on transient failures.
+    """Make an HTTP request with automatic retry on transient failures.
 
     Retries on:
       - HTTP 429 (Too Many Requests) — respects the Retry-After header
