@@ -6,7 +6,7 @@ Up to 0.5.0 this package was called `fabric_python_helper`. If you're upgrading 
 
 The package has a module for each Microsoft 365 service, plus `auth`, which they share:
 
-- **`alt_fabric_m365.auth`** gets app-only access tokens for Microsoft APIs (Microsoft Graph, Power BI, Fabric, OneLake and others) as a service principal, using a certificate held in Azure Key Vault. Key Vault signs each request, so the certificate's private key never leaves the key vault.
+- **`alt_fabric_m365.auth`** gets app-only access tokens for Microsoft 365 APIs, mainly Microsoft Graph, Exchange and SharePoint, as a service principal, using a certificate held in Azure Key Vault. Key Vault signs each request, so the certificate's private key never leaves the key vault.
 - **`alt_fabric_m365.exchange`** finds emails in an Exchange Online mailbox, downloads their attachments, deletes them and sends emails, using Microsoft Graph.
 - **`alt_fabric_m365.sharepoint`** manages SharePoint document libraries and their permissions through Entra ID security groups: creating libraries, keeping group membership in sync, navigation links and site sharing settings.
 
