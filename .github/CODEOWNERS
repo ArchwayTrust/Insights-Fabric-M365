@@ -1,0 +1,11 @@
+# Who reviews changes. The last matching line wins, and any one owner on a line can approve.
+# Owners only become required reviewers if the ruleset on main turns on "Require review from Code Owners".
+# Each team needs write access to this repository, or GitHub ignores it.
+
+# Insights maintains and releases the package
+*                                   @ArchwayTrust/insights
+
+# The SharePoint library manager changes libraries, permissions and groups in the tenant, which IT runs
+/alt_fabric_m365/sharepoint/        @ArchwayTrust/it-approvers
+/tests/sharepoint_fake.py           @ArchwayTrust/it-approvers
+/tests/test_sharepoint_*.py         @ArchwayTrust/it-approvers
