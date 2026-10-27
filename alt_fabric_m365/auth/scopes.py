@@ -4,8 +4,7 @@ Scopes for common Microsoft APIs.
 
 
 class Scopes:
-    """
-    Scopes for common Microsoft APIs, for use with KeyVaultCertificateCredential or any other credential.
+    """Scopes for common Microsoft APIs, for use with KeyVaultCertificateCredential or any other credential.
 
     The comment above each says where to give the service principal access. Entra ID issues a token
     whether or not that access exists, but the API rejects requests made without it.

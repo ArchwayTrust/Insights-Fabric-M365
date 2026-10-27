@@ -42,6 +42,15 @@ def graph_error(status_code, code, message=""):
     return response(status_code, {"error": {"code": code, "message": message}})
 
 
+def _effective_method(method, kwargs):
+    override = (kwargs.get("headers") or {}).get("X-HTTP-Method")
+    return override or method.upper()
+
+
+def _public(group):
+    return {k: v for k, v in group.items() if k not in ("members", "owners")}
+
+
 class FakeSite:
     def __init__(self, url):
         self.url = url.rstrip("/")
@@ -159,14 +168,9 @@ class FakeTenant:
 
     def writes(self):
         """Requests that would change something."""
-        return [c for c in self.calls if self._effective_method(c[0], c[2]) != "GET"]
+        return [c for c in self.calls if _effective_method(c[0], c[2]) != "GET"]
 
     # Dispatch
-
-    @staticmethod
-    def _effective_method(method, kwargs):
-        override = (kwargs.get("headers") or {}).get("X-HTTP-Method")
-        return override or method.upper()
 
     def request(self, method, url, **kwargs):
         with self._lock:
@@ -174,7 +178,7 @@ class FakeTenant:
 
     def _request(self, method, url, **kwargs):
         self.calls.append((method.upper(), url, kwargs))
-        effective = self._effective_method(method, kwargs)
+        effective = _effective_method(method, kwargs)
 
         for failure in self.failures:
             if failure[3] > 0 and failure[0] == effective and failure[1].search(url):
@@ -245,7 +249,7 @@ class FakeTenant:
             owners = {ref.rsplit("/", 1)[-1] for ref in body.get("owners@odata.bind", [])}
             group = self.add_group(body["displayName"], owners=owners)
             group.update(description=body["description"], mailNickname=body["mailNickname"])
-            return response(201, self._public(group))
+            return response(201, _public(group))
 
         m = re.fullmatch(r"/groups/([^/]+)", path)
         if m:
@@ -253,7 +257,7 @@ class FakeTenant:
             if group is None:
                 return graph_error(404, "Request_ResourceNotFound")
             if method == "GET":
-                return response(200, self._public(group))
+                return response(200, _public(group))
             if method == "PATCH":
                 group.update(body)
                 return response(204)
@@ -285,7 +289,7 @@ class FakeTenant:
             member_id = body["@odata.id"].rsplit("/", 1)[-1]
             if member_id in group["members"]:
                 return graph_error(400, "Request_BadRequest", "One or more added object references already exist")
-            group["members"][member_id] = self.users.get(member_id) or self._public(self.groups[member_id])
+            group["members"][member_id] = self.users.get(member_id) or _public(self.groups[member_id])
             return response(204)
 
         m = re.fullmatch(r"/groups/([^/]+)/members/([^/]+)/\$ref", path)
@@ -314,10 +318,6 @@ class FakeTenant:
 
         raise AssertionError(f"Unexpected Graph request: {method} {url}")
 
-    @staticmethod
-    def _public(group):
-        return {k: v for k, v in group.items() if k not in ("members", "owners")}
-
     def _find_groups(self, query):
         flt = query.get("$filter", "")
         m = re.fullmatch(r"displayName eq '((?:[^']|'')*)'", flt)
@@ -325,13 +325,13 @@ class FakeTenant:
             # Graph compares display names case-insensitively
             name = m.group(1).replace("''", "'").lower()
             return response(200, {"value": [
-                self._public(g) for g in self.groups.values() if g["displayName"].lower() == name
+                _public(g) for g in self.groups.values() if g["displayName"].lower() == name
             ]})
         m = re.fullmatch(r"startswith\(displayName, '((?:[^']|'')*)'\)", flt)
         if m:
             prefix = m.group(1).replace("''", "'").lower()
             return response(200, {"value": [
-                self._public(g) for g in self.groups.values() if g["displayName"].lower().startswith(prefix)
+                _public(g) for g in self.groups.values() if g["displayName"].lower().startswith(prefix)
             ]})
         return graph_error(400, "Request_UnsupportedQuery", f"Invalid filter clause: {flt}")
 

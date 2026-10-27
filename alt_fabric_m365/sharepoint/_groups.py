@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import time
+from collections.abc import Iterable
 from urllib.parse import urlparse
 
 import requests
@@ -27,8 +28,7 @@ def sanitise_for_group_name(name: str) -> str:
 
 
 def _extract_site_name(site_url: str) -> str:
-    """
-    Extract the site name from a SharePoint site URL.
+    """Extract the site name from a SharePoint site URL.
 
     e.g. "https://contoso.sharepoint.com/sites/hr" -> "hr"
          "https://contoso.sharepoint.com/sites/finance-team" -> "financeteam"
@@ -44,8 +44,7 @@ def build_group_name(
     group_prefix: str, site_url: str, library_name: str, role: str,
     *, include_site_name: bool = True,
 ) -> str:
-    """
-    Build a deterministic security group name.
+    """Build a deterministic security group name.
 
     The role suffix is used as-is, so callers control capitalisation.
 
@@ -304,8 +303,7 @@ def _rename_security_group(token: str, group_id: str, new_display_name: str) -> 
 
 
 def _get_group_members(token: str, group_id: str) -> dict[str, str]:
-    """
-    Get current (direct) members of a security group.
+    """Get current (direct) members of a security group.
 
     Returns:
         Dict mapping member key -> member object ID.  Users are keyed by
@@ -610,7 +608,7 @@ def _find_group_name_collisions(
 
 
 def _find_existing_library_collisions(
-    libraries, lists_by_site: dict[str, dict[str, dict]],
+    libraries: Iterable[tuple[str, str]], lists_by_site: dict[str, dict[str, dict]],
 ) -> dict[tuple, tuple]:
     """Find libraries whose group names would collide with a library already on their site.
 

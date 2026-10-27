@@ -3,6 +3,7 @@ Constants, the action log and input validation shared by the SharePoint library 
 """
 import logging
 import threading
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse
 
@@ -126,7 +127,7 @@ def _validate_required_columns(df: pd.DataFrame, required_columns: set[str]) -> 
     return df
 
 
-def _validate_site_urls(site_urls, sharepoint_hostname: str | None = None) -> None:
+def _validate_site_urls(site_urls: Iterable[str], sharepoint_hostname: str | None = None) -> None:
     """Raise ValueError if any URL is malformed.
 
     With *sharepoint_hostname*, each URL must also be https on that host:
@@ -157,7 +158,9 @@ def _action_log_to_dataframe(action_log: _ThreadSafeLog) -> pd.DataFrame:
     )
 
 
-def _run_parallel(func, items, max_workers: int, action_log: _ThreadSafeLog) -> None:
+def _run_parallel(
+    func: Callable[..., None], items: Iterable[tuple], max_workers: int, action_log: _ThreadSafeLog,
+) -> None:
     r"""Run *func(\*item, action_log=action_log)* over *items* sequentially or in parallel.
 
     Both paths have identical failure semantics: an unhandled exception in one

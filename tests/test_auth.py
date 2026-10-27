@@ -316,4 +316,15 @@ def test_equivalent_key_ids_are_accepted(fake_notebookutils, kid):
     (make_response(502, text="<html>Bad Gateway</html>"), "Status code: 502"),
 ])
 def test_describe_error(response, expected):
-    assert KeyVaultCertificateCredential._describe_error(response) == expected
+    assert keyvault._describe_error(response) == expected
+
+
+# Encoding
+
+@pytest.mark.parametrize("data, expected", [
+    (b"", ""),
+    (b"\xfb\xff", "-_8"),  # standard base64 would be "+/8=": base64url swaps + and /, and drops the padding
+    (b"abcd", "YWJjZA"),
+])
+def test_base64url_is_unpadded_and_url_safe(data, expected):
+    assert keyvault._base64url(data) == expected

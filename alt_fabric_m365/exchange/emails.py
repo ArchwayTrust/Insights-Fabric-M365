@@ -1,3 +1,8 @@
+"""
+Emails: work with emails in an Exchange Online mailbox through Microsoft Graph, as an app registration.
+
+See the alt_fabric_m365.exchange package docstring for how to give the app access to a mailbox.
+"""
 import requests
 import json
 import base64
@@ -5,16 +10,31 @@ from ..auth import Scopes
 
 
 class MessageNotFoundError(Exception):
-    """
-    Raised when a search finds no emails matching the given criteria.
+    """Raised when a search finds no emails matching the given criteria.
 
     Subclasses Exception, so existing code that catches Exception still works.
     """
 
 
-class Emails:
+def _graph_error(response: requests.Response) -> tuple[str | None, str | None]:
+    """Returns the error code and message from a Microsoft Graph error response.
+
+    Either value is None if the response body isn't a Graph error, such as an empty or non-JSON body.
     """
-    A class to interact with Microsoft Graph API for managing emails in a mailbox.
+    try:
+        body = response.json()
+    except ValueError:
+        return None, None
+
+    error = body.get('error') if isinstance(body, dict) else None
+    if not isinstance(error, dict):
+        return None, None
+
+    return error.get('code'), error.get('message')
+
+
+class Emails:
+    """A class to interact with Microsoft Graph API for managing emails in a mailbox.
 
     Authenticates as an app registration (service principal), using a credential with a get_token method:
         - alt_fabric_m365.auth.KeyVaultCertificateCredential, which keeps the certificate's private key in Azure Key Vault (recommended).
@@ -28,7 +48,7 @@ class Emails:
 
     Attributes:
         credential (TokenCredential): Credential used to get Microsoft Graph access tokens.
-        mailbox (str or None): Email address of the default mailbox, used unless a method is given a different one.
+        mailbox (str | None): Email address of the default mailbox, used unless a method is given a different one.
                                Optional if every call passes shared_mailbox_email.
     """
 
@@ -37,21 +57,19 @@ class Emails:
     # Seconds to wait for Microsoft Graph to connect or send data before giving up, so a stalled request doesn't hang the notebook
     REQUEST_TIMEOUT_SECONDS = 30
 
-    def __init__(self, credential, mailbox=None):
-        """
-        Initializes the Emails class, optionally with a default mailbox.
+    def __init__(self, credential, mailbox: str | None = None):
+        """Initialises the Emails class, optionally with a default mailbox.
 
-        Parameters:
-            credential (TokenCredential): Credential used to get Microsoft Graph access tokens.
-            mailbox (str): Optional. Email address of the default mailbox, used unless a method is given a different one.
-                           Can be left out if every call passes shared_mailbox_email.
+        Args:
+            credential: Credential used to get Microsoft Graph access tokens, with a get_token method.
+            mailbox: Optional. Email address of the default mailbox, used unless a method is given a different one.
+                Can be left out if every call passes shared_mailbox_email.
         """
         self.credential = credential
         self.mailbox = mailbox
 
-    def _headers(self):
-        """
-        Returns headers for calling Microsoft Graph with a current access token.
+    def _headers(self) -> dict:
+        """Returns headers for calling Microsoft Graph with a current access token.
 
         The credential caches tokens, so this is called for each request rather than storing a token
         that would expire during long runs.
@@ -63,9 +81,8 @@ class Emails:
             'Content-Type': 'application/json'
         }
 
-    def _mailbox_url(self, shared_mailbox_email=None):
-        """
-        Returns the Microsoft Graph URL for the given mailbox, or for the default mailbox if none is given.
+    def _mailbox_url(self, shared_mailbox_email: str | None = None) -> str:
+        """Returns the Microsoft Graph URL for the given mailbox, or for the default mailbox if none is given.
 
         Raises:
             ValueError: If no mailbox is given and there is no default mailbox.
@@ -76,40 +93,28 @@ class Emails:
 
         return f"{self.GRAPH_URL}/users/{mailbox}"
 
-    @staticmethod
-    def _graph_error(response):
-        """
-        Returns the error code and message from a Microsoft Graph error response.
-
-        Either value is None if the response body isn't a Graph error, such as an empty or non-JSON body.
-        """
-        try:
-            body = response.json()
-        except ValueError:
-            return None, None
-
-        error = body.get('error') if isinstance(body, dict) else None
-        if not isinstance(error, dict):
-            return None, None
-
-        return error.get('code'), error.get('message')
-
-    def search_message_by_subject_and_sender(self, subject, sender_email, only_search_inbox=True, only_return_latest=True, shared_mailbox_email=None):
-        """
-        Searches for an email by its subject and sender's email using Microsoft Graph API with pagination.
+    def search_message_by_subject_and_sender(
+        self,
+        subject: str,
+        sender_email: str,
+        only_search_inbox: bool = True,
+        only_return_latest: bool = True,
+        shared_mailbox_email: str | None = None,
+    ) -> str | list[dict]:
+        """Searches for an email by its subject and sender's email using Microsoft Graph API with pagination.
 
         This method queries the Microsoft Graph API to find all emails that match
         the given subject and sender's email address, handling pagination to gather all results.
 
-        Parameters:
-            subject (str): The subject of the email to search for.
-            sender_email (str): The email address of the sender of the email.
-            only_search_inbox (bool): Defaults to True. Limits search to only the main inbox.
-            only_return_latest (bool): Defaults to True. If True, returns the ID of the latest message.
-            shared_mailbox_email (str): Optional. The email address of a different mailbox to search in.
+        Args:
+            subject: The subject of the email to search for.
+            sender_email: The email address of the sender of the email.
+            only_search_inbox: Defaults to True. Limits search to only the main inbox.
+            only_return_latest: Defaults to True. If True, returns the ID of the latest message.
+            shared_mailbox_email: Optional. The email address of a different mailbox to search in.
 
         Returns:
-            str or list: The ID of the latest email or a list of emails that match the search criteria.
+            The ID of the latest email, or a list of the emails that match the search criteria, latest first.
 
         Raises:
             MessageNotFoundError: If no matching messages are found.
@@ -152,9 +157,10 @@ class Emails:
 
         raise MessageNotFoundError("No matching messages found.")
 
-    def get_attachment_ids_and_names(self, message_id, shared_mailbox_email=None, include_inline=False):
-        """
-        Retrieves a list of file attachment IDs and names for a specified email message.
+    def get_attachment_ids_and_names(
+        self, message_id: str, shared_mailbox_email: str | None = None, include_inline: bool = False,
+    ) -> list[tuple[str, str]]:
+        """Retrieves a list of file attachment IDs and names for a specified email message.
 
         This method uses the Microsoft Graph API to fetch the attachments for a given
         email message, handling pagination. It returns a list of tuples, each containing
@@ -165,14 +171,14 @@ class Emails:
         can't be downloaded. Inline attachments, such as images in an email signature, are also
         skipped unless include_inline is True.
 
-        Parameters:
-            message_id (str): The ID of the email message whose attachments are to be retrieved.
-            shared_mailbox_email (str): Optional. The email address of a different mailbox to retrieve attachments from.
-            include_inline (bool): Defaults to False. If True, inline file attachments are also returned.
+        Args:
+            message_id: The ID of the email message whose attachments are to be retrieved.
+            shared_mailbox_email: Optional. The email address of a different mailbox to retrieve attachments from.
+            include_inline: Defaults to False. If True, inline file attachments are also returned.
 
         Returns:
-            list of tuple: A list of tuples, where each tuple contains the ID and name of a file attachment.
-                           An empty list means the email has no downloadable attachments.
+            A list of tuples, where each tuple contains the ID and name of a file attachment.
+            An empty list means the email has no downloadable attachments.
 
         Raises:
             requests.HTTPError: If the Microsoft Graph request fails.
@@ -180,7 +186,7 @@ class Emails:
         # Constructing the URL for the Microsoft Graph API attachments endpoint
         endpoint = f'{self._mailbox_url(shared_mailbox_email)}/messages/{message_id}/attachments'
 
-        # Initializing an empty list to store attachment information
+        # Initialising an empty list to store attachment information
         attachments_info = []
         while endpoint:
             # Performing a GET request to retrieve a page of attachments, raising if unsuccessful
@@ -204,22 +210,29 @@ class Emails:
 
         return attachments_info
 
-    def download_attachment(self, message_id, attachment_id, is_binary=False, encoding='utf-8', shared_mailbox_email=None):
-        """
-        Downloads an attachment from an email using the Microsoft Graph API.
+    def download_attachment(
+        self,
+        message_id: str,
+        attachment_id: str,
+        is_binary: bool = False,
+        encoding: str = 'utf-8',
+        shared_mailbox_email: str | None = None,
+    ) -> bytes | str:
+        """Downloads an attachment from an email using the Microsoft Graph API.
 
         This method fetches an attachment from a specific email. It can handle both
         binary files (like images or PDFs) and text-based files (like CSV or TXT).
 
-        Parameters:
-            message_id (str): The ID of the message from which the attachment is to be downloaded.
-            attachment_id (str): The ID of the attachment to be downloaded.
-            is_binary (bool): Flag indicating whether the attachment is a binary file. Default is False.
-            encoding (str): The encoding used to decode the attachment's content. Ignored if is_binary is True. Default is 'utf-8'.
-            shared_mailbox_email (str): Optional. The email address of a different mailbox to retrieve the attachment from.
+        Args:
+            message_id: The ID of the message from which the attachment is to be downloaded.
+            attachment_id: The ID of the attachment to be downloaded.
+            is_binary: Flag indicating whether the attachment is a binary file. Default is False.
+            encoding: The encoding used to decode the attachment's content. Ignored if is_binary is True.
+                Default is 'utf-8'.
+            shared_mailbox_email: Optional. The email address of a different mailbox to retrieve the attachment from.
 
         Returns:
-            bytes or str: The content of the attachment, either as a byte string (for binary files) or a decoded string (for text files).
+            The content of the attachment, as bytes for binary files or a decoded string for text files.
         """
         # Constructing the URL to access the attachment via Microsoft Graph API
         attachment_url = f'{self._mailbox_url(shared_mailbox_email)}/messages/{message_id}/attachments/{attachment_id}'
@@ -240,9 +253,8 @@ class Emails:
         # Returning the attachment content based on its type
         return attachment_content if is_binary else attachment_content.decode(encoding)
 
-    def delete_email(self, message_id, shared_mailbox_email=None):
-        """
-        Deletes an email using the Microsoft Graph API.
+    def delete_email(self, message_id: str, shared_mailbox_email: str | None = None) -> bool:
+        """Deletes an email using the Microsoft Graph API.
 
         This method sends a DELETE request to the Microsoft Graph API to remove an
         email message from the mailbox. It uses the mailbox and the message's ID
@@ -250,12 +262,12 @@ class Emails:
 
         Requires the app to have Application Mail.ReadWrite on the mailbox.
 
-        Parameters:
-            message_id (str): The ID of the message to be deleted.
-            shared_mailbox_email (str): Optional. The email address of a different mailbox to delete the email from.
+        Args:
+            message_id: The ID of the message to be deleted.
+            shared_mailbox_email: Optional. The email address of a different mailbox to delete the email from.
 
         Returns:
-            bool: True if the email was successfully deleted. Raises an exception otherwise.
+            True if the email was successfully deleted. Raises an exception otherwise.
         """
         # Constructing the URL for the Microsoft Graph API delete message endpoint
         delete_url = f'{self._mailbox_url(shared_mailbox_email)}/messages/{message_id}'
@@ -270,17 +282,18 @@ class Emails:
         else:
             raise Exception(f"Failed to delete email. Status code: {response.status_code}, Response: {response.text}")
 
-    def send_email(self, subject, content, email_addresses, shared_mailbox_email=None):
-        """
-        Sends an email from the mailbox using the Microsoft Graph API.
+    def send_email(
+        self, subject: str, content: str, email_addresses: list[str], shared_mailbox_email: str | None = None,
+    ) -> None:
+        """Sends an email from the mailbox using the Microsoft Graph API.
 
         Requires the app to have Application Mail.Send on the mailbox.
 
-        Parameters:
-            subject (str): Email subject.
-            content (str): Email content, as plain text.
-            email_addresses (list): A list of recipient email addresses.
-            shared_mailbox_email (str): Optional. The email address of a different mailbox to send from.
+        Args:
+            subject: Email subject.
+            content: Email content, as plain text.
+            email_addresses: A list of recipient email addresses.
+            shared_mailbox_email: Optional. The email address of a different mailbox to send from.
         """
         url = f'{self._mailbox_url(shared_mailbox_email)}/sendMail'
 
@@ -311,21 +324,20 @@ class Emails:
             print(f"Failed to send email. Status code: {response.status_code}")
             raise Exception(f"Failed to send email. Status code: {response.status_code}")
 
-    def _check_if_message_exists(self, message_id, shared_mailbox_email=None):
-        """
-        Checks if an email message exists in the mailbox.
+    def _check_if_message_exists(self, message_id: str, shared_mailbox_email: str | None = None) -> bool:
+        """Checks if an email message exists in the mailbox.
 
         Only a 404 with the Graph error code ErrorItemNotFound means the message doesn't exist.
         Other errors are raised rather than reported as a missing message, such as a mailbox that
         doesn't exist or can't be reached (404 ErrorInvalidUser or MailboxNotEnabledForRESTAPI),
         a malformed message ID (400) or no access to the mailbox (403).
 
-        Parameters:
-            message_id (str): The ID of the message to be checked.
-            shared_mailbox_email (str): Optional. The email address of a different mailbox to check the message in.
+        Args:
+            message_id: The ID of the message to be checked.
+            shared_mailbox_email: Optional. The email address of a different mailbox to check the message in.
 
         Returns:
-            bool: True if the message exists, False if it doesn't.
+            True if the message exists, False if it doesn't.
 
         Raises:
             Exception: If the check fails for any other reason. The message includes the status code and Graph error.
@@ -339,7 +351,7 @@ class Emails:
         if response.ok:
             return True
 
-        error_code, error_message = self._graph_error(response)
+        error_code, error_message = _graph_error(response)
 
         # The mailbox was found, but the message wasn't
         if response.status_code == 404 and error_code == 'ErrorItemNotFound':

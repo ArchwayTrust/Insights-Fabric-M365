@@ -13,7 +13,7 @@ __all__ = [
     "KeyVaultCertificateCredential", "Scopes", "Emails", "MessageNotFoundError", "SharePointLibraryManager",
 ]
 
-__version__="0.7.1"
+__version__="0.7.2"
 __author__="Ben Dobbs"
 __author_email__="bdobbs@archwaytrust.co.uk"
 __description__="Collection of useful python code for automation in Microsoft Fabric."

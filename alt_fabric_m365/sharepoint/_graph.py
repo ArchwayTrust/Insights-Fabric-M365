@@ -38,8 +38,7 @@ def _get_site_id(token: str, site_url: str) -> str:
 
 
 def _list_existing_lists(token: str, site_id: str) -> dict[str, dict]:
-    """
-    Fetch all lists/libraries on a site.
+    """Fetch all lists/libraries on a site.
 
     Returns a dict keyed by the lowercase **last segment of the webUrl**
     (the URL slug, which is the library code).  Display names are not keys:
