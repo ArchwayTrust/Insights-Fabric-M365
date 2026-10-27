@@ -267,15 +267,3 @@ def test_every_request_has_a_timeout(emails):
 
     for call in get.call_args_list + delete.call_args_list + post.call_args_list:
         assert call.kwargs["timeout"] == TIMEOUT
-
-
-def test_graph_api_still_works_but_warns():
-    from alt_fabric_m365 import graph_api
-
-    with pytest.warns(FutureWarning, match="moved to alt_fabric_m365.exchange"):
-        from alt_fabric_m365.graph_api import Emails as OldEmails
-    with pytest.warns(FutureWarning, match="moved to alt_fabric_m365.exchange"):
-        assert graph_api.MessageNotFoundError is MessageNotFoundError
-    assert OldEmails is Emails
-    with pytest.raises(AttributeError):
-        graph_api.Mailbox

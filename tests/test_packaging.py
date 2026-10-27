@@ -1,7 +1,9 @@
 """
-Checks on the package itself: the version is set in one place, and the README's examples are valid Python.
+Checks on the package itself: the version is set in one place, the public names, and that the README's examples are
+valid Python.
 """
 import ast
+import importlib
 import re
 import subprocess
 import sys
@@ -25,6 +27,12 @@ def test_setup_reads_the_package_version():
 def test_public_names_are_exported():
     for name in ("KeyVaultCertificateCredential", "Scopes", "Emails", "MessageNotFoundError", "SharePointLibraryManager"):
         assert hasattr(alt_fabric_m365, name)
+
+
+def test_graph_api_was_removed_in_1_0():
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("alt_fabric_m365.graph_api")
+    assert not hasattr(alt_fabric_m365, "graph_api")
 
 
 def test_readme_has_python_examples():

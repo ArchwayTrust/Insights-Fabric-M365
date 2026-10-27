@@ -9,10 +9,10 @@ Run all three before pushing; CI runs the same on Python 3.10, 3.11 and 3.12:
 ```bash
 python -m pip install -e .[test]
 python -m pytest
-python -m pyflakes alt_fabric_m365 legacy tests setup.py
+python -m pyflakes alt_fabric_m365 tests setup.py
 ```
 
-CI also runs `python -m build` and `python -m twine check --strict dist/*`, and the same for `legacy/`.
+CI also runs `python -m build` and `python -m twine check --strict dist/*`.
 
 ## Layout
 
@@ -21,14 +21,12 @@ CI also runs `python -m build` and `python -m twine check --strict dist/*`, and 
 | `alt_fabric_m365/auth/` | `KeyVaultCertificateCredential` (`keyvault.py`) and `Scopes` (`scopes.py`) |
 | `alt_fabric_m365/exchange/` | `Emails` and `MessageNotFoundError` (`emails.py`) |
 | `alt_fabric_m365/sharepoint/` | `SharePointLibraryManager` (`manager.py`), with helpers split by the API they call: `_graph.py`, `_sharepoint.py` (REST), `_groups.py`, `_navigation.py`, `_http.py` (retry wrapper), `_common.py` (constants, validation, action log) |
-| `alt_fabric_m365/graph_api.py` | Deprecated alias for `exchange`. Warns with `FutureWarning` |
-| `legacy/` | The final `fabric_python_helper` release, which only forwards to `alt_fabric_m365` |
 | `examples/`, `docs/` | The faculty SharePoint notebook and its write-up |
 | `tests/` | See [Tests](#tests) |
 
 - Each subpackage's `__init__.py` has a docstring explaining the area, re-exports the public names, and lists them in `__all__`. The top-level `alt_fabric_m365/__init__.py` re-exports the main classes.
 - Modules a user shouldn't import directly start with `_`, as in `sharepoint/_graph.py`.
-- Don't remove or rename a public name without a deprecation alias that warns with `FutureWarning`, as `graph_api.py` does. Notebooks pin versions, but people upgrade them.
+- Public names are those in an `__all__`. Don't remove or rename one outside a major release. To rename one, add the new name in a minor release and keep the old one as an alias that warns with `FutureWarning`, then remove the alias in the next major release. Notebooks pin versions, but people upgrade them.
 
 ## Functions and methods
 
@@ -85,14 +83,13 @@ No test calls a real service. `requests` is mocked and `notebookutils` and Spark
 | `conftest.py` | Shared fixtures: `fake_notebookutils`, `no_notebookutils`, `credential` (`FakeCredential`), `make_response`, `FakeAzure` (Key Vault and Entra ID) |
 | `sharepoint_fake.py` | `FakeTenant`, an in-memory fake of the Graph and SharePoint endpoints that keeps state, so a test can check what an operation changed |
 | `test_auth.py` | `KeyVaultCertificateCredential` and its helpers |
-| `test_exchange.py` | `Emails`, its helpers and the deprecated `graph_api` name |
+| `test_exchange.py` | `Emails` and its helpers |
 | `test_sharepoint_http.py` | The retry wrapper |
 | `test_sharepoint_helpers.py` | The `sharepoint/_*.py` helpers, imported directly as `_groups._build_mail_nickname` and so on |
 | `test_sharepoint_manager.py` | Each `SharePointLibraryManager` operation end to end |
 | `test_readme_flow.py` | Runs the README's recommended flow |
 | `test_faculty_notebook.py` | Runs the example notebook cell by cell |
-| `test_packaging.py` | The version, public names, and that every README Python example parses |
-| `test_legacy.py` | The `fabric_python_helper` forwarding package |
+| `test_packaging.py` | The version, public names, that removed names stay removed, and that every README Python example parses |
 
 Expectations for a change:
 
@@ -108,7 +105,7 @@ Expectations for a change:
 ## Documentation and versions
 
 - `README.md` is the user documentation and the PyPI description. Update it in the same change as the behaviour it describes. Python examples in it must parse (`test_packaging.py`), and the recommended-flow example must keep running (`test_readme_flow.py`).
-- The version is set only in `alt_fabric_m365/__init__.py` (`__version__`); `setup.py` reads it from there. Follow the README's [Versioning](README.md#versioning) section: while the major version is 0, bump the minor version for breaking changes and the patch version for fixes and documentation. A release also updates the version shown in the README's install, wheel and TestPyPI examples and its version history paragraph under Installation, plus an upgrading section for a breaking change.
+- The version is set only in `alt_fabric_m365/__init__.py` (`__version__`); `setup.py` reads it from there. Follow the README's [Versioning](README.md#versioning) section: bump the major version for breaking changes (a public name removed or renamed, a changed signature or return value, changed action-log columns), the minor version for new features, and the patch version for fixes and documentation. A release also updates the version shown in the README's install, wheel and TestPyPI examples and its version history paragraph under Installation, plus an upgrading section for a major version.
 - Releases are published by a GitHub release tagged `v<version>`; see [Release checklist](README.md#release-checklist). Merging to `main` publishes nothing.
 
 ## Pull requests

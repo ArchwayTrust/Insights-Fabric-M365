@@ -2,12 +2,12 @@
 
 Python helpers for automation in Microsoft Fabric notebooks, from Archway Learning Trust (ALT).
 
-Up to 0.5.0 this package was called `fabric_python_helper`. See [Moving from fabric_python_helper](#moving-from-fabric_python_helper).
+Up to 0.5.0 this package was called `fabric_python_helper`. If you're upgrading from a 0.x version, see [Upgrading to 1.0.0](#upgrading-to-100).
 
 The package has a module for each Microsoft 365 service, plus `auth`, which they share:
 
 - **`alt_fabric_m365.auth`** gets app-only access tokens for Microsoft APIs (Microsoft Graph, Power BI, Fabric, OneLake and others) as a service principal, using a certificate held in Azure Key Vault. Key Vault signs each request, so the certificate's private key never leaves the key vault.
-- **`alt_fabric_m365.exchange`** finds emails in an Exchange Online mailbox, downloads their attachments, deletes them and sends emails, using Microsoft Graph. Up to 0.6.x this module was called `graph_api`, see [Upgrading to 0.7.0](#upgrading-to-070).
+- **`alt_fabric_m365.exchange`** finds emails in an Exchange Online mailbox, downloads their attachments, deletes them and sends emails, using Microsoft Graph.
 - **`alt_fabric_m365.sharepoint`** manages SharePoint document libraries and their permissions through Entra ID security groups: creating libraries, keeping group membership in sync, navigation links and site sharing settings.
 
 Use a Fabric [workspace identity](#use-a-workspace-identity-where-you-can) wherever Fabric supports one. This package is for Microsoft 365 work it can't do, such as Exchange mailboxes and SharePoint, see [Why Exchange and SharePoint need an app registration](#why-exchange-and-sharepoint-need-an-app-registration).
@@ -46,9 +46,7 @@ The package is built for Fabric notebooks. `KeyVaultCertificateCredential` uses 
   - [Using it in your own setting](#using-it-in-your-own-setting)
   - [Example notebook](#example-notebook)
 - [Troubleshooting](#troubleshooting)
-- [Upgrading to 0.7.0](#upgrading-to-070)
-- [Moving from fabric_python_helper](#moving-from-fabric_python_helper)
-- [Upgrading from 0.3.x](#upgrading-from-03x)
+- [Upgrading to 1.0.0](#upgrading-to-100)
 - [Building and publishing](#building-and-publishing)
 - [Licence](#licence)
 
@@ -59,16 +57,16 @@ The package is published on PyPI as [`alt-fabric-m365`](https://pypi.org/project
 **In a Fabric environment** (use this for scheduled notebooks and pipelines):
 
 1. Open the environment your notebooks use.
-2. Under **Public libraries**, select **Add from PyPI**, enter `alt-fabric-m365` and choose a version, for example `0.7.2`.
+2. Under **Public libraries**, select **Add from PyPI**, enter `alt-fabric-m365` and choose a version, for example `1.0.0`.
 3. Select **Publish**. Notebooks pick up the new version when their next session starts.
 
 **In a single notebook session** (useful for testing a new version):
 
 ```python
-%pip install alt-fabric-m365==0.7.2
+%pip install alt-fabric-m365==1.0.0
 ```
 
-Always pin a version. 0.4.0 has breaking changes from 0.3.x, see [Upgrading from 0.3.x](#upgrading-from-03x). 0.5.0 adds the `sharepoint` module and doesn't change anything that was already there. 0.6.0 renames the package from `fabric_python_helper` to `alt_fabric_m365` and changes nothing else, see [Moving from fabric_python_helper](#moving-from-fabric_python_helper). 0.6.1 only updates the documentation. 0.7.0 renames the `graph_api` module to `exchange`, and the old name still works with a warning, see [Upgrading to 0.7.0](#upgrading-to-070). 0.7.1 only updates the documentation. 0.7.2 adds type hints and only changes the documentation and internals.
+Always pin a version. 1.0.0 removes the old names that 0.x versions kept working with a warning, see [Upgrading to 1.0.0](#upgrading-to-100). From 1.0.0, only a new major version (2.0.0) can break existing notebooks, see [Versioning](#versioning). The history of the 0.x versions is in the [0.7.2 README](https://github.com/ArchwayTrust/Insights-Fabric-M365/blob/v0.7.2/README.md#installation).
 
 ## Quick start
 
@@ -1230,100 +1228,28 @@ Outside Fabric, `KeyVaultCertificateCredential` isn't available (it needs `noteb
 | `retire_deferred` row | The library hasn't been created on its new site yet (for example the create failed), so the old one was left working. It's retired on a later run once the new one exists. |
 | `library_name_conflict` row | Another library on the site already has the code as its title, so the library can't be created. Rename that library's title. |
 
-## Upgrading to 0.7.0
+## Upgrading to 1.0.0
 
-0.7.0 gives each part of the package the same layout: a folder per area, with everything you need importable from the folder's name. The only name that changes is `graph_api`, which only ever held the email code, so it's now `exchange`, alongside `sharepoint`:
+1.0.0 removes the old names that 0.x versions kept working with a `FutureWarning`. Nothing else changes, so a notebook that runs on 0.7.x without a `FutureWarning` runs unchanged on 1.0.0.
 
-| Up to 0.6.x | From 0.7.0 |
+| Removed | Use instead |
 | --- | --- |
-| `from alt_fabric_m365.graph_api import Emails, MessageNotFoundError` | `from alt_fabric_m365.exchange import Emails, MessageNotFoundError` |
-| `from alt_fabric_m365.auth import KeyVaultCertificateCredential, Scopes` | Unchanged |
-| `from alt_fabric_m365.sharepoint import SharePointLibraryManager` | Unchanged |
-| `from alt_fabric_m365 import Emails, KeyVaultCertificateCredential, ...` | Unchanged |
+| `alt_fabric_m365.graph_api`, renamed in 0.7.0 | `alt_fabric_m365.exchange`, for example `from alt_fabric_m365.exchange import Emails, MessageNotFoundError` |
+| The `fabric_python_helper` package, renamed in 0.6.0 | The `alt-fabric-m365` package, imported as `alt_fabric_m365` |
 
-Nothing else changes, and `alt_fabric_m365.graph_api` still works: using it shows a `FutureWarning` asking you to change the import. It will be removed in a later release, so change `graph_api` to `exchange` in your notebooks when you next edit them.
+To upgrade:
 
-0.7.0 also adds the licence to the package's metadata, so PyPI shows it.
-
-If an environment still has the `fabric_python_helper` 0.6.0 forwarding release, remove it first: it requires `alt-fabric-m365` 0.6, so it can't be installed alongside 0.7.0. See [Moving from fabric_python_helper](#moving-from-fabric_python_helper).
-
-## Moving from fabric_python_helper
-
-0.6.0 renames the package. Its code is the same as 0.5.0's.
-
-| | Up to 0.5.0 | From 0.6.0 |
-| --- | --- | --- |
-| PyPI project | [`fabric-python-helper`](https://pypi.org/project/fabric-python-helper/) | [`alt-fabric-m365`](https://pypi.org/project/alt-fabric-m365/) |
-| Import | `fabric_python_helper` | `alt_fabric_m365` |
-
-The two import names are different, so both packages can be installed in the same environment. That lets you move notebooks over one at a time:
-
-1. In each Fabric environment, add `alt-fabric-m365` `0.7.0` under **Public libraries**, keep `fabric_python_helper` `0.5.0` for now, and publish the environment.
-2. In each notebook, change `fabric_python_helper` to `alt_fabric_m365` in every import, and `graph_api` to `exchange`, and run it:
+1. In each notebook, change `fabric_python_helper` to `alt_fabric_m365` and `graph_api` to `exchange` in every import:
 
    ```python
    from alt_fabric_m365.auth import KeyVaultCertificateCredential
    from alt_fabric_m365.exchange import Emails
    ```
 
-3. Once no notebook in the workspace imports `fabric_python_helper`, remove it from the environment and publish it again.
+2. In each Fabric environment, remove `fabric_python_helper` under **Public libraries** if it's there. Its last release, 0.6.0, requires `alt-fabric-m365` 0.6, so it can't be installed alongside 1.0.0.
+3. Set `alt-fabric-m365` to `1.0.0` and publish the environment.
 
-Environments pinned to `fabric_python_helper` 0.5.0 or earlier keep working, and those versions stay on PyPI. There's one more release under the old name, `fabric_python_helper` 0.6.0, built from [`legacy/`](legacy). It contains no code of its own: it installs `alt-fabric-m365` 0.6 and makes `fabric_python_helper` an alias for it, so old imports work but show a `FutureWarning`. There will be no later releases under the old name.
-
-## Upgrading from 0.3.x
-
-0.4.0 removes the delegated (signed-in user) authentication, which stored a user's refresh token in Key Vault, and the `pbi_admin` module.
-
-The examples below use the package's current names, `alt_fabric_m365` and its `exchange` module (0.7.0 or later). On 0.6.x, import `Emails` from `alt_fabric_m365.graph_api`, and on 0.4.x or 0.5.x from `fabric_python_helper.graph_api`.
-
-**Emails**
-
-Before:
-
-```python
-import fabric_python_helper.graph_api as gr
-
-email_account = gr.Emails(tennant_id, client_id, akv_url, refresh_secret_name)
-email_account.connect()
-```
-
-After:
-
-```python
-from alt_fabric_m365.auth import KeyVaultCertificateCredential
-from alt_fabric_m365.exchange import Emails
-
-tenant_id = "<tenant-id>"
-client_id = "<client-id>"
-akv_url = "https://<key-vault-name>.vault.azure.net/"
-certificate_name = "<certificate-name>"
-shared_mailbox = "reports@contoso.com"
-
-credential = KeyVaultCertificateCredential(tenant_id, client_id, akv_url, certificate_name)
-email_account = Emails(credential, shared_mailbox)
-```
-
-The other method calls, including `shared_mailbox_email=`, are unchanged. `connect()`, `get_initial_tokens()` and `get_user()` have been removed.
-
-Notebooks that didn't pass `shared_mailbox_email` read the signed-in user's own mailbox. They now need the mailbox passed to `Emails`, or `shared_mailbox_email` passed to every call, and the app needs access to it in Exchange.
-
-Two behaviour changes to check:
-
-- `search_message_by_subject_and_sender` raises `MessageNotFoundError` when nothing matches. It's a subclass of `Exception` with the same message, so existing handling still works, but `except MessageNotFoundError:` is clearer than comparing `str(e)`.
-- `get_attachment_ids_and_names` now only returns file attachments. Inline images (such as signature logos) are left out unless you pass `include_inline=True`, and attached emails and cloud links are always left out. Code that took the first attachment by position should pick it by name instead.
-
-Once every notebook has moved over, delete the refresh token secret from Key Vault and disable **Allow public client flows** on the old app registration (or delete it).
-
-**pbi_admin**
-
-| Removed | Use instead |
-| --- | --- |
-| `AccessTokens().get_token_as_fabric_notebook_owner()` | `notebookutils.credentials.getToken("pbi")` |
-| `AccessTokens().get_token_as_service_principal(...)` | `KeyVaultCertificateCredential(...).get_access_token(Scopes.POWER_BI)`, or `ClientSecretCredential` |
-| `SemanticModels(...).refresh_semantic_model()` | The pipeline **Semantic model refresh** activity, `sempy_labs.refresh_semantic_model()`, or `sempy.fabric.refresh_dataset()` |
-| `Dataflows(...).refresh_dataflow()` | The pipeline **Dataflow** activity |
-
-**Dependencies:** `msal` is no longer required, and `azure-core` is.
+To upgrade from 0.3.x or earlier, which used delegated (signed-in user) authentication and had a `pbi_admin` module, first follow [Upgrading from 0.3.x](https://github.com/ArchwayTrust/Insights-Fabric-M365/blob/v0.7.2/README.md#upgrading-from-03x) in the 0.7.2 README.
 
 ## Building and publishing
 
@@ -1334,7 +1260,7 @@ The tests mock Microsoft Entra ID, Key Vault, Graph and SharePoint, and replace 
 ```powershell
 python -m pip install -e .[test]
 python -m pytest
-python -m pyflakes alt_fabric_m365 legacy tests setup.py
+python -m pyflakes alt_fabric_m365 tests setup.py
 ```
 
 The [Tests workflow](.github/workflows/tests.yml) runs the same checks on Python 3.10, 3.11 and 3.12, and builds the package, for every pull request into `main` and every push to `main`. It doesn't publish anything.
@@ -1357,14 +1283,13 @@ What they cover:
 | File | Covers |
 | --- | --- |
 | `test_auth.py` | `KeyVaultCertificateCredential`: token requests and caching, Key Vault signing, the client assertion, error descriptions |
-| `test_exchange.py` | `Emails`, reading Graph errors, and the deprecated `graph_api` name |
+| `test_exchange.py` | `Emails` and reading Graph errors |
 | `test_sharepoint_http.py` | The retry wrapper: throttling, `Retry-After`, server and connection errors, redirects |
 | `test_sharepoint_helpers.py` | Group naming and collisions, input validation, user and group resolution, the property bag, navigation URLs |
 | `test_sharepoint_manager.py` | Every `SharePointLibraryManager` operation end to end, including re-runs, dry runs, guardrails and failures, and authenticating with `KeyVaultCertificateCredential` |
 | `test_readme_flow.py` | Runs the [recommended flow](#recommended-flow) example against the suggested input tables (a dry run, a live run, a re-run and a deletion), and again with the [setting-specific steps](#adding-setting-specific-steps) inserted |
 | `test_faculty_notebook.py` | Runs the [example notebook](#example-notebook) cell by cell, with Spark SQL on SQLite and the real `KeyVaultCertificateCredential` |
-| `test_packaging.py` | The version, public names and that the README's examples are valid Python |
-| `test_legacy.py` | The `fabric_python_helper` forwarding package in [`legacy/`](legacy) |
+| `test_packaging.py` | The version, public names, that removed names stay removed, and that the README's examples are valid Python |
 
 The SharePoint tests run against `tests/sharepoint_fake.py`, an in-memory fake of the Graph and SharePoint endpoints the manager calls, which keeps state so a test can check what an operation changed. Add `--cov=alt_fabric_m365` to see coverage.
 
@@ -1374,9 +1299,17 @@ The tests can't show that the real services accept the requests, so test a new v
 
 ### Versioning
 
-The version number is only set in `alt_fabric_m365/__init__.py`, as `__version__="0.7.2"`. `setup.py` reads it from there, so there's nothing else to keep in sync. Check it with `python setup.py --version`.
+The version number is only set in `alt_fabric_m365/__init__.py`, as `__version__="1.0.0"`. `setup.py` reads it from there, so there's nothing else to keep in sync. Check it with `python setup.py --version`.
 
-Versions follow [semantic versioning](https://semver.org/). While the major version is 0, increase the minor version (0.4.0 to 0.5.0) for breaking changes, and the patch version (0.4.0 to 0.4.1) for fixes. PyPI never accepts the same version twice, even if it's deleted.
+Versions follow [semantic versioning](https://semver.org/):
+
+- **Major** (1.0.0 to 2.0.0) for breaking changes: removing or renaming a public name, changing the arguments a public function or method accepts or what it returns, or changing the columns of an action log.
+- **Minor** (1.0.0 to 1.1.0) for new features that don't break existing code.
+- **Patch** (1.0.0 to 1.0.1) for fixes and documentation.
+
+Public names are those in each module's `__all__`; names starting with `_` can change in any release. To rename or remove a public name, keep the old name working with a `FutureWarning` in a minor release, and remove it in the next major release.
+
+PyPI never accepts the same version twice, even if it's deleted.
 
 ### Building a wheel locally
 
@@ -1391,8 +1324,8 @@ python -m twine check dist/*
 
 This creates two files in `dist/`:
 
-- `alt_fabric_m365-0.7.2-py3-none-any.whl`, the wheel
-- `alt_fabric_m365-0.7.2.tar.gz`, the source distribution
+- `alt_fabric_m365-1.0.0-py3-none-any.whl`, the wheel
+- `alt_fabric_m365-1.0.0.tar.gz`, the source distribution
 
 `twine check` confirms the package metadata and this README will render on PyPI. Clearing `dist/` first stops old versions being uploaded by mistake.
 
@@ -1409,7 +1342,7 @@ trusted-host = files.pythonhosted.org
 Upload the `.whl` file to a lakehouse's `Files` folder, then in a notebook attached to that lakehouse:
 
 ```python
-%pip install /lakehouse/default/Files/alt_fabric_m365-0.7.2-py3-none-any.whl
+%pip install /lakehouse/default/Files/alt_fabric_m365-1.0.0-py3-none-any.whl
 ```
 
 Or add it to an environment under **Custom libraries** > **Upload**.
@@ -1419,7 +1352,7 @@ Or add it to an environment under **Custom libraries** > **Upload**.
 This is the normal route. Merging to `main` never publishes anything; only publishing a GitHub release does. The [Release workflow](.github/workflows/release.yml) then:
 
 1. Runs the tests.
-2. Checks the release tag matches `__version__` (tag `v0.4.1` for `__version__="0.4.1"`), and stops if it doesn't.
+2. Checks the release tag matches `__version__` (tag `v1.0.1` for `__version__="1.0.1"`), and stops if it doesn't.
 3. Builds the package and runs `twine check`.
 4. Publishes it to PyPI.
 5. Attaches the wheel and source distribution to the GitHub release.
@@ -1428,7 +1361,7 @@ To release:
 
 1. Update `__version__` in `alt_fabric_m365/__init__.py`, merge it into `main` through a pull request.
 2. On GitHub, go to **Releases** > **Draft a new release**.
-3. Create a tag matching the version, for example `v0.4.1`, targeting `main`.
+3. Create a tag matching the version, for example `v1.0.1`, targeting `main`.
 4. Add release notes, then select **Publish release**.
 5. Check the workflow run under **Actions**, and that the new version appears on [PyPI](https://pypi.org/project/alt-fabric-m365/).
 
@@ -1438,17 +1371,16 @@ How to recover depends on where the run failed. Check the **Publish to PyPI** st
 
 - **Before publishing** (tests, tag check or build failed, nothing on PyPI): delete the GitHub release and its tag, fix the problem, and publish the release again.
 - **After publishing** (the version is on PyPI, but attaching files to the release failed): don't delete the release, as publishing it again would fail at the PyPI step. Open the run under **Actions** and select **Re-run failed jobs**. Only the failed job runs again, using the files already built.
-- **A published version is broken:** it can't be replaced. Fix it, increase the patch version (for example 0.4.1 to 0.4.2) and release that. Optionally [yank](https://pypi.org/help/#yanked) the broken version on PyPI so pip stops choosing it.
+- **A published version is broken:** it can't be replaced. Fix it, increase the patch version (for example 1.0.1 to 1.0.2) and release that. Optionally [yank](https://pypi.org/help/#yanked) the broken version on PyPI so pip stops choosing it.
 
 #### Trusted Publishing setup
 
 The workflow uploads to PyPI with [Trusted Publishing](https://docs.pypi.org/trusted-publishers/), so no PyPI API token is stored in GitHub. PyPI only accepts uploads from this repository's `release.yml` workflow running in the `pypi` environment. Set it up once:
 
-1. On PyPI, open the `alt-fabric-m365` project, then **Manage** > **Publishing** > **Add a new publisher** > **GitHub**. Enter owner `ArchwayTrust`, repository `Insights-Fabric-M365`, workflow `release.yml` and environment `pypi`. Before the project's first release, when it doesn't exist yet, add a **pending publisher** instead: go to **Your account** > **Publishing**, and enter the same details with PyPI project name `alt-fabric-m365`. The first release then creates the project. If the repository is renamed, add a publisher with the new name here before the next release, as PyPI rejects uploads from any other repository; remove the old one once a release has succeeded.
+1. On PyPI, open the `alt-fabric-m365` project, then **Manage** > **Publishing** > **Add a new publisher** > **GitHub**. Enter owner `ArchwayTrust`, repository `Insights-Fabric-M365`, workflow `release.yml` and environment `pypi`. If the repository is renamed, add a publisher with the new name here before the next release, as PyPI rejects uploads from any other repository; remove the old one once a release has succeeded.
 2. On GitHub, go to **Settings** > **Environments** > **New environment** and create `pypi`. Then, in the environment:
    - Under **Deployment branches and tags**, choose **Selected branches and tags**, select **Add deployment branch or tag rule**, set **Ref type** to **Tag** and enter the pattern `v*`. Only release tags can then publish, even if the workflow is started some other way.
    - Optionally, turn on **Required reviewers** and add the people who can approve a release, so each upload to PyPI waits for one of them.
-3. After the first release published this way, delete the old `PYPI_API_TOKEN` repository secret and revoke that token on PyPI.
 
 ### Publishing to PyPI manually
 
@@ -1467,26 +1399,8 @@ python -m twine upload --repository testpypi dist/*
 ```
 
 ```python
-%pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ alt-fabric-m365==0.7.2
+%pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ alt-fabric-m365==1.0.0
 ```
-
-### Publishing the fabric_python_helper forwarding release
-
-This is needed once, for 0.6.0, after `alt-fabric-m365` 0.6.0 is on PyPI (the forwarding release depends on it). [`legacy/`](legacy) holds the final release of the old name, `fabric_python_helper` 0.6.0, which only forwards to `alt_fabric_m365`. The Tests workflow builds and checks it, but the Release workflow doesn't publish it, so upload it by hand:
-
-1. On PyPI, open the `fabric-python-helper` project, go to **Manage** > **Settings** > **API tokens**, and create a token scoped to that project only.
-2. Build, check and upload it:
-
-   ```powershell
-   python -m build legacy
-   python -m twine check --strict legacy/dist/*
-   python -m twine upload legacy/dist/*
-   ```
-
-   Enter `__token__` as the username and the token as the password.
-3. Delete the token on PyPI.
-4. Check that `%pip install fabric_python_helper==0.6.0` in a notebook installs `alt-fabric-m365` too, and that `import fabric_python_helper` shows the `FutureWarning`.
-5. In the `fabric-python-helper` project's settings on PyPI, select **Archive project**. Archiving tells visitors the project won't be updated; every version stays installable. Don't delete the project or yank its versions, as environments pinned to them would stop working.
 
 ### After publishing
 
@@ -1495,7 +1409,7 @@ Update the version in each Fabric environment that uses the package (**Public li
 ### Release checklist
 
 1. Update `__version__` in `alt_fabric_m365/__init__.py`.
-2. Update this README, including [Upgrading](#upgrading-from-03x) for breaking changes.
+2. Update this README, including the version history under [Installation](#installation), and an upgrading section for a new major version.
 3. Build, run the tests and `twine check`, and test the wheel in Fabric.
 4. Merge into `main` through a pull request, once the Tests workflow passes.
 5. Publish a GitHub release tagged `v<version>`.
