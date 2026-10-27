@@ -37,7 +37,7 @@ jobs:
         pip install -e .[test] build twine
 
     - name: Lint
-      run: python -m pyflakes alt_fabric_m365 legacy tests setup.py
+      run: python -m pyflakes alt_fabric_m365 tests setup.py
 
     - name: Run tests
       run: python -m pytest -v
@@ -46,8 +46,3 @@ jobs:
       run: |
         python -m build
         python -m twine check --strict dist/*
-
-    - name: Build and check the fabric_python_helper forwarding package
-      run: |
-        python -m build legacy
-        python -m twine check --strict legacy/dist/*
