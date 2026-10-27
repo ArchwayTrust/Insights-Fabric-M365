@@ -1346,7 +1346,7 @@ On its own, the Tests workflow only reports a result: GitHub still lets a pull r
 1. On GitHub, go to **Settings** > **Rules** > **Rulesets** > **New ruleset** > **New branch ruleset**.
 2. Name it, for example `Protect main`, and set **Enforcement status** to **Active**.
 3. Under **Target branches**, select **Add target** > **Include default branch**.
-4. Turn on **Require a pull request before merging**.
+4. Turn on **Require a pull request before merging**. Under it, turn on **Require review from Code Owners**, so changes need a review from the teams in [`.github/CODEOWNERS`](.github/CODEOWNERS): Insights for the package, and IT Approvers for the SharePoint library manager, as it changes the tenant's libraries, permissions and groups.
 5. Turn on **Require status checks to pass**, select **Add checks**, and add `test (3.10)`, `test (3.11)` and `test (3.12)`.
 6. Turn on **Block force pushes**, then select **Create**.
 
@@ -1444,7 +1444,7 @@ How to recover depends on where the run failed. Check the **Publish to PyPI** st
 
 The workflow uploads to PyPI with [Trusted Publishing](https://docs.pypi.org/trusted-publishers/), so no PyPI API token is stored in GitHub. PyPI only accepts uploads from this repository's `release.yml` workflow running in the `pypi` environment. Set it up once:
 
-1. On PyPI, open the `alt-fabric-m365` project, then **Manage** > **Publishing** > **Add a new publisher** > **GitHub**. Enter owner `ArchwayTrust`, repository `Insights-Fabric-PythonHelper`, workflow `release.yml` and environment `pypi`. Before the project's first release, when it doesn't exist yet, add a **pending publisher** instead: go to **Your account** > **Publishing**, and enter the same details with PyPI project name `alt-fabric-m365`. The first release then creates the project.
+1. On PyPI, open the `alt-fabric-m365` project, then **Manage** > **Publishing** > **Add a new publisher** > **GitHub**. Enter owner `ArchwayTrust`, repository `Insights-Fabric-M365`, workflow `release.yml` and environment `pypi`. Before the project's first release, when it doesn't exist yet, add a **pending publisher** instead: go to **Your account** > **Publishing**, and enter the same details with PyPI project name `alt-fabric-m365`. The first release then creates the project. If the repository is renamed, add a publisher with the new name here before the next release, as PyPI rejects uploads from any other repository; remove the old one once a release has succeeded.
 2. On GitHub, go to **Settings** > **Environments** > **New environment** and create `pypi`. Then, in the environment:
    - Under **Deployment branches and tags**, choose **Selected branches and tags**, select **Add deployment branch or tag rule**, set **Ref type** to **Tag** and enter the pattern `v*`. Only release tags can then publish, even if the workflow is started some other way.
    - Optionally, turn on **Required reviewers** and add the people who can approve a release, so each upload to PyPI waits for one of them.
