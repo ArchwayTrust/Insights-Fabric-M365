@@ -958,20 +958,16 @@ Groups created before 0.5.0, by earlier versions or by hand-written code they re
 - **Auto groups** are checked by every `update_memberships` run, for every library you give it in `df` or `libraries_df`. In the [recommended flow](#recommended-flow) that's every live library, so nothing extra is needed.
 - **Manual groups** are only checked by `create_libraries`. The recommended flow only gives it libraries that changed since the last run, so a library that hasn't changed never has its Manual groups checked.
 
-To adopt them all, run the create pass once over every live library rather than only the changed ones. It is safe to re-run, so apart from ownership it only changes what had drifted from your data. With `live` from the [recommended flow](#recommended-flow), dry run it first:
+To adopt them all, run the create pass once over every live library rather than only the changed ones. It is safe to re-run, so apart from ownership it only changes what had drifted from your data. Add this after step 3 of the [recommended flow](#recommended-flow), which provides `live` and `save`:
 
 ```python
-preview = mgr.create_libraries(live, dry_run=True)
-display(preview[preview["action"].isin(["group_owner_added (dry run)", "group_not_owned"])])
-```
-
-`group_owner_added (dry run)` rows are the groups the live run will adopt. `group_not_owned` rows are groups someone else owns: check who created each one, then add the app's service principal as a co-owner or delete the group. When the preview looks right, run it live:
-
-```python
-results = mgr.create_libraries(live, dry_run=False)
+# One-off: the create pass over every live library, not only the changed ones
+results = mgr.create_libraries(live)
 save("adopt_groups", results)
-display(results[results["action"].isin(["group_owner_added", "group_not_owned"])])
+display(results[results["action"].isin(["group_owner_added", "group_owner_added (dry run)", "group_not_owned"])])
 ```
+
+Run it once with `DRY_RUN = True`, then once with `DRY_RUN = False`, and remove it. The manager's default and the `dry_run` column `save` writes both come from `DRY_RUN`, so the audit table records what actually ran. `group_owner_added` rows (ending `(dry run)` in a dry run) are the groups adopted. `group_not_owned` rows are groups someone else owns: check who created each one, then add the app's service principal as a co-owner or delete the group.
 
 Groups created with `app_owned=False`, such as leadership groups a person owns, aren't checked or adopted.
 
