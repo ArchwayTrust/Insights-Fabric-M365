@@ -388,6 +388,14 @@ class SharePointLibraryManager:
                 )
 
                 if dry_run:
+                    # Ownership is only read, so the dry run shows groups a
+                    # live run would refuse or adopt.
+                    existing_group = _find_group_by_name(self._graph_token, group_display_name) if app_owned else None
+                    if existing_group and not self._check_group_owner(
+                        existing_group["id"], group_display_name, site_url, library_code, role_key, action_log,
+                        dry_run=True,
+                    ):
+                        continue
                     dry_action = (
                         f"ensure_{suffix.lower().replace('-', '_')}_group (dry run)"
                         if is_manual else "ensure_group (dry run)"
@@ -1758,7 +1766,10 @@ class SharePointLibraryManager:
                             )
                     else:
                         existing_group = _get_unique_group(existing_groups_by_name, group_display_name)
-                        if existing_group:
+                        if existing_group and self._check_group_owner(
+                            existing_group["id"], group_display_name, site_url, library_code,
+                            role, action_log, dry_run=True,
+                        ):
                             _append_log(
                                 action_log, site_url, library_code,
                                 "reconcile_group (dry run)",
@@ -1790,7 +1801,11 @@ class SharePointLibraryManager:
                         (role, group_display_name, group_id, is_new_group,
                          desired_upns, desired_groups, True)
                     )
-                elif existing_group:
+                # Emptying is destructive, so only for the app's own groups
+                elif existing_group and self._check_group_owner(
+                    existing_group["id"], group_display_name, site_url, library_code,
+                    role, action_log,
+                ):
                     created_role_groups.append(
                         (role, group_display_name, existing_group["id"], False,
                          desired_upns, desired_groups, False)

@@ -1062,6 +1062,35 @@ def test_a_squatted_auto_group_is_not_synced(make_manager, tenant, site):
     assert site.list_by_slug("MATH")["role_assignments"] == {}
 
 
+def test_an_ownerless_auto_group_with_no_members_to_add_is_adopted(make_manager, tenant, site):
+    site.add_list("MATH", unique=True)
+    legacy = tenant.add_group("BAA-Sharepoint-MATH-Auto-Read")  # created app-only by an earlier version
+    tenant.add_user("jo@contoso.com")
+    df = memberships_df(site, [("MATH", "jo@contoso.com", "contribute")])
+
+    results = make_manager().update_memberships(df)
+
+    assert rows(results, "group_owner_added")["group"].tolist() == ["BAA-Sharepoint-MATH-Auto-Read"]
+    assert legacy["owners"] == {APP_ID}
+    assert "group_owner_added" not in actions(make_manager().update_memberships(df))
+
+
+def test_membership_sync_never_empties_a_group_the_app_doesnt_own(make_manager, tenant, site):
+    site.add_list("MATH", unique=True)
+    owner = tenant.add_user("someone@contoso.com")
+    member = tenant.add_user("member@contoso.com")
+    theirs = tenant.add_group("BAA-Sharepoint-MATH-Auto-Read", owners={owner["id"]})
+    theirs["members"][member["id"]] = member
+    empty = memberships_df(site, [])
+    libraries = libraries_df(site, "MATH").drop(columns="library_display_name")
+
+    for dry_run in (True, False):
+        results = make_manager(dry_run=dry_run).update_memberships(empty, libraries_df=libraries)
+        assert actions(results) == ["group_not_owned"]
+
+    assert set(theirs["members"]) == {member["id"]}
+
+
 def test_an_ownerless_group_is_adopted(make_manager, tenant, site):
     legacy = tenant.add_group("BAA-Sharepoint-MATH-Auto-Read")  # created app-only by an earlier version
 
@@ -1105,6 +1134,39 @@ def test_dry_run_reports_ownership_without_changing_it(make_manager, tenant, sit
         ["MATH", "group_owner_added (dry run)"], ["MATH", "ensure_group (dry run)"], ["MATH", "add_to_group (dry run)"],
         ["ENG", "group_not_owned"],
     ]
+
+
+def test_create_dry_run_reports_ownership_without_changing_it(make_manager, tenant, site):
+    other = tenant.add_user("someone@contoso.com")
+    legacy = tenant.add_group("BAA-Sharepoint-MATH-Manual-Read")
+    tenant.add_group("BAA-Sharepoint-MATH-Manual-Contribute", owners={other["id"]})
+    tenant.calls.clear()
+
+    results = make_manager(dry_run=True).create_libraries(
+        libraries_df(site, "MATH", auto_groups=False, manual_read=True, manual_contribute=True),
+    )
+
+    assert tenant.writes() == []
+    assert legacy["owners"] == set()
+    assert results[["group", "action"]].values.tolist() == [
+        ["BAA-Sharepoint-MATH-Manual-Read", "group_owner_added (dry run)"],
+        ["BAA-Sharepoint-MATH-Manual-Read", "ensure_manual_read_group (dry run)"],
+        ["BAA-Sharepoint-MATH-Manual-Contribute", "group_not_owned"],
+    ]
+
+
+def test_dry_run_reports_adopting_a_group_it_would_empty(make_manager, tenant, site):
+    site.add_list("MATH", unique=True)
+    legacy = tenant.add_group("BAA-Sharepoint-MATH-Auto-Read")
+    tenant.calls.clear()
+
+    results = make_manager(dry_run=True).update_memberships(
+        memberships_df(site, []), libraries_df=libraries_df(site, "MATH").drop(columns="library_display_name"),
+    )
+
+    assert tenant.writes() == []
+    assert legacy["owners"] == set()
+    assert results["action"].tolist() == ["group_owner_added (dry run)", "reconcile_group (dry run)"]
 
 
 def test_renaming_a_library_keeps_group_names_and_updates_descriptions(make_manager, tenant, site):

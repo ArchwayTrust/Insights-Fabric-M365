@@ -57,16 +57,16 @@ The package is published on PyPI as [`alt-fabric-m365`](https://pypi.org/project
 **In a Fabric environment** (use this for scheduled notebooks and pipelines):
 
 1. Open the environment your notebooks use.
-2. Under **Public libraries**, select **Add from PyPI**, enter `alt-fabric-m365` and choose a version, for example `1.0.1`.
+2. Under **Public libraries**, select **Add from PyPI**, enter `alt-fabric-m365` and choose a version, for example `1.0.2`.
 3. Select **Publish**. Notebooks pick up the new version when their next session starts.
 
 **In a single notebook session** (useful for testing a new version):
 
 ```python
-%pip install alt-fabric-m365==1.0.1
+%pip install alt-fabric-m365==1.0.2
 ```
 
-Always pin a version. 1.0.0 removes the old names that 0.x versions kept working with a warning, see [Upgrading to 1.0.0](#upgrading-to-100). 1.0.1 only updates the documentation. From 1.0.0, only a new major version (2.0.0) can break existing notebooks, see [Versioning](#versioning). The history of the 0.x versions is in the [0.7.2 README](https://github.com/ArchwayTrust/Insights-Fabric-M365/blob/v0.7.2/README.md#installation).
+Always pin a version. 1.0.0 removes the old names that 0.x versions kept working with a warning, see [Upgrading to 1.0.0](#upgrading-to-100). 1.0.1 only updates the documentation. 1.0.2 stops `update_memberships` emptying an Auto group the app doesn't own, adopts ownerless Auto groups it has no members to add to, and makes dry runs of `create_libraries` report group ownership. From 1.0.0, only a new major version (2.0.0) can break existing notebooks, see [Versioning](#versioning). The history of the 0.x versions is in the [0.7.2 README](https://github.com/ArchwayTrust/Insights-Fabric-M365/blob/v0.7.2/README.md#installation).
 
 ## Quick start
 
@@ -943,13 +943,37 @@ if not failures.empty:
 - **Incomplete data never drives removals.** If any user (or nested group) for a role can't be resolved, removals of that kind from that role's group are skipped (`removals_skipped`), as the "stale" member may be the one that failed to resolve.
 - **Manual groups are never synced or emptied,** and service principals and devices in Auto groups are left in place.
 - **No guessing between duplicates.** If two Entra groups share a name the manager would use, it stops for that library rather than pick one. Library codes that would produce the same group names (such as `PE-KS3` and `PEKS3`, or codes differing only in case) are skipped with `group_name_collision`, including when the other library was created by an earlier run. A library is only ever found by its URL, so a code is never matched to another library that merely has that title (`library_name_conflict`).
-- **Groups must be the app's.** Group names are predictable, so a group someone else creates with the name a library would use could otherwise be handed that library's access. The app is made owner of the groups it creates, and before it grants or syncs an existing group it checks the app is an owner: a group with no owner (as earlier versions created them) has the app added and is logged as `group_owner_added`; a group owned only by others is skipped with `group_not_owned`. The app's object ID is read from its Graph token, or can be passed as `service_principal_id`. Groups created with `app_owned=False` aren't owned or checked, and `grant_group_access` grants the groups it's given by name.
+- **Groups must be the app's.** Group names are predictable, so a group someone else creates with the name a library would use could otherwise be handed that library's access. The app is made owner of the groups it creates, and before it grants or syncs an existing group it checks the app is an owner: a group with no owner (as earlier versions created them) has the app added and is logged as `group_owner_added`; a group owned only by others is skipped with `group_not_owned`. This includes an Auto group that `update_memberships` would empty, so a group the app doesn't own is never emptied. Dry runs of `create_libraries` and `update_memberships` read the owners and log what a live run would do. Groups are only checked when an operation uses them, so to adopt them all at once see [Adopting groups created by earlier versions](#adopting-groups-created-by-earlier-versions). The app's object ID is read from its Graph token, or can be passed as `service_principal_id`. Groups created with `app_owned=False` aren't owned or checked, and `grant_group_access` grants the groups it's given by name.
 - **Creating a group, navigation link or OneDrive shortcut is never repeated** after a failure that may have succeeded (a 5xx or timeout), so a retry can't make a duplicate. The next run finds what was created.
 - **Only document libraries count as libraries.** An ordinary list whose URL ends in the code (`/Lists/ENG`) is never adopted, though its title still counts for `library_name_conflict`.
 - **A moved library keeps working until its replacement exists.** Given `new_site_url`, `retire_moved_libraries` leaves the old library alone (`retire_deferred`) until the library exists on the new site.
 - **Permission levels are found by type**, not by name, so sites in another language, or with renamed levels, work too.
 - **Tokens only go to your tenant.** Every `site_url` must be `https://` on `sharepoint_hostname`, and redirects to another host or to plain http are refused. A redirect that can't be followed is an error, never a success.
 - **Throttling and transient errors are retried,** honouring `Retry-After`, with exponential backoff.
+
+### Adopting groups created by earlier versions
+
+Groups created before 0.5.0, by earlier versions or by hand-written code they replaced, have no owner. The app is added as a group's owner the first time a live run uses it:
+
+- **Auto groups** are checked by every `update_memberships` run, for every library you give it in `df` or `libraries_df`. In the [recommended flow](#recommended-flow) that's every live library, so nothing extra is needed.
+- **Manual groups** are only checked by `create_libraries`. The recommended flow only gives it libraries that changed since the last run, so a library that hasn't changed never has its Manual groups checked.
+
+To adopt them all, run the create pass once over every live library rather than only the changed ones. It is safe to re-run, so apart from ownership it only changes what had drifted from your data. With `live` from the [recommended flow](#recommended-flow), dry run it first:
+
+```python
+preview = mgr.create_libraries(live, dry_run=True)
+display(preview[preview["action"].isin(["group_owner_added (dry run)", "group_not_owned"])])
+```
+
+`group_owner_added (dry run)` rows are the groups the live run will adopt. `group_not_owned` rows are groups someone else owns: check who created each one, then add the app's service principal as a co-owner or delete the group. When the preview looks right, run it live:
+
+```python
+results = mgr.create_libraries(live, dry_run=False)
+save("adopt_groups", results)
+display(results[results["action"].isin(["group_owner_added", "group_not_owned"])])
+```
+
+Groups created with `app_owned=False`, such as leadership groups a person owns, aren't checked or adopted.
 
 ### Using it in your own setting
 
@@ -1301,7 +1325,7 @@ The tests can't show that the real services accept the requests, so test a new v
 
 ### Versioning
 
-The version number is only set in `alt_fabric_m365/__init__.py`, as `__version__="1.0.1"`. `setup.py` reads it from there, so there's nothing else to keep in sync. Check it with `python setup.py --version`.
+The version number is only set in `alt_fabric_m365/__init__.py`, as `__version__="1.0.2"`. `setup.py` reads it from there, so there's nothing else to keep in sync. Check it with `python setup.py --version`.
 
 Versions follow [semantic versioning](https://semver.org/):
 
@@ -1326,8 +1350,8 @@ python -m twine check dist/*
 
 This creates two files in `dist/`:
 
-- `alt_fabric_m365-1.0.1-py3-none-any.whl`, the wheel
-- `alt_fabric_m365-1.0.1.tar.gz`, the source distribution
+- `alt_fabric_m365-1.0.2-py3-none-any.whl`, the wheel
+- `alt_fabric_m365-1.0.2.tar.gz`, the source distribution
 
 `twine check` confirms the package metadata and this README will render on PyPI. Clearing `dist/` first stops old versions being uploaded by mistake.
 
@@ -1344,7 +1368,7 @@ trusted-host = files.pythonhosted.org
 Upload the `.whl` file to a lakehouse's `Files` folder, then in a notebook attached to that lakehouse:
 
 ```python
-%pip install /lakehouse/default/Files/alt_fabric_m365-1.0.1-py3-none-any.whl
+%pip install /lakehouse/default/Files/alt_fabric_m365-1.0.2-py3-none-any.whl
 ```
 
 Or add it to an environment under **Custom libraries** > **Upload**.
@@ -1354,7 +1378,7 @@ Or add it to an environment under **Custom libraries** > **Upload**.
 This is the normal route. Merging to `main` never publishes anything; only publishing a GitHub release does. The [Release workflow](.github/workflows/release.yml) then:
 
 1. Runs the tests.
-2. Checks the release tag matches `__version__` (tag `v1.0.1` for `__version__="1.0.1"`), and stops if it doesn't.
+2. Checks the release tag matches `__version__` (tag `v1.0.2` for `__version__="1.0.2"`), and stops if it doesn't.
 3. Builds the package and runs `twine check`.
 4. Publishes it to PyPI.
 5. Attaches the wheel and source distribution to the GitHub release.
@@ -1363,7 +1387,7 @@ To release:
 
 1. Update `__version__` in `alt_fabric_m365/__init__.py`, merge it into `main` through a pull request.
 2. On GitHub, go to **Releases** > **Draft a new release**.
-3. Create a tag matching the version, for example `v1.0.1`, targeting `main`.
+3. Create a tag matching the version, for example `v1.0.2`, targeting `main`.
 4. Add release notes, then select **Publish release**.
 5. Check the workflow run under **Actions**, and that the new version appears on [PyPI](https://pypi.org/project/alt-fabric-m365/).
 
@@ -1401,7 +1425,7 @@ python -m twine upload --repository testpypi dist/*
 ```
 
 ```python
-%pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ alt-fabric-m365==1.0.1
+%pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ alt-fabric-m365==1.0.2
 ```
 
 ### After publishing
