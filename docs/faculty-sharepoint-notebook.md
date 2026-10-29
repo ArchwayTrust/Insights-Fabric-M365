@@ -18,11 +18,44 @@ The notebook's final state is [`examples/Manage Faculty Sharepoint Libraries.Not
 2. **Add the package to the notebook's environment.** In the Fabric environment the notebook and its pipeline use, add `alt-fabric-m365` version `0.6.0` under **Public libraries** and publish the environment. The current notebook has no environment attached (`"environment": {}` in its metadata), so attach one under **Environment** in the notebook toolbar. Its dependencies, including `pandas`, are already in the Fabric runtime.
 3. **Put the app's certificate in Key Vault.** The notebook now authenticates with the package's `KeyVaultCertificateCredential`: Key Vault signs each request with the certificate's private key, which never leaves the key vault, instead of the notebook reading the key from two secrets. For the existing app registration (`CLIENT_ID`), follow steps 2 to 4 of [Setting up a certificate](../README.md#setting-up-a-certificate): create a certificate in the `KEY_VAULT` key vault, upload it to the app registration with `--append` (so the current certificate keeps working until you remove it), and give the identity that runs the notebook, interactively and in the pipeline, **Get** on the certificate and **Sign** on its key. Then set the `CERTIFICATE_NAME` parameter to the certificate's name if it isn't `Systems-SPLibrary-Cert`.
 4. **Replace the notebook's content** with the example file. With Git integration, copy it over the notebook's `notebook-content.py` and commit; otherwise make the edits listed in [What changed in the notebook](#what-changed-in-the-notebook) by hand. Nothing else (tables, the pipeline, the app registration's API permissions) needs to change.
-5. **Dry run it.** Run the notebook with `DRY_RUN = True` and `RUN_SMOKE_TEST = True`. The imports cell prints the package version. Compare the action log rows for this run (in `it.sharepoint_action_log`, by `run_id`) with those of a recent dry run from the old notebook: they should match, apart from the [behaviour changes](#what-changed-in-behaviour). Membership sync's dry run reads each Auto group's owners: `group_owner_added (dry run)` rows are ownerless groups (how the notebook created them), which the live run adopts automatically, and `group_not_owned` rows are groups with an owner who isn't the app. Add the app's service principal as a co-owner of those, or the live run will leave them alone. Manual groups are checked the same way when their faculty next goes through the create pass.
+5. **Dry run it.** Run the notebook with `DRY_RUN = True` and `RUN_SMOKE_TEST = True`. The imports cell prints the package version. Compare the action log rows for this run (in `it.sharepoint_action_log`, by `run_id`) with those of a recent dry run from the old notebook: they should match, apart from the [behaviour changes](#what-changed-in-behaviour). Membership sync's dry run reads each Auto group's owners: `group_owner_added (dry run)` rows are ownerless groups (how the notebook created them), which the live run adopts automatically, and `group_not_owned` rows are groups with an owner who isn't the app. Add the app's service principal as a co-owner of those, or the live run will leave them alone. Manual groups are checked the same way when their faculty next goes through the create pass, or all at once with [Adopting the existing Manual groups](#adopting-the-existing-manual-groups).
 6. **Let the pipeline run it** as before. The pipeline passes `DRY_RUN = False`.
 7. **Retire the old certificate.** Once the pipeline has run successfully, remove the old certificate from the app registration and delete the `Systems-SPLibrary-Cert-Thumbprint` and `Systems-SPLibrary-Cert-Private-Key` secrets.
 
 To roll back, restore the previous notebook content; it works for as long as the old certificate is on the app registration and its two secrets exist, so keep them until step 7. The package doesn't change any state the old notebook relies on: group names, library URLs, property bag keys and the watermark are all the same.
+
+## Adopting the existing Manual groups
+
+The notebook created its groups without an owner. The app is added as each group's owner the first time a live run uses it. Membership sync is a full pass, so from 1.0.2 it adopts every Auto group (1.0.1 skipped Auto groups with no members to add). The create pass only covers faculties changed since the watermark, so a faculty that hasn't changed never has its Manual groups checked.
+
+To adopt them all, run the create pass once over every live faculty. Add this as a cell after **Create/Modify Libraries**, run it once with `DRY_RUN = True`, then once with `DRY_RUN = False`, and remove it again:
+
+```python
+# One-off: the create pass over every live faculty, not only those changed since
+# the watermark, so the app is made owner of every Manual group. Safe to re-run.
+pdf_all_libraries = spark.sql(f"""
+    SELECT
+        f.sharepoint_hub_url AS site_url
+        ,f.static_faculty_code AS library_code
+        ,f.current_faculty_name AS library_display_name
+        ,f.academy_code || '-Sharepoint' AS group_prefix
+        ,TRUE AS manual_read
+        ,TRUE AS manual_contribute
+        ,'Arbor' AS source_system
+        ,f.faculty_unique_id AS source_id
+    FROM
+        {curated_faculty_list} AS f
+    WHERE
+        COALESCE(f.deleted_in_source, FALSE) = FALSE
+        AND {eligible('f')}
+""").toPandas()
+
+results = mgr.create_libraries(pdf_all_libraries)
+persist_action_log(results, "adopt_manual_groups")
+display(results[results["action"].isin(["group_owner_added", "group_owner_added (dry run)", "group_not_owned"])])
+```
+
+`group_owner_added` rows (ending `(dry run)` in a dry run) are the groups adopted. `group_not_owned` rows are groups owned by someone other than the app: check who created each one, then add the app's service principal as a co-owner or delete it. Apart from ownership, the cell only changes what had drifted from the faculty list, such as a display name or description, as the create pass is safe to re-run. The SLT groups are `app_owned=False`, so they're left with the headteacher.
 
 ## Final state of the notebook
 
