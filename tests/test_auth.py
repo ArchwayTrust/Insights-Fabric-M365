@@ -1,3 +1,8 @@
+"""
+KeyVaultCertificateCredential and its helpers, against FakeAzure: caching tokens, the requests to Key Vault and
+Entra ID and the client assertion they carry, the checks before a Key Vault token is sent, error descriptions and
+retries.
+"""
 import base64
 import email.utils
 import hashlib
