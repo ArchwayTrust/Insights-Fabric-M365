@@ -23,7 +23,7 @@ from ._groups import (
     GroupResolutionError, UserResolutionError, _add_group_member, _create_security_group, _empty_group_members,
     _ensure_app_owns_group, _ensure_security_group, _find_existing_library_collisions, _find_group_by_name,
     _find_group_name_collisions, _find_groups_by_name_prefix, _get_group_members, _get_unique_group,
-    _log_group_name_collisions, _remove_group_member, _rename_security_group, _resolve_nestable_group,
+    _log_group_name_collisions, _remove_group_member, _resolve_nestable_group,
     _resolve_user_with_fallback, _set_group_description, _token_object_id, build_group_name,
 )
 from ._navigation import (
@@ -843,10 +843,7 @@ class SharePointLibraryManager:
         site_id: str,
         library_code: str,
         new_display_name: str,
-        old_library_code: str | None,
-        group_prefix: str,
         dry_run: bool,
-        include_site_name: bool,
         add_to_navigation: bool,
         navigation_label: str,
         existing_lists: dict[str, dict],
@@ -854,17 +851,14 @@ class SharePointLibraryManager:
         *,
         action_log: _ThreadSafeLog,
     ) -> None:
-        """Rename a library's display name and (if code changed) its groups.
+        """Rename a library's display name, and its navigation link's title.
 
         *existing_lists* and *nav_label_found* are per-site prefetches from
         rename_libraries.
         """
-        code_changed = old_library_code and old_library_code != library_code
         logger.info(
-            "Renaming library code='%s' display='%s'%s on '%s' …",
-            library_code, new_display_name,
-            f" (code changed from '{old_library_code}')" if code_changed else "",
-            site_url,
+            "Renaming library code='%s' display='%s' on '%s' …",
+            library_code, new_display_name, site_url,
         )
 
         try:
@@ -892,73 +886,7 @@ class SharePointLibraryManager:
                     f"display name set to '{new_display_name}'",
                 )
 
-            # Step 2: If the library code changed, rename associated security
-            # groups.  One startswith query on the old code's prefix resolves
-            # all of them instead of a name-equality lookup per suffix.
-            if code_changed:
-                old_groups_by_name = _find_groups_by_name_prefix(
-                    self._graph_token,
-                    build_group_name(
-                        group_prefix, site_url, old_library_code, "",
-                        include_site_name=include_site_name,
-                    ),
-                )
-                # Groups already under the new code (e.g. ensured by a create
-                # run): renaming onto one would duplicate the name.
-                new_groups_by_name = _find_groups_by_name_prefix(
-                    self._graph_token,
-                    build_group_name(
-                        group_prefix, site_url, library_code, "",
-                        include_site_name=include_site_name,
-                    ),
-                )
-                for suffix in ALL_GROUP_SUFFIXES:
-                    old_group_name = build_group_name(
-                        group_prefix, site_url, old_library_code, suffix,
-                        include_site_name=include_site_name,
-                    )
-                    existing_group = _get_unique_group(old_groups_by_name, old_group_name)
-                    if not existing_group:
-                        logger.info("Group '%s' not found — skipping", old_group_name)
-                        continue
-
-                    new_group_name = build_group_name(
-                        group_prefix, site_url, library_code, suffix,
-                        include_site_name=include_site_name,
-                    )
-                    if new_groups_by_name.get(new_group_name.lower()):
-                        logger.warning(
-                            "Group '%s' not renamed: '%s' already exists", old_group_name, new_group_name,
-                        )
-                        _append_log(
-                            action_log, site_url, library_code, "group_name_collision",
-                            f"not renamed: a group named '{new_group_name}' already exists — "
-                            f"merge their members and delete one by hand",
-                            group=old_group_name,
-                        )
-                        continue
-
-                    if dry_run:
-                        logger.info(
-                            "[DRY RUN] Would rename group '%s' → '%s'",
-                            old_group_name, new_group_name,
-                        )
-                        _append_log(
-                            action_log, site_url, library_code,
-                            "rename_group (dry run)",
-                            f"would rename to '{new_group_name}'",
-                            group=old_group_name,
-                        )
-                    else:
-                        _rename_security_group(self._graph_token, existing_group["id"], new_group_name)
-                        _append_log(
-                            action_log, site_url, library_code,
-                            "group_renamed",
-                            f"renamed from '{old_group_name}'",
-                            group=new_group_name,
-                        )
-
-            # Step 3: Keep the navigation link's title in step with the new
+            # Step 2: Keep the navigation link's title in step with the new
             # display name.  Last on purpose — a navigation failure must not
             # block the rename itself.  Title-sync only: a missing link is
             # not added here (that is create_libraries' job).
@@ -992,52 +920,58 @@ class SharePointLibraryManager:
         add_to_navigation: bool | None = None,
         navigation_label: str | None = None,
     ) -> pd.DataFrame:
-        """Rename SharePoint libraries and optionally their security groups.
+        """Rename SharePoint libraries' display names.
 
         For each row in the DataFrame:
           1. Updates the library's display name (the URL slug is unchanged).
-          2. If ``old_library_code`` is provided and differs from ``library_code``,
-             renames all associated Entra ID security groups to reflect the new
-             code.  Groups that do not exist are silently skipped.
-          3. If ``add_to_navigation`` is on, updates the library's quick-launch
+          2. If ``add_to_navigation`` is on, updates the library's quick-launch
              navigation link title to the new display name (a missing label or
              link is a no-op — links are only added by ``create_libraries``).
 
+        A library's code can't change: it is the library's URL slug, which
+        SharePoint never changes, and part of its group names.  To recode a
+        library, unlink it and create a new one under the new code.
+
         Required DataFrame columns:
           - site_url:              Full SharePoint site URL
-          - library_code:          Current library code (URL slug)
+          - library_code:          Library code (URL slug)
           - library_display_name:  New display name for the library
-          - group_prefix:          Prefix for security group names
-
-        Optional DataFrame columns:
-          - old_library_code:  Previous library code — if provided and different
-                               from ``library_code``, the Entra groups are renamed.
 
         Args:
             df:               DataFrame with the required columns.
             dry_run:          Override instance default.
             max_workers:      Override instance default.
-            include_site_name: Override instance default.
+            include_site_name: Ignored, as group names don't change.  Kept so
+                               existing calls keep working.
             add_to_navigation: Override instance default.
             navigation_label:  Override instance default.
 
         Returns:
             Action-log DataFrame.
+
+        Raises:
+            ValueError: If *df* has values in an ``old_library_code`` column.
+                Earlier versions accepted it to rename the groups after a code
+                change, but looked the library up by the new code, so it never
+                worked.
         """
-        (dry_run_, max_workers_, include_site_name_,
-         add_to_navigation_, navigation_label_) = self._resolve_config(
+        dry_run_, max_workers_, add_to_navigation_, navigation_label_ = self._resolve_config(
             dry_run=dry_run, max_workers=max_workers,
-            include_site_name=include_site_name,
             add_to_navigation=add_to_navigation,
             navigation_label=navigation_label,
         )
 
-        required = {"site_url", "library_code", "library_display_name", "group_prefix"}
+        required = {"site_url", "library_code", "library_display_name"}
         df = _validate_required_columns(df, required)
         _validate_site_urls(df["site_url"].unique(), self.sharepoint_hostname)
 
-        if "old_library_code" not in df.columns:
-            df["old_library_code"] = None
+        # Refused rather than ignored, so a caller expecting its groups to be
+        # renamed finds out
+        if "old_library_code" in df.columns and df["old_library_code"].notna().any():
+            raise ValueError(
+                "old_library_code is no longer supported: a library's code is its URL, which can't change. "
+                "To recode a library, unlink it and create a new one under the new code."
+            )
         df = df.drop_duplicates(subset=["site_url", "library_code"], keep="first")
 
         action_log = _ThreadSafeLog()
@@ -1054,17 +988,11 @@ class SharePointLibraryManager:
             site_url = row["site_url"]
             if site_url not in sites:
                 continue  # site couldn't be read — already logged
-            old_code = row["old_library_code"]
-            if pd.isna(old_code):
-                old_code = None
             items.append((
                 site_url, sites[site_url]["site_id"],
                 row["library_code"],
                 row["library_display_name"],
-                old_code,
-                row["group_prefix"],
                 dry_run_,
-                include_site_name_,
                 add_to_navigation_,
                 navigation_label_,
                 sites[site_url]["lists"],
