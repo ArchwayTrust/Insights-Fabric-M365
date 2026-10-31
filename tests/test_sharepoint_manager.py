@@ -664,6 +664,16 @@ def test_unlink_empties_the_rest_of_a_group_when_one_member_cant_be_removed(make
     assert tenant.member_upns("BAA-Sharepoint-MATH-Auto-Contribute") == ["sam@contoso.com"]
 
 
+def test_unlinking_a_library_deleted_by_hand_removes_its_navigation_link(make_manager, tenant, site):
+    make_manager(add_to_navigation=True).create_libraries(libraries_df(site, "MATH"))
+    del site.lists[site.list_by_slug("MATH")["id"]]
+
+    results = make_manager(add_to_navigation=True).unlink_libraries(libraries_df(site, "MATH"))
+
+    assert {"library_not_found", "navigation_link_removed"} <= set(actions(results))
+    assert site.nav[0]["Children"] == []
+
+
 def test_unlink_dry_run_makes_no_writes(make_manager, tenant, site):
     make_manager().create_libraries(libraries_df(site, "MATH"))
     tenant.calls.clear()
