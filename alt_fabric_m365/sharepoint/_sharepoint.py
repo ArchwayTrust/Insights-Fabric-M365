@@ -331,7 +331,7 @@ def _set_library_properties(
     csom_xml = (
         '<Request xmlns="http://schemas.microsoft.com/sharepoint/clientquery/2009"'
         ' SchemaVersion="15.0.0.0" LibraryVersion="16.0.0.0"'
-        ' ApplicationName="Python">'
+        ' ApplicationName="alt-fabric-m365">'
         "<Actions>" + "".join(set_actions) + "</Actions>"
         "<ObjectPaths>"
         '<StaticProperty Id="0"'

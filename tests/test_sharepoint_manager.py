@@ -286,6 +286,20 @@ def test_only_metadata_that_changed_is_written(make_manager, tenant, site, opera
     assert len(created(tenant, "ProcessQuery")) == (0 if dry_run else 1)
 
 
+def test_every_request_says_which_app_it_comes_from(make_manager, tenant, site):
+    tenant.add_user("jo@contoso.com")
+    manager = make_manager(add_to_navigation=True)
+
+    manager.create_libraries(libraries_df(site, "MATH", source_system="Arbor"))
+    manager.update_memberships(memberships_df(site, [("MATH", "jo@contoso.com", "read")]))
+
+    # SharePoint serves traffic that says who it's from ahead of traffic that doesn't when it throttles
+    assert {kwargs["headers"]["User-Agent"].split(" ")[0] for _, _, kwargs in tenant.calls} == {
+        f"NONISV|ArchwayTrust|alt-fabric-m365/{alt_fabric_m365.__version__}"
+    }
+    assert created(tenant, "ProcessQuery")  # the CSOM call that sets metadata is covered too
+
+
 # CSOM refuses with an HTTP error, or with an ErrorInfo in a 200 response
 @pytest.mark.parametrize("failure, reason", [
     ((403, {"error": {"code": "-2147024891", "message": {"value": "Denied."}}}), "Status code: 403"),
