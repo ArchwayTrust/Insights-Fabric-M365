@@ -2,6 +2,7 @@
 Resilient HTTP wrapper used for every Microsoft Graph and SharePoint call.
 """
 import email.utils
+import functools
 import logging
 import math
 import random
@@ -29,7 +30,24 @@ DEFAULT_TIMEOUT = (10, 30)
 # Maximum redirect hops followed manually for non-GET requests.
 MAX_REDIRECT_HOPS = 5
 
+# Who the requests come from, in the form SharePoint's throttling guidance
+# asks for: it serves traffic that says so ahead of traffic that doesn't.
+# NONISV is an organisation's own app, as opposed to one sold to others.
+USER_AGENT_APP = "NONISV|ArchwayTrust|alt-fabric-m365"
+
 logger = logging.getLogger(__name__)
+
+
+@functools.cache
+def _user_agent() -> str:
+    """Return the User-Agent requests are sent with: USER_AGENT_APP and the package version, then requests' own.
+
+    Returns:
+        A User-Agent such as ``NONISV|ArchwayTrust|alt-fabric-m365/1.3.0 python-requests/2.32.3``.
+    """
+    # The package sets __version__ after importing its subpackages, so it's read on first use
+    from .. import __version__
+    return f"{USER_AGENT_APP}/{__version__} {requests.utils.default_user_agent()}"
 
 # ---------------------------------------------------------------------------
 # Resilient HTTP wrapper
@@ -219,7 +237,8 @@ def _request_with_retry(
 
     An Authorization header built with _bearer from a _RenewableToken is
     renewed before every attempt, so a long wait doesn't leave a retry with
-    an expired token.
+    an expired token.  Requests are sent with the package's User-Agent (see
+    _user_agent) unless the caller's headers set one.
 
     With *idempotent* False (a request that must not run twice, such as
     creating a group), only failures where the server certainly did not act
@@ -251,6 +270,11 @@ def _request_with_retry(
     if max_retries < 0:
         raise ValueError(f"max_retries must be 0 or more, not {max_retries}")
     kwargs.setdefault("timeout", DEFAULT_TIMEOUT)
+    # Copied, as the caller may reuse its headers
+    headers = dict(kwargs.get("headers") or {})
+    if not any(name.lower() == "user-agent" for name in headers):
+        headers["User-Agent"] = _user_agent()
+    kwargs["headers"] = headers
 
     # Disable automatic redirects so we can follow them ourselves: every hop
     # is checked before the bearer token is sent to it, and the HTTP method

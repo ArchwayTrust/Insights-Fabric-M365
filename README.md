@@ -984,7 +984,7 @@ if not failures.empty:
 - **A moved library keeps working until its replacement works.** Given `new_site_url`, `retire_moved_libraries` leaves the old library alone (`retire_deferred`) until the library is working on the new site: it exists, has its own permissions, and gives at least one of its groups access. If `new_site_url` is the same site as `site_url`, spelt differently (such as in case, or with a trailing slash), the library hasn't moved, so it's left alone (`retire_skipped`).
 - **Permission levels are found by type**, not by name, so sites in another language, or with renamed levels, work too.
 - **Tokens only go to your tenant.** Every `site_url` must be `https://` on `sharepoint_hostname`, with no user name and no backslash before its path (which some URL parsers read as part of the host and others don't), and redirects to another host or to plain http are refused. A redirect that can't be followed is an error, never a success.
-- **Throttling and transient errors are retried,** honouring `Retry-After`, with exponential backoff. Each attempt gets a current token from the credential, so a request retried for several minutes doesn't fail because its token expired while it waited.
+- **Throttling and transient errors are retried,** honouring `Retry-After`, with exponential backoff. Each attempt gets a current token from the credential, so a request retried for several minutes doesn't fail because its token expired while it waited. Every request's User-Agent starts `NONISV|ArchwayTrust|alt-fabric-m365/<version>`, in the form Microsoft's SharePoint throttling guidance asks for, as SharePoint serves traffic that says where it's from ahead of traffic that doesn't.
 
 ### Adopting groups created by earlier versions
 

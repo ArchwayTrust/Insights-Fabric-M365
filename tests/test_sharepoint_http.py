@@ -10,6 +10,7 @@ from unittest import mock
 import pytest
 import requests
 
+import alt_fabric_m365
 from alt_fabric_m365.sharepoint import _http
 from alt_fabric_m365.sharepoint._http import _parse_retry_after, _request_with_retry
 
@@ -372,3 +373,26 @@ def test_a_plain_token_is_sent_as_given(sleeps):
         _request_with_retry("GET", URL, headers={"Authorization": _http._bearer("abc")})
 
     assert [call.kwargs["headers"]["Authorization"] for call in request.call_args_list] == ["Bearer abc"] * 2
+
+
+# User-Agent
+
+def test_requests_say_which_app_and_version_they_come_from(sleeps):
+    headers = {"Accept": "application/json"}
+    with patch_request(return_value=response(200, {})) as request:
+        _request_with_retry("GET", URL, headers=headers)
+
+    sent = request.call_args.kwargs["headers"]
+    # SharePoint's throttling guidance asks for NONISV|CompanyName|AppName/Version
+    assert sent["User-Agent"].startswith(
+        f"NONISV|ArchwayTrust|alt-fabric-m365/{alt_fabric_m365.__version__} python-requests/"
+    )
+    assert sent["Accept"] == "application/json"
+    assert headers == {"Accept": "application/json"}  # the caller's headers are left alone
+
+
+def test_a_user_agent_the_caller_sets_is_kept(sleeps):
+    with patch_request(return_value=response(200, {})) as request:
+        _request_with_retry("GET", URL, headers={"user-agent": "mine"})
+
+    assert request.call_args.kwargs["headers"] == {"user-agent": "mine"}
