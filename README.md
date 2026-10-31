@@ -699,6 +699,7 @@ for subject, path in reports.items():
 For each library (a row with a `site_url`, a `library_code` and a `group_prefix`):
 
 - **The library.** Created with the code as its URL slug (`/sites/<site>/<code>`), then given its display name. The slug never changes, so renaming a library only changes its display name. It is given its own permissions, not inherited from the site.
+  - A document library that already has the code as its URL slug is taken over rather than created again. If it still inherits the site's permissions, it stops doing so, and the action log has an `inheritance_broken` row: site members then only have access through its groups. Folders and files in it that have their own permissions keep them.
 - **Security groups**, named `{group_prefix}-{library_code}-{suffix}` (or `{group_prefix}-{site}-{library_code}-{suffix}` with `include_site_name=True`). Names are how the manager finds existing groups, so don't change the naming after rollout.
   - `Auto-Read`, `Auto-Contribute` and `Auto-Owner` are owned by the automation. Their membership is synced from your data and they are emptied when the library is unlinked.
   - `Manual-Read` and `Manual-Contribute` are optional, hand-curated groups. They are granted access like the Auto groups, but their membership is never changed.

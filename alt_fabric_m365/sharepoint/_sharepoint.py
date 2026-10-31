@@ -62,12 +62,16 @@ def _has_unique_permissions(token: str, site_url: str, list_id: str) -> bool:
 def _break_role_inheritance(token: str, site_url: str, list_id: str) -> None:
     """Break role inheritance on a document library so it has its own permissions.
 
-    The 'false' parameter means we do NOT copy existing role assignments.
+    copyRoleAssignments=false starts the library with no role assignments, so
+    only the groups assigned to it give access.  clearSubscopes=false leaves
+    folders and files that have their own permissions alone: a new library has
+    none, but an existing library being taken over may have a folder restricted
+    to a few people, which clearSubscopes=true would open to the library's groups.
     """
     rest_url = _get_sharepoint_rest_url(site_url)
     url = (
         f"{rest_url}/web/lists(guid'{list_id}')"
-        f"/breakroleinheritance(copyRoleAssignments=false, clearSubscopes=true)"
+        f"/breakroleinheritance(copyRoleAssignments=false, clearSubscopes=false)"
     )
     resp = _request_with_retry("POST", url, headers=_sharepoint_post_headers(token), data="")
     resp.raise_for_status()

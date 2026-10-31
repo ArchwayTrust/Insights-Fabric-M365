@@ -76,6 +76,8 @@ class FakeSite:
             "template": template,
             "unique": unique,
             "role_assignments": {},  # principal id -> set of role definition ids
+            # Folders and files with their own permissions: name -> {principal id: set of role definition ids}
+            "unique_items": {},
             "properties": {},
         }
         return self.lists[list_id]
@@ -427,10 +429,14 @@ class FakeTenant:
     def _sharepoint_list(self, method, site, lst, rest, body):
         if rest == "" and method == "GET":
             return response(200, {"d": {"HasUniqueRoleAssignments": lst["unique"]}})
-        if rest.startswith("/breakroleinheritance(") and method == "POST":
-            assert "copyRoleAssignments=false" in rest
+        m = re.fullmatch(r"/breakroleinheritance\(copyRoleAssignments=(true|false), clearSubscopes=(true|false)\)", rest)
+        if m and method == "POST":
+            assert m.group(1) == "false"
             lst["unique"] = True
             lst["role_assignments"] = {}
+            if m.group(2) == "true":
+                # Every folder and file goes back to inheriting from the library
+                lst["unique_items"] = {}
             return response(200, {"d": {}})
         m = re.fullmatch(r"/roleassignments/addroleassignment\(principalid=(\d+), roledefid=(\d+)\)", rest)
         if m and method == "POST":

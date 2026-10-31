@@ -214,6 +214,38 @@ def test_create_library_renames_display_name_and_navigation_link(make_manager, s
     assert "navigation_link_renamed" in actions(results)
 
 
+def test_taking_over_a_library_keeps_permissions_set_inside_it(make_manager, tenant, site):
+    library = site.add_list("MATH")  # made by hand, still inheriting the site's permissions
+    library["unique_items"]["Exam papers"] = {7: {FULL_CONTROL}}
+
+    results = make_manager().create_libraries(libraries_df(site, "MATH"))
+
+    assert library["unique"]
+    assert library["unique_items"] == {"Exam papers": {7: {FULL_CONTROL}}}
+    assert actions(results).count("inheritance_broken") == 1
+
+    results = make_manager().create_libraries(libraries_df(site, "MATH"))
+
+    assert "inheritance_broken" not in actions(results)
+
+
+def test_new_library_logs_no_inheritance_break(make_manager, site):
+    results = make_manager().create_libraries(libraries_df(site, "MATH"))
+
+    assert site.list_by_slug("MATH")["unique"]
+    assert "inheritance_broken" not in actions(results)
+
+
+def test_create_dry_run_reports_taking_over_an_inheriting_library(make_manager, tenant, site):
+    site.add_list("MATH")
+    site.add_list("ENG", unique=True)
+
+    results = make_manager(dry_run=True).create_libraries(libraries_df(site, "MATH", "ENG"))
+
+    assert tenant.writes() == []
+    assert list(rows(results, "inheritance_broken (dry run)")["document_library"]) == ["MATH"]
+
+
 def test_create_dry_run_makes_no_writes(make_manager, tenant, site):
     df = libraries_df(site, "MATH", manual_read=True, manual_contribute=True, source_system="Arbor", source_id="F1")
 
