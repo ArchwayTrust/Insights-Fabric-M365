@@ -1,4 +1,6 @@
-# The tests in the source distribution need their fixtures, fake and the example notebook they run
+# The tests in the source distribution need their fixtures, fake, the example notebook they run and the workflows
+# whose action pins they check
 include tests/conftest.py tests/sharepoint_fake.py
 graft examples
+include .github/workflows/*.yml
 global-exclude __pycache__ *.py[cod]

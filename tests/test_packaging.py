@@ -91,8 +91,10 @@ def sdist(tmp_path_factory):
 def test_source_distribution_has_what_its_tests_need(sdist):
     with tarfile.open(sdist) as tar:
         shipped = {name.split("/", 1)[1] for name in tar.getnames() if "/" in name}
-    # Every test module, fixture and fake, and the example notebook test_faculty_notebook runs
+    # Every test module, fixture and fake, the workflows whose pins are checked, and the example notebook
+    # test_faculty_notebook runs
     needed = {path.relative_to(ROOT).as_posix() for path in (ROOT / "tests").glob("*.py")}
+    needed |= {path.relative_to(ROOT).as_posix() for path in (ROOT / ".github" / "workflows").glob("*.yml")}
     needed |= {
         path.relative_to(ROOT).as_posix() for path in (ROOT / "examples").rglob("*")
         # MANIFEST.in leaves out compiled files, which running the example locally can leave behind
