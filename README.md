@@ -1024,7 +1024,7 @@ Every action an operation can write to its log. Class is the set the action is i
 | `retire_skipped` | `retire_moved_libraries` | Nothing was retired: the old site or library no longer exists, or the new site is the same site. | |
 | `site_sharing_check` | `enforce_site_sharing_lockdown` | Member sharing, access requests and member invites were already off, so nothing changed. | |
 | `site_sharing_disabled` | `enforce_site_sharing_lockdown` | Member sharing, access requests or member invites were turned off. The status lists which. | |
-| `skip` | `update_memberships` | A row's permission isn't read, contribute or owner, so it wasn't synced and that kind of removal was skipped. | Warning |
+| `skip` | `update_memberships`, and the recommended flow | A row's permission isn't read, contribute or owner, so it wasn't synced and that kind of removal was skipped. The recommended flow also logs a libraries row with no `last_changed_ts` as `skip`, as no run would create, unlink or retire it. | Warning |
 | `skipped` | `set_library_metadata` | The row had neither a `source_system` nor a `source_id` value, so nothing was done. | |
 | `user_not_found` | `update_memberships`, `ensure_onedrive_shortcuts` | The user couldn't be found in Entra ID, by sign-in name, mail or proxy address, or was blank. | Warning |
 
@@ -1169,7 +1169,7 @@ Optionally, also write the `user_not_found` rows to a table of their own (`run_i
 
 Run the operations in this order, from a pipeline, with a dry run first whenever the inputs or the package version change:
 
-1. **Read the libraries table, apply any scope, then read the watermark**, and the newest `last_changed_ts` as an upper bound. Only rows between the two are "changed" in this run. Rows that land while it runs are left for the next one.
+1. **Read the libraries table, apply any scope, then read the watermark**, and the newest `last_changed_ts` as an upper bound. Only rows between the two are "changed" in this run. Rows that land while it runs are left for the next one. A row with no `last_changed_ts` would never be changed, so it's logged as a `skip` warning.
 2. **Lock down site sharing** on every live site (full pass). It's independent of the rest, and corrects settings changed by hand.
 3. **Create** changed, not-deleted libraries (incremental). This also applies renames and new metadata. It runs before the grant and membership passes, which need the libraries to exist.
 4. **Unlink** changed, deleted libraries (incremental).
@@ -1202,7 +1202,7 @@ from datetime import datetime, timezone
 import pandas as pd
 
 from alt_fabric_m365.auth import KeyVaultCertificateCredential
-from alt_fabric_m365.sharepoint import FATAL_ACTIONS, WARNING_ACTIONS, SharePointLibraryManager
+from alt_fabric_m365.sharepoint import ACTION_LOG_COLUMNS, FATAL_ACTIONS, WARNING_ACTIONS, SharePointLibraryManager
 
 credential = KeyVaultCertificateCredential(TENANT_ID, CLIENT_ID, KEY_VAULT, CERTIFICATE_NAME)
 mgr = SharePointLibraryManager(
@@ -1239,6 +1239,13 @@ since = state["last_processed_ts"].iloc[0] if not state.empty else datetime(1900
 until = libraries["last_changed_ts"].max() if not libraries.empty else since
 changed = libraries[(libraries["last_changed_ts"] > since) & (libraries["last_changed_ts"] <= until)]
 live = libraries[~libraries["deleted"]].assign(source_id=lambda df: df["library_id"])
+
+# A row without a last_changed_ts is never "changed", so log it as a warning rather than leave it out silently
+undated = libraries[libraries["last_changed_ts"].isna()]
+save("check_libraries", undated.rename(columns={"library_code": "document_library"}).assign(
+    group="", user="", action="skip", permission="",
+    status="no last_changed_ts, so no run will create, unlink or retire it: stamp it when the row is written",
+).reindex(columns=ACTION_LOG_COLUMNS))
 
 save("site_sharing_lockdown", mgr.enforce_site_sharing_lockdown(live["site_url"]))                          # step 2
 save("create_libraries", mgr.create_libraries(live[live["library_id"].isin(changed["library_id"])]))        # step 3
