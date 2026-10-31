@@ -13,6 +13,20 @@ import pytest
 import requests
 
 
+def fake_token(scope, **claims):
+    """Returns an access token for *scope*: an unsigned JWT whose aud claim is the scope's resource, as in Entra ID's.
+
+    FakeTenant checks the audience of every token it's sent, as Graph and SharePoint do.
+
+    Args:
+        scope: The scope the token is for, such as Scopes.GRAPH.
+        **claims: More claims, such as oid.
+    """
+    def part(value):
+        return base64.urlsafe_b64encode(json.dumps(value).encode()).decode().rstrip("=")
+    return f"{part({'alg': 'none'})}.{part({'aud': scope.removesuffix('/.default'), **claims})}.sig"
+
+
 @pytest.fixture
 def fake_notebookutils(monkeypatch):
     """
@@ -49,7 +63,7 @@ class FakeCredential:
 
     def get_token(self, *scopes, **kwargs):
         self.scopes.append(scopes)
-        return types.SimpleNamespace(token="graph-token", expires_on=0)
+        return types.SimpleNamespace(token=fake_token(scopes[0]), expires_on=0)
 
 
 @pytest.fixture
@@ -94,7 +108,7 @@ class FakeAzure:
     def __init__(self, kid=KID, expires_in=3600, token_status=200, token_body=None, delay=0, object_id=None,
                  certificate_status=200, certificate_body=None, sign_status=200, sign_body=None):
         self.kid = kid
-        # With object_id, access tokens are JWT-shaped with that oid claim, as Entra ID issues them
+        # With object_id, access tokens have that oid claim, as Entra ID's do
         self.object_id = object_id
         self.issued = []
         self.expires_in = expires_in
@@ -143,10 +157,9 @@ class FakeAzure:
             })
         if self.token_status != 200:
             return make_response(self.token_status, self.token_body)
-        token = f"token-{count}"
-        if self.object_id:
-            claims = base64.urlsafe_b64encode(json.dumps({"oid": self.object_id, "n": count}).encode()).decode().rstrip("=")
-            token = f"eyJhbGciOiJub25lIn0.{claims}.sig"
+        # n makes each token different, as Entra ID's are
+        claims = {"n": count, **({"oid": self.object_id} if self.object_id else {})}
+        token = fake_token(kwargs["data"]["scope"].split()[0], **claims)
         with self._lock:
             self.issued.append(token)
         return make_response(200, {"access_token": token, "expires_in": self.expires_in})

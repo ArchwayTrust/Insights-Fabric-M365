@@ -17,6 +17,7 @@ from alt_fabric_m365.sharepoint import (
     ACTION_LOG_COLUMNS, FATAL_ACTIONS, WARNING_ACTIONS, SharePointLibraryManager,
 )
 
+from conftest import fake_token
 from sharepoint_fake import APP_ID, HOST, ROLE_DEFINITIONS, FakeTenant
 
 READ = ROLE_DEFINITIONS["Read"]
@@ -126,7 +127,7 @@ def test_a_request_retried_after_a_long_throttle_sends_a_current_token(tenant, s
         """Hands out a new token whenever time passes, as a credential does near a token's expiry."""
 
         def get_token(self, *scopes):
-            return SimpleNamespace(token=f"token-{len(tenant.sleeps)}", expires_on=0)
+            return SimpleNamespace(token=fake_token(scopes[0], n=len(tenant.sleeps)), expires_on=0)
 
     tenant.fail("POST", r"/ensureuser", response(429, headers={"Retry-After": "300"}))
     manager = SharePointLibraryManager(RenewingCredential(), HOST, include_site_name=False, service_principal_id=APP_ID)
@@ -135,7 +136,8 @@ def test_a_request_retried_after_a_long_throttle_sends_a_current_token(tenant, s
 
     throttled_at = tenant.sleeps.index(300.0)
     sent = [call[2]["headers"]["Authorization"] for call in tenant.calls if call[1].endswith("/ensureuser")]
-    assert sent[:2] == [f"Bearer token-{throttled_at}", f"Bearer token-{throttled_at + 1}"]
+    scope = f"https://{HOST}/.default"
+    assert sent[:2] == [f"Bearer {fake_token(scope, n=n)}" for n in (throttled_at, throttled_at + 1)]
     assert rows(results, "error").empty
 
 

@@ -15,7 +15,7 @@ from alt_fabric_m365.exchange import emails as emails_module
 from alt_fabric_m365.auth import Scopes
 from alt_fabric_m365.exchange import Emails, MessageNotFoundError
 
-from conftest import make_response
+from conftest import fake_token, make_response
 
 GRAPH = "https://graph.microsoft.com/v1.0"
 MAILBOX = "reports@contoso.com"
@@ -58,7 +58,7 @@ def test_requests_a_graph_token_for_each_call(emails, credential):
 
     # Fetched for each request (and again before each attempt), not stored
     assert len(credential.scopes) >= 2 and set(credential.scopes) == {(Scopes.GRAPH,)}
-    assert get.call_args.kwargs["headers"]["Authorization"] == "Bearer graph-token"
+    assert get.call_args.kwargs["headers"]["Authorization"] == f"Bearer {fake_token(Scopes.GRAPH)}"
 
 
 def test_mailbox_is_optional_when_each_call_passes_one(credential):
