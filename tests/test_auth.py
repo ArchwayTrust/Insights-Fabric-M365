@@ -196,6 +196,16 @@ def test_requests_go_to_the_expected_urls(azure):
     assert azure.token_calls[0][0] == f"https://login.microsoftonline.com/{TENANT}/oauth2/v2.0/token"
 
 
+def test_requests_carry_what_key_vault_and_entra_id_require(azure):
+    make_credential().get_token("a")
+
+    # Key Vault refuses a request without an api-version (400) or a bearer token (401)
+    for _, kwargs in azure.certificate_calls + azure.sign_calls:
+        assert kwargs["params"] == {"api-version": KeyVaultCertificateCredential.AKV_API_VERSION}
+        assert kwargs["headers"]["Authorization"] == "Bearer kv-token"
+    assert azure.token_calls[0][1]["data"]["client_id"] == CLIENT
+
+
 def test_client_assertion_is_well_formed(azure):
     before = int(time.time())
     make_credential().get_token("a")
@@ -208,7 +218,7 @@ def test_client_assertion_is_well_formed(azure):
     header = decode_segment(header_segment)
     claims = decode_segment(claims_segment)
 
-    assert header["alg"] == "PS256"
+    assert header["alg"] == "PS256" and header["typ"] == "JWT"
     expected_thumbprint = base64.urlsafe_b64encode(hashlib.sha256(CERT_DER).digest()).rstrip(b"=").decode()
     assert header["x5t#S256"] == expected_thumbprint
 
@@ -244,6 +254,25 @@ def test_token_error_includes_status_but_not_the_assertion(fake_notebookutils):
     message = str(error.value)
     assert "Status code: 401" in message and "AADSTS700027" in message
     assert fake.token_calls[0][1]["data"]["client_assertion"] not in message
+
+
+@pytest.mark.parametrize("failing, expected", [
+    ({"certificate_status": 403, "certificate_body": {"error": {"code": "Forbidden", "message": "No get permission"}}},
+     "Failed to get certificate cert from key vault. Status code: 403, Forbidden: No get permission"),
+    ({"sign_status": 403, "sign_body": {"error": {"code": "Forbidden", "message": "No sign permission"}}},
+     "Failed to sign client assertion with key vault key cert. Status code: 403, Forbidden: No sign permission"),
+    ({"certificate_status": 404, "certificate_body": {"error": {"code": "CertificateNotFound", "message": "Not found"}}},
+     "Failed to get certificate cert from key vault. Status code: 404, CertificateNotFound: Not found"),
+])
+def test_key_vault_errors_include_the_status_and_code_but_not_the_token(fake_notebookutils, failing, expected):
+    fake = FakeAzure(**failing)
+    with mock.patch.multiple(keyvault.requests, get=fake.get, post=fake.post):
+        with pytest.raises(Exception) as error:
+            make_credential().get_token("a")
+
+    assert str(error.value) == expected
+    assert "kv-token" not in str(error.value)
+    assert fake.token_calls == []
 
 
 # Key Vault URL checks
@@ -285,6 +314,7 @@ def test_other_urls_are_rejected(akv_url):
     "https://othervault.vault.azure.net/keys/cert/1",
     "https://myvault.vault.azure.net:8443/keys/cert/1",
     "https://myvault.vault.azure.net@evil.com/keys/cert/1",
+    "https://user:pw@myvault.vault.azure.net/keys/cert/1",
     "not a url",
 ])
 def test_key_vault_token_is_not_sent_to_another_host(fake_notebookutils, kid):
