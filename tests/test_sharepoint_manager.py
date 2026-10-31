@@ -992,6 +992,38 @@ def test_retire_waits_for_a_working_replacement(make_manager, tenant, site, repl
     assert (library["displayName"], len(library["role_assignments"])) == ("MATH Faculty", 2)
 
 
+# Graph's name lookups miss a group for a while after it's made, as the create pass just before may have
+def test_retire_finds_the_new_librarys_groups_this_manager_just_created(make_manager, tenant, site):
+    new_site = tenant.add_site("/sites/BAANew")
+    manager = make_manager(include_site_name=True)  # so the library gets new groups on its new site
+    manager.create_libraries(libraries_df(site, "MATH"))
+    before = set(tenant.groups)
+    manager.create_libraries(libraries_df(new_site, "MATH"))
+    tenant.replicating.update(set(tenant.groups) - before)
+
+    results = manager.retire_moved_libraries(libraries_df(site, "MATH").assign(new_site_url=new_site.url))
+
+    assert "library_retired" in actions(results)
+    library = site.list_by_slug("MATH")
+    assert (library["displayName"], library["role_assignments"]) == ("MATH_MOVED", {})
+
+
+# A failed check says nothing about the new library, and as a warning the run would count as clean
+def test_a_replacement_that_couldnt_be_checked_is_an_error_not_a_deferral(make_manager, tenant, site):
+    new_site = tenant.add_site("/sites/BAANew")
+    make_manager().create_libraries(libraries_df(site, "MATH"))
+    make_manager().create_libraries(libraries_df(new_site, "MATH"))
+    tenant.fail("GET", r"HasUniqueRoleAssignments", response(503), times=6)  # the first try and every retry
+    tenant.calls.clear()
+
+    results = make_manager().retire_moved_libraries(libraries_df(site, "MATH").assign(new_site_url=new_site.url))
+
+    [error] = rows(results, "error").itertuples()
+    assert "/sites/BAANew) couldn't be checked, so it wasn't retired" in error.status
+    assert actions(results) == ["error"] and "error" in FATAL_ACTIONS
+    assert tenant.writes() == []
+
+
 def test_retire_without_a_new_site_retires_anyway(make_manager, tenant, site):
     make_manager().create_libraries(libraries_df(site, "MATH"))
 

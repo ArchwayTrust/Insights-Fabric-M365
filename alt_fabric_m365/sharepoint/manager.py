@@ -1772,6 +1772,11 @@ class SharePointLibraryManager:
 
         Returns:
             The reason, to follow "the library", or None.
+
+        Raises:
+            requests.RequestException: If the new library or its groups couldn't be read, which says nothing
+                about whether it's working.
+            KeyError: If SharePoint's or Graph's response is missing a field it should have.
         """
         library = site.get("lists", {}).get(library_code.lower())
         if library is None:
@@ -1791,10 +1796,13 @@ class SharePointLibraryManager:
                 )
                 # A duplicated name raises ValueError: its library can't be synced, so it isn't working
                 group = _get_unique_group(groups_by_name, name)
+                if group is None:
+                    # This manager may have just made it, while Graph's name lookups still miss it
+                    group = (self._created_group(name) or (None, False))[0]
                 if group is not None and roles.get(_group_claims(group["id"]).lower(), set()) & library_roles:
                     return None
-        except (requests.RequestException, ValueError, KeyError) as exc:
-            return f"on its new site ({site_url}) couldn't be checked: {exc}"
+        except ValueError as exc:
+            return f"on its new site ({site_url}) has groups that can't be told apart: {exc}"
         return f"on its new site ({site_url}) gives none of its groups access yet"
 
     def retire_moved_libraries(
@@ -1938,10 +1946,22 @@ class SharePointLibraryManager:
                 continue
             problem = None
             if not dry_run_ and pd.notna(new_site_url):
-                problem = self._replacement_problem(
-                    new_site_url, new_sites.get(new_site_url, {}),
-                    row["library_code"], row["group_prefix"], include_site_name_,
-                )
+                try:
+                    problem = self._replacement_problem(
+                        new_site_url, new_sites.get(new_site_url, {}),
+                        row["library_code"], row["group_prefix"], include_site_name_,
+                    )
+                except (requests.RequestException, KeyError) as exc:
+                    # Not a deferral: a failed check says nothing about the
+                    # new library, and as an error the run isn't clean, so an
+                    # incremental flow tries the move again
+                    logger.error("Couldn't check '%s' on its new site %s: %s", row["library_code"], new_site_url, exc)
+                    _append_log(
+                        action_log, site_url, row["library_code"], "error",
+                        f"its library on the new site ({new_site_url}) couldn't be checked, so it wasn't retired: "
+                        f"{exc}",
+                    )
+                    continue
             if problem is not None:
                 logger.warning("Not retiring '%s' on '%s': the library %s", row["library_code"], site_url, problem)
                 _append_log(
