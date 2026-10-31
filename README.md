@@ -628,7 +628,7 @@ for attachment_id, file_name in attachments:
         notebookutils.fs.put(f"{lakehouse}/Files/Sales/{safe_name}", csv_text, overwrite=True)
 ```
 
-An attachment's name is chosen by whoever sent the email, and could contain `/` or `..` that point somewhere else, so don't put it into a path as it is. Keep only its last part, as above, or save to a fixed name, as the other examples do. A fixed name also stops two attachments with the same name overwriting each other.
+An attachment's name is chosen by whoever sent the email, and could contain `/` or `..` that point somewhere else, so don't put it into a path as it is. Keep only its last part, as above, or, when you keep one attachment, save it to a fixed name, as the other examples do. Neither stops two attachments with the same name overwriting each other in the loop, so if you keep several, make each name unique, for example by adding its position in the list.
 
 Use `encoding` for text in another encoding, for example `encoding="cp1252"` for some Windows exports.
 
