@@ -985,7 +985,7 @@ Keep the desired state in a few lakehouse tables, maintained by whatever feeds t
 | --- | --- | --- | --- |
 | `library_id` | string | Yes | Stable ID from the source system. Stored on the library as `source_id`, so a library can be traced back to its record. |
 | `site_url` | string | Yes | Full URL of the site the library lives on, `https://<tenant>.sharepoint.com/sites/<site>`. |
-| `library_code` | string | Yes | Short code, used as the library's URL and in its group names (for example `MATH`). Never change it after the library is created; rename with `library_display_name` instead. To recode a library, delete its row and add a new one: the old library is unlinked and a new one created. |
+| `library_code` | string | Yes | Short code, used as the library's URL and in its group names (for example `MATH`). Never change it after the library is created; rename with `library_display_name` instead. To recode a library, keep its row but set `deleted` (and `last_changed_ts`), and add a new row, with a new `library_id`, for the new code: the next run unlinks the old library and creates the new one. |
 | `library_display_name` | string | Yes | Name shown in SharePoint (for example `Mathematics`). Can change; the next create pass applies it. |
 | `group_prefix` | string | Yes | Start of the group names, for example `ACA-Sharepoint`. Use one prefix per site. |
 | `auto_groups` | boolean | No (True) | Create the synced Auto-Read and Auto-Contribute groups. |
