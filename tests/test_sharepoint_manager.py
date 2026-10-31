@@ -446,12 +446,25 @@ def test_set_metadata_needs_a_metadata_column(make_manager, site):
         make_manager().set_library_metadata(pd.DataFrame({"site_url": [site.url], "library_code": ["MATH"]}))
 
 
-def test_set_metadata_on_a_missing_library_is_an_error_row(make_manager, site):
-    results = make_manager().set_library_metadata(pd.DataFrame({
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_set_metadata_on_a_missing_library_is_an_error_row(make_manager, tenant, site, dry_run):
+    results = make_manager(dry_run=dry_run).set_library_metadata(pd.DataFrame({
         "site_url": [site.url], "library_code": ["MATH"], "source_system": ["Arbor"],
     }))
 
     assert actions(results) == ["error"]
+    assert tenant.writes() == []
+
+
+def test_set_metadata_dry_run_makes_no_writes(make_manager, tenant, site):
+    library = site.add_list("MATH")
+
+    results = make_manager(dry_run=True).set_library_metadata(pd.DataFrame({
+        "site_url": [site.url], "library_code": ["MATH"], "source_system": ["Arbor"], "source_id": ["F1"],
+    }))
+
+    assert actions(results) == ["metadata_set (dry run)", "metadata_set (dry run)"]
+    assert tenant.writes() == [] and library["properties"] == {}
 
 
 # rename_libraries
@@ -469,10 +482,12 @@ def test_rename_sets_the_display_name_and_leaves_groups(make_manager, tenant, si
     assert sorted(g["displayName"] for g in tenant.groups.values()) == groups
 
 
-def test_rename_of_a_missing_library_is_an_error(make_manager, site):
-    results = make_manager().rename_libraries(libraries_df(site, "MATH"))
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_rename_of_a_missing_library_is_an_error(make_manager, tenant, site, dry_run):
+    results = make_manager(dry_run=dry_run).rename_libraries(libraries_df(site, "MATH"))
 
     assert actions(results) == ["error"]
+    assert tenant.writes() == []
 
 
 def test_old_library_code_is_refused(make_manager, tenant, site):
@@ -1387,6 +1402,17 @@ def test_an_ownerless_group_is_adopted(make_manager, tenant, site):
     assert legacy["owners"] == {APP_ID}
     assert f"c:0t.c|tenant|{legacy['id']}" in site.principals
     assert "group_owner_added" not in actions(make_manager().create_libraries(libraries_df(site, "MATH")))
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_a_duplicated_name_of_a_group_people_own_is_an_error(make_manager, tenant, site, dry_run):
+    tenant.add_group("BAA-Sharepoint-SLT-Manual-Read")
+    tenant.add_group("BAA-Sharepoint-SLT-Manual-Read")
+    df = libraries_df(site, "SLT", auto_groups=False, manual_read=True, app_owned=False)
+
+    results = make_manager(dry_run=dry_run).create_libraries(df)
+
+    assert list(rows(results, "error")["status"].str.contains("Multiple")) == [True]
 
 
 def test_groups_people_own_are_left_alone_when_not_app_owned(make_manager, tenant, site):
