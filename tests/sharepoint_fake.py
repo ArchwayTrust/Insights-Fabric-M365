@@ -20,9 +20,12 @@ GRAPH = "https://graph.microsoft.com/v1.0"
 HOST = "contoso.sharepoint.com"
 APP_ID = "aaaaaaaa-0000-0000-0000-00000000a99a"  # the app's service principal object ID
 
-ROLE_DEFINITIONS = {"Read": 1073741826, "Contribute": 1073741827, "Full Control": 1073741829}
-# RoleTypeKind (SP.RoleType) of each built-in role definition
-ROLE_TYPES = {"Read": 2, "Contribute": 3, "Full Control": 5}
+ROLE_DEFINITIONS = {
+    "Limited Access": 1073741825, "Read": 1073741826, "Contribute": 1073741827, "Full Control": 1073741829,
+}
+# RoleTypeKind (SP.RoleType) of each built-in role definition. SharePoint gives a principal Limited
+# Access to a library when it has its own permissions on something inside it.
+ROLE_TYPES = {"Limited Access": 1, "Read": 2, "Contribute": 3, "Full Control": 5}
 
 USER = "#microsoft.graph.user"
 GROUP = "#microsoft.graph.group"
