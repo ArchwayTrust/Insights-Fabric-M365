@@ -895,7 +895,7 @@ mgr = SharePointLibraryManager(
     credential,
     sharepoint_hostname="contoso.sharepoint.com",
     dry_run=True,                   # log what would change, change nothing
-    max_workers=4,                  # libraries processed in parallel
+    max_workers=4,                  # libraries processed in parallel (1: everything in turn)
     include_site_name=False,        # see group naming above; don't change after rollout
     add_to_navigation=True,
     navigation_label="Document Libraries",

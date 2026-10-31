@@ -306,14 +306,23 @@ class SharePointLibraryManager:
             sites[site_url] = site
         return sites
 
-    def _resolve_users(self, user_principal_names: Iterable[str]) -> dict[str, tuple]:
-        """Resolve each distinct user once, in parallel.
+    def _resolve_users(self, user_principal_names: Iterable[str], max_workers: int) -> dict[str, tuple]:
+        """Resolve each distinct user once, in parallel unless max_workers is 1.
 
         Staff in several faculties would otherwise cost up to three Graph
         lookups per library.  Keys are the normalised (stripped, lowercase)
         input; values are (object_id, real_upn, failure_reason, fatal).
         A user that doesn't exist is not fatal (user_not_found); an API
         failure is, and fails the libraries that use the user.
+
+        Args:
+            user_principal_names: The users to resolve.
+            max_workers: The operation's max_workers. 1 or less resolves one
+                user at a time, as it runs one library at a time; otherwise up
+                to 8 lookups run at once.
+
+        Returns:
+            Normalised user principal name -> (object_id, real_upn, failure_reason, fatal).
         """
         graph_token = self._graph_token
 
@@ -333,6 +342,8 @@ class SharePointLibraryManager:
             return upn, (oid, real_upn, None, False)
 
         upns = sorted({upn.strip().lower() for upn in user_principal_names})
+        if max_workers <= 1:
+            return dict(map(resolve, upns))
         with ThreadPoolExecutor(max_workers=min(8, max(len(upns), 1))) as executor:
             return dict(executor.map(resolve, upns))
 
@@ -2471,7 +2482,8 @@ class SharePointLibraryManager:
 
         user_refs = self._resolve_users(
             df.loc[df.set_index(["site_url", "library_code"]).index.isin(list(prefix_by_library)),
-                   "user_principal_name"]
+                   "user_principal_name"],
+            max_workers_,
         )
         grouped = dict(tuple(df.groupby(["site_url", "library_code"])))
         nested_grouped = dict(tuple(nested_groups_df.groupby(["site_url", "library_code"])))
@@ -2643,7 +2655,7 @@ class SharePointLibraryManager:
         action_log = _ThreadSafeLog()
         sites = self._prefetch_sites(df["site_url"].unique(), action_log)
         df = df[df["site_url"].isin(list(sites))]
-        user_refs = self._resolve_users(df["user_principal_name"])
+        user_refs = self._resolve_users(df["user_principal_name"], max_workers_)
 
         # Rows can name one library differently, as MATH and math, or its site
         # with and without a trailing slash.  Each library is one work item,
