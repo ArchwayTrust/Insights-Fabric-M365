@@ -53,6 +53,8 @@ class Spark:
         self.tables = tables
         self.watermarks = {}  # process key -> last_processed_ts
         self.saved = []
+        self.settings = {}
+        self.conf = types.SimpleNamespace(set=self.settings.__setitem__)
 
     @property
     def watermark(self):
@@ -153,6 +155,8 @@ def test_readme_flow_provisions_from_the_suggested_tables(setting):
     assert all(leadership in site.list_by_slug(code)["role_assignments"] for code in ("MATH", "ENG"))
     assert spark.watermark == datetime(2026, 10, 2)
     assert {name.rsplit(".", 1)[-1] for name, _ in spark.saved} == {"sharepoint_action_log"}
+    # The watermark's timestamps only agree across SQL, collect() and toPandas() in one time zone
+    assert spark.settings == {"spark.sql.session.timeZone": "UTC"}
 
 
 def test_readme_flow_rerun_and_delete(setting):

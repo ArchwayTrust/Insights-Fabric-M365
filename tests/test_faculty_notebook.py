@@ -72,6 +72,8 @@ class FakeSpark:
             "sharepoint_faculty_membership", self.db, index=False)
         self.db.execute("CREATE TABLE sharepoint_sync_state (process TEXT, last_processed_ts TEXT, updated_at TEXT)")
         self.saved = {}  # table name -> list of DataFrames appended
+        self.settings = {}
+        self.conf = types.SimpleNamespace(set=self.settings.__setitem__)
         self.after_query = None  # called with each SELECT, e.g. to add rows mid-run
 
     def _translate(self, query):
@@ -238,6 +240,8 @@ def test_live_run_provisions_the_pilot_scope_and_advances_the_watermark(tenant, 
 
     ns = run_notebook(spark)
 
+    # The watermark's timestamps only agree across SQL and collect() in one time zone
+    assert spark.settings == {"spark.sql.session.timeZone": "UTC"}
     hub, old_hub, nca = (tenant.sites[url.lower()] for url in (HUB, OLD_HUB, NCA_HUB))
     assert sorted(lst["slug"] for lst in hub.lists.values()) == ["MATH", "MATHMOVED", "MATHOLD", "SLT"]
     assert nca.lists == {}  # outside the academy filter

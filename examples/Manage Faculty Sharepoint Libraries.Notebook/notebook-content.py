@@ -510,6 +510,11 @@ if RUN_SMOKE_TEST:
 
 # Watermark: process faculty-list rows changed since the last successful run.
 
+# The watermark passes through Spark SQL literals and collect(), which only
+# agree on the time of a timestamp while Spark's session time zone is the
+# notebook's own, UTC in Fabric.
+spark.conf.set("spark.sql.session.timeZone", "UTC")
+
 # CREATE TABLE does not create its schema — a fresh schema-enabled
 # lakehouse fails with SCHEMA_NOT_FOUND without this.
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS {STORE_WORKSPACE_NAME}.{BASE_LH_NAME}.it")

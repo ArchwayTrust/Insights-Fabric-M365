@@ -1028,7 +1028,7 @@ Keep the desired state in a few lakehouse tables, maintained by whatever feeds t
 | `app_owned` | boolean | No (True) | The app owns the groups. False for groups a person owns and curates. |
 | `previous_site_url` | string | Flow only | The site the library was on before a move, or null. |
 | `deleted` | boolean | Flow only | True once the library has been removed at source. Keep the row, so the unlink pass sees it. |
-| `last_changed_ts` | timestamp | Flow only | When the row last changed. Drives the incremental passes. |
+| `last_changed_ts` | timestamp | Flow only | When the row last changed, in UTC. Drives the incremental passes, so stamp it when the row is written (`current_timestamp()` in the `MERGE` that writes it) and never copy the source system's modified time: a time earlier than the watermark is never processed. Never null. |
 
 A blank (null) in `auto_groups`, `manual_read`, `manual_contribute` or `app_owned` takes the default shown. They can also hold 1 and 0, but anything else, such as the text `"False"`, raises `ValueError` before anything is changed.
 
@@ -1119,6 +1119,10 @@ mgr = SharePointLibraryManager(
     credential, SHAREPOINT_HOSTNAME,
     dry_run=DRY_RUN, max_workers=4, include_site_name=False, add_to_navigation=True,
 )
+
+# The watermark passes through Spark SQL literals, collect() and toPandas(), which only agree on the time of a
+# timestamp while Spark's session time zone is the notebook's own, UTC in Fabric
+spark.conf.set("spark.sql.session.timeZone", "UTC")
 
 RUN_ID = str(uuid.uuid4())
 PROCESS = "sharepoint_libraries"
