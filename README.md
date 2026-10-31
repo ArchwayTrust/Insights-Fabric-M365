@@ -914,6 +914,8 @@ mgr = SharePointLibraryManager(
 
 Create the credential without a scope: the manager asks it for a Graph token and a SharePoint token (`https://<sharepoint_hostname>/.default`), and the credential caches each until shortly before it expires. The constructor gets both tokens straight away, so wrong credentials or permissions fail here rather than part way through. `dry_run`, `max_workers`, `include_site_name`, `add_to_navigation`, `navigation_label`, `create_onedrive_shortcuts`, `max_removals_per_group`, `max_removals_per_run` and `allow_mass_removal` are defaults that each operation can override, for example `mgr.create_libraries(df, dry_run=False)`. Each must be of its documented type: a notebook or pipeline parameter of type String, such as `"False"`, raises `TypeError` rather than counting as true, so give those parameters the type Bool or Int.
 
+**Choosing `max_workers`.** It's how many libraries are processed at once. 4 suits most runs; 1 runs everything in turn, which is easiest to follow in the logs. Above 1, user lookups also run in a pool of up to 8, whatever `max_workers` is. More workers don't make Graph or SharePoint go faster once they start throttling: requests are then retried after the wait they ask for, so a first sync that adds many members, or a run over many sites, can take as long with 8 workers as with 4. Raise it only if runs are slow and the log has no "Rate limited (429)" or "Server error 503" retries.
+
 ### Operations
 
 | Method | What it does | DataFrame columns |
