@@ -27,7 +27,7 @@ setup(
     ],
     extras_require={
         # pip install -e .[test], then run pytest
-        "test": ["pytest", "pytest-cov", "pyflakes", "setuptools"]
+        "test": ["pytest", "pytest-cov", "pyflakes", "setuptools>=77"]
     },
     author="Ben Dobbs",
     author_email="bdobbs@archwaytrust.co.uk",
@@ -35,5 +35,5 @@ setup(
     long_description=open(os.path.join(HERE, 'README.md'), encoding='utf-8').read(),
     long_description_content_type='text/markdown',
     url="https://github.com/ArchwayTrust/Insights-Fabric-M365",
-    license="BSD-3-Clause",
+    license_expression="BSD-3-Clause",
 )
