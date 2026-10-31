@@ -1011,8 +1011,15 @@ class SharePointLibraryManager:
             # is found in the prefetched lists, so a dry run reports a missing
             # library as a live run does.
             list_id = _get_list_id(self._graph_token, site_id, library_code, existing=existing_lists)
-            lib_web_url = existing_lists[library_code.lower()].get("webUrl", "")
-            if dry_run:
+            library = existing_lists[library_code.lower()]
+            lib_web_url = library.get("webUrl", "")
+            if library.get("displayName") == new_display_name:
+                # A re-run writes nothing, as the README promises
+                _append_log(
+                    action_log, site_url, library_code,
+                    "already_named", f"display name is already '{new_display_name}'",
+                )
+            elif dry_run:
                 logger.info(
                     "[DRY RUN] Would set display name to '%s' on library '%s'",
                     new_display_name, library_code,
@@ -1067,7 +1074,8 @@ class SharePointLibraryManager:
         """Rename SharePoint libraries' display names.
 
         For each row in the DataFrame:
-          1. Updates the library's display name (the URL slug is unchanged).
+          1. Updates the library's display name (the URL slug is unchanged),
+             unless it already has that name (``already_named``).
           2. If ``add_to_navigation`` is on, updates the library's quick-launch
              navigation link title to the new display name (a missing label or
              link is a no-op — links are only added by ``create_libraries``).
