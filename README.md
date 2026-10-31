@@ -946,7 +946,7 @@ results = mgr.update_memberships(members, libraries_df=libraries)
 
 ### The action log
 
-Every operation returns a DataFrame with the columns `site_url`, `document_library`, `group`, `user`, `action`, `permission` and `status`, one row per thing it did or (in a dry run) would do. Problems are rows too, so one bad library, user or site never stops the others. Where nothing needed changing, the row says so (`already_member`, `already_assigned`), and nothing is written. Two sets of action names help decide whether a run succeeded:
+Every operation returns a DataFrame with the columns `site_url`, `document_library`, `group`, `user`, `action`, `permission` and `status`, one row per thing it did or (in a dry run) would do. Problems are rows too, so one bad library, user or site never stops the others. Where nothing needed changing, the row says so (`already_member`, `already_assigned`, `metadata_unchanged`), and nothing is written. Two sets of action names help decide whether a run succeeded:
 
 - `FATAL_ACTIONS`: `error`, `add_failed`, `remove_failed`. Something failed and should be retried, so fail the run.
 - `WARNING_ACTIONS`: for example `user_not_found`, `library_not_found` and `removal_guardrail_triggered`. Problems with the data that failing the run wouldn't fix.
