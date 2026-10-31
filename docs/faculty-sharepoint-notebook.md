@@ -132,12 +132,12 @@ mgr = SharePointLibraryManager(
 )
 ```
 
-**Run context.** `FATAL_ACTIONS` and `WARNING_ACTIONS` are imported rather than defined here, as the package defines the action names. They hold the same values. `SLT_CODE_KEY` uses the now public `sanitise_for_group_name`. `FACULTY_CODE_FILTER` is now quote-escaped before it goes into the SQL, as `ACADEMY_FILTER` already was.
+**Run context.** `FATAL_ACTIONS` and `WARNING_ACTIONS` are imported rather than defined here, as the package defines the action names. They hold the same values. `SLT_CODE_KEY` uses the now public `sanitise_for_group_name`. `ACADEMY_FILTER` and `FACULTY_CODE_FILTER` go into the SQL as literals, and Spark SQL doesn't read a doubled `''` as an escaped quote, so the notebook no longer tries to escape them. Instead they can only contain letters, digits, spaces, `-`, `_` and `.`, plus `%` in `FACULTY_CODE_FILTER`, and any other character stops the run before any SQL runs.
 
 **Watermark.** Two fixes from review, each covered by a notebook test:
 
 - The create, unlink and retire passes each read the faculty list separately. A row landing between two reads could be missed by an earlier pass, yet still be covered by the watermark advanced from a later pass. The watermark cell now reads the newest `last_changed_ts` once, as `HIGH_WATERMARK`, and all three passes only take rows up to it. Rows newer than that are left for the next run.
-- The watermark key contains the rollout filters, so a `'` in a filter broke the watermark's lookup and its `MERGE`. Both now use `SYNC_PROCESS_LITERAL`, the quote-escaped key.
+- The watermark key contains the rollout filters, so a `'` in a filter broke the watermark's lookup and its `MERGE`. The filters can no longer contain one (see **Run context**).
 
 **Smoke test.** The navigation and sharing checks read the site through the manager instead of calling private functions with its token:
 
@@ -226,7 +226,7 @@ The notebook test's scenarios, against a pilot scope of `BAA` and `MATH%`:
 - **Dry run.** Makes no writes to SharePoint or Entra ID and leaves the watermark alone.
 - **Authentication.** The certificate named by `CERTIFICATE_NAME` is read from the key vault and signs the assertions, and the run uses one Graph and one SharePoint token.
 - **Rows landing mid-run.** A new faculty and a newer move added after the create read are both left for the next run, which picks them up.
-- **Quoted scope values.** A `'` in `ACADEMY_FILTER` reaches the watermark lookup and `MERGE` safely.
+- **Scope values.** A `'` or `\` in `ACADEMY_FILTER` or `FACULTY_CODE_FILTER` stops the run before any SQL or SharePoint write, and spaces, `-`, `.` and `_` work.
 - **Failed run.** A failed member addition makes the run outcome cell raise, and the watermark isn't advanced.
 - **Widened scope.** Changing the filters starts a new watermark and replays events for the newly in-scope faculties, and the faculty coded `SLT` is reported and skipped.
 
