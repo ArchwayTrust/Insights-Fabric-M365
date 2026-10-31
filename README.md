@@ -12,7 +12,7 @@ The package has a module for each Microsoft 365 service, plus `auth`, which they
 
 Use a Fabric [workspace identity](#use-a-workspace-identity-where-you-can) wherever Fabric supports one. This package is for Microsoft 365 work it can't do, such as Exchange mailboxes and SharePoint, see [Why Exchange and SharePoint need an app registration](#why-exchange-and-sharepoint-need-an-app-registration).
 
-The package is built for Fabric notebooks. `KeyVaultCertificateCredential` uses `notebookutils` to call Key Vault as the identity running the notebook, so it only works in Fabric notebooks. Synapse notebooks have a different `notebookutils`, with another name for Key Vault's audience, so it doesn't work there. The package itself can be imported anywhere.
+The package is built for Fabric notebooks. `KeyVaultCertificateCredential` uses `notebookutils` to call Key Vault as the identity running the notebook, so it only works in Fabric notebooks. It doesn't work in Synapse notebooks, where Key Vault's token audience has another name. The package itself can be imported anywhere.
 
 ## Contents
 
