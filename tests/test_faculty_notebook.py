@@ -83,6 +83,7 @@ class FakeSpark:
         self.conf = types.SimpleNamespace(set=self.settings.__setitem__)
         self.query_time_zones = []  # the session time zone each query ran in
         self.after_query = None  # called with each SELECT, e.g. to add rows mid-run
+        self.after_save = None  # called with the name of each table appended to
 
     def sql(self, query):
         self.query_time_zones.append(self.settings.get("spark.sql.session.timeZone"))
@@ -189,6 +190,8 @@ class FakeWriter:
 
     def saveAsTable(self, table):
         self.spark.saved.setdefault(table.rsplit(".", 1)[-1], []).append(self.pdf)
+        if self.spark.after_save:
+            self.spark.after_save(table.rsplit(".", 1)[-1])
 
 
 def faculty(fid, code, name, hub=HUB, academy="BAA", deleted=False, previous_hub=None, changed="2026-10-01 09:00:00",
@@ -573,19 +576,46 @@ def test_a_run_with_failed_actions_releases_the_lease_for_the_next_run(tenant, r
     assert spark.lease() == (None, None)
 
 
-# Another run can only take the lease once it has expired, as a pass ran longer than LEASE_MINUTES
-def test_a_run_whose_lease_was_taken_stops_after_its_next_pass(tenant, run_notebook, spark):
+# Another run can only take the lease once it has expired, as a pass ran longer than LEASE_MINUTES or the run paused
+def test_a_run_whose_lease_was_taken_stops_before_its_next_pass(tenant, run_notebook, spark):
     def take_lease_mid_run(query):
         if "MAX(last_changed_ts)" in query:
             spark.hold_lease("other-run", FAR_FUTURE)
     spark.after_query = take_lease_mid_run
 
-    with pytest.raises(RuntimeError, match="its own lease expired before it was renewed"):
+    with pytest.raises(RuntimeError, match="This run's lease .* expired before it was renewed, and run other-run holds"):
         run_notebook(spark)
 
-    assert tenant.sites[HUB.lower()].list_by_slug("MATH") is None  # the create pass never ran
+    assert tenant.writes() == []  # the site sharing lockdown, the next pass, never ran
     assert spark.watermark() == {}
     assert spark.lease() == ("other-run", FAR_FUTURE)
+
+
+# The run that took it may have changed things and released it since
+def test_a_run_whose_lease_was_taken_doesnt_take_it_back_once_its_free(tenant, run_notebook, spark):
+    def lose_lease_mid_run(query):
+        if "MAX(last_changed_ts)" in query:
+            spark.hold_lease(None, None)
+    spark.after_query = lose_lease_mid_run
+
+    with pytest.raises(RuntimeError, match="another run may have held it since"):
+        run_notebook(spark)
+
+    assert tenant.writes() == []
+    assert spark.lease() == (None, None)
+
+
+def test_a_run_whose_lease_was_taken_after_its_last_pass_doesnt_write_the_watermark(tenant, run_notebook, spark):
+    def take_lease(table):
+        if table == "sharepoint_unresolved_users":  # saved after the last pass, before the watermark
+            spark.hold_lease("other-run", FAR_FUTURE)
+    spark.after_save = take_lease
+
+    with pytest.raises(RuntimeError, match="run other-run holds it"):
+        run_notebook(spark)
+
+    assert spark.saved["sharepoint_unresolved_users"]
+    assert spark.watermark() == {}
 
 
 @pytest.mark.parametrize("minutes", ["120", 0, True, 1.5])
