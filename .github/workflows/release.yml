@@ -20,6 +20,18 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
+      with:
+        # All history and branches, to check the tagged commit is on main
+        fetch-depth: 0
+
+    # A release can be tagged on any commit, so without this, code that never went through a pull request into main,
+    # and so was never reviewed, could be published
+    - name: Check the tagged commit is on main
+      run: |
+        if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+          echo "::error::Release tag $GITHUB_REF_NAME is on commit $GITHUB_SHA, which isn't on main. Only commits merged into main can be released."
+          exit 1
+        fi
 
     - name: Set up Python
       uses: actions/setup-python@v5
