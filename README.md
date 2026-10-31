@@ -1027,7 +1027,7 @@ Keep the desired state in a few lakehouse tables, maintained by whatever feeds t
 | `manual_read`, `manual_contribute` | boolean | No (False) | Create hand-curated Manual-Read / Manual-Contribute groups. |
 | `app_owned` | boolean | No (True) | The app owns the groups. False for groups a person owns and curates. |
 | `previous_site_url` | string | Flow only | The site the library was on before a move, or null. |
-| `deleted` | boolean | Flow only | True once the library has been removed at source. Keep the row, so the unlink pass sees it. |
+| `deleted` | boolean | Flow only | True once the library has been removed at source. Keep the row, so the unlink pass sees it. A null counts as false. |
 | `last_changed_ts` | timestamp | Flow only | When the row last changed. Drives the incremental passes. |
 
 A blank (null) in `auto_groups`, `manual_read`, `manual_contribute` or `app_owned` takes the default shown. They can also hold 1 and 0, but anything else, such as the text `"False"`, raises `ValueError` before anything is changed.
@@ -1135,6 +1135,8 @@ def save(operation, log):
 
 # Step 1: what changed since the last clean run, up to now
 libraries = spark.table(f"{SCHEMA}.sharepoint_libraries").toPandas()
+# A null deleted means not deleted: ~ can't negate a null, so it would fail or drop the row from every pass
+libraries["deleted"] = libraries["deleted"].astype("boolean").fillna(False).astype(bool)
 # Setting-specific: filter the rows in scope here (see "Adding setting-specific steps")
 
 # The watermark is read after any scope is applied, as the scope is part of its key
