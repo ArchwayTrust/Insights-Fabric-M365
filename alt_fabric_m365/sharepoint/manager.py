@@ -2,6 +2,7 @@
 SharePointLibraryManager: manages SharePoint document libraries and their permissions through Entra ID security groups.
 """
 import logging
+import threading
 import time
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
@@ -115,6 +116,11 @@ class SharePointLibraryManager:
         self.add_to_navigation = _check_option("add_to_navigation", add_to_navigation)
         self.navigation_label = _check_option("navigation_label", navigation_label)
         self._service_principal_id = service_principal_id
+        # Groups this manager has created, by lower-case name: Graph's name
+        # lookups can miss a group for a while after it's created, and creating
+        # it again would make a duplicate that blocks its library.
+        self._created_groups: dict[str, dict] = {}
+        self._created_groups_lock = threading.Lock()
 
         # Tokens are requested per use via the properties below.  The
         # credential caches them and requests new ones near expiry, so runs
@@ -135,6 +141,28 @@ class SharePointLibraryManager:
         if self._service_principal_id is None:
             self._service_principal_id = _token_object_id(self._graph_token)
         return self._service_principal_id
+
+    def _remember_created_group(self, name: str, group: dict) -> None:
+        """Record a group this manager created, so a lagging name lookup can't lead to a duplicate.
+
+        Args:
+            name: The group's display name.
+            group: The group resource Graph returned when creating it.
+        """
+        with self._created_groups_lock:
+            self._created_groups[name.lower()] = group
+
+    def _created_group(self, name: str) -> dict | None:
+        """Return the group this manager created with *name*, if any (see _remember_created_group).
+
+        Args:
+            name: The group's display name.
+
+        Returns:
+            The group resource, or None.
+        """
+        with self._created_groups_lock:
+            return self._created_groups.get(name.lower())
 
     def _check_group_owner(
         self, group_id: str, group_name: str, site_url: str, library_code: str,
@@ -430,10 +458,18 @@ class SharePointLibraryManager:
                         group=group_display_name, permission=role_key,
                     )
                 else:
-                    group, is_new = _ensure_security_group(
-                        self._graph_token, group_display_name, group_description,
-                        self.service_principal_id if app_owned else None,
-                    )
+                    group = self._created_group(group_display_name)
+                    if group is not None:
+                        # Made earlier in this run, so still treated as new:
+                        # it may not have replicated yet
+                        is_new = True
+                    else:
+                        group, is_new = _ensure_security_group(
+                            self._graph_token, group_display_name, group_description,
+                            self.service_principal_id if app_owned else None,
+                        )
+                        if is_new:
+                            self._remember_created_group(group_display_name, group)
                     group_id = group["id"]
                     if app_owned and not is_new:
                         if not self._check_group_owner(
@@ -1757,12 +1793,17 @@ class SharePointLibraryManager:
                             group=group_display_name, permission=role,
                         )
                         group_id, is_new_group = None, True
+                    elif self._created_group(group_display_name) is not None:
+                        # Made earlier in this run, and maybe still missing from
+                        # the lookup above while it replicates
+                        group_id, is_new_group = self._created_group(group_display_name)["id"], True
                     else:
-                        group_id = _create_security_group(
+                        group = _create_security_group(
                             self._graph_token, group_display_name, group_description,
                             self.service_principal_id,
-                        )["id"]
-                        is_new_group = True
+                        )
+                        self._remember_created_group(group_display_name, group)
+                        group_id, is_new_group = group["id"], True
                     created_role_groups.append(
                         (role, group_display_name, group_id, is_new_group,
                          desired_upns, desired_groups, True)

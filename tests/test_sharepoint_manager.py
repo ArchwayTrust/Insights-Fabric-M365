@@ -1182,6 +1182,24 @@ def test_sharepoint_token_is_never_sent_to_another_host(make_manager, tenant, si
     assert tenant.calls == []
 
 
+@pytest.mark.parametrize("operation", ["update_memberships", "create_libraries"])
+def test_a_group_made_earlier_in_the_run_is_not_made_again_while_it_replicates(make_manager, tenant, site, operation):
+    manager = make_manager()
+    manager.create_libraries(libraries_df(site, "MATH"))
+    # Graph's name filters can miss groups created moments ago
+    tenant.replicating.update(tenant.groups)
+    tenant.add_user("jo@contoso.com")
+
+    if operation == "update_memberships":
+        results = manager.update_memberships(memberships_df(site, [("MATH", "jo@contoso.com", "contribute")]))
+        assert tenant.member_upns("BAA-Sharepoint-MATH-Auto-Contribute") == ["jo@contoso.com"]
+    else:
+        results = manager.create_libraries(libraries_df(site, "MATH"))
+
+    assert rows(results, "error").empty
+    assert len(tenant.groups) == 2
+
+
 def test_group_differing_only_in_case_is_reused_not_duplicated(make_manager, tenant, site, library):
     tenant.group_named("BAA-Sharepoint-MATH-Auto-Contribute")["displayName"] = "baa-sharepoint-MATH-Auto-Contribute"
     tenant.add_user("jo@contoso.com")

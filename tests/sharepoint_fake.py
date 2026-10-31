@@ -121,6 +121,8 @@ class FakeTenant:
         self.shortcuts = []  # (user id, body)
         self.failures = []  # [method, url regex, response, remaining times]
         self.list_page_size = None  # set to page Graph list results
+        # Ids of groups that $filter queries don't return yet, as Graph's replicas lag behind writes
+        self.replicating = set()
         self._lock = threading.RLock()  # operations run in parallel with max_workers > 1
 
     # Setup helpers
@@ -333,13 +335,15 @@ class FakeTenant:
             # Graph compares display names case-insensitively
             name = m.group(1).replace("''", "'").lower()
             return response(200, {"value": [
-                _public(g) for g in self.groups.values() if g["displayName"].lower() == name
+                _public(g) for g in self.groups.values()
+                if g["displayName"].lower() == name and g["id"] not in self.replicating
             ]})
         m = re.fullmatch(r"startswith\(displayName, '((?:[^']|'')*)'\)", flt)
         if m:
             prefix = m.group(1).replace("''", "'").lower()
             return response(200, {"value": [
-                _public(g) for g in self.groups.values() if g["displayName"].lower().startswith(prefix)
+                _public(g) for g in self.groups.values()
+                if g["displayName"].lower().startswith(prefix) and g["id"] not in self.replicating
             ]})
         return graph_error(400, "Request_UnsupportedQuery", f"Invalid filter clause: {flt}")
 
