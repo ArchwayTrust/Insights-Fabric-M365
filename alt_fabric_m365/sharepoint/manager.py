@@ -75,8 +75,13 @@ class SharePointLibraryManager:
             Guardrail for ``update_memberships``: when a single group's sync
             would remove more members than this, the removals are skipped and
             logged as ``removal_guardrail_triggered`` (adds still proceed).
+        max_removals_per_run:
+            Guardrail for ``update_memberships``: when one call would remove
+            more members than this across all its groups, as an empty or
+            truncated members table would, no members are removed and one
+            ``removal_guardrail_triggered`` row is logged (adds still proceed).
         allow_mass_removal:
-            When True, disables the removal guardrail for the run.
+            When True, disables both removal guardrails for the run.
         add_to_navigation:
             Default for ``create_libraries``, ``rename_libraries``,
             ``unlink_libraries`` and ``retire_moved_libraries``.  When True,
@@ -101,6 +106,7 @@ class SharePointLibraryManager:
         include_site_name: bool = True,
         create_onedrive_shortcuts: bool = False,
         max_removals_per_group: int = 10,
+        max_removals_per_run: int = 100,
         allow_mass_removal: bool = False,
         add_to_navigation: bool = False,
         navigation_label: str = "Document Libraries",
@@ -111,6 +117,7 @@ class SharePointLibraryManager:
         self.include_site_name = _check_option("include_site_name", include_site_name)
         self.create_onedrive_shortcuts = _check_option("create_onedrive_shortcuts", create_onedrive_shortcuts)
         self.max_removals_per_group = _check_option("max_removals_per_group", max_removals_per_group)
+        self.max_removals_per_run = _check_option("max_removals_per_run", max_removals_per_run)
         self.allow_mass_removal = _check_option("allow_mass_removal", allow_mass_removal)
         self.add_to_navigation = _check_option("add_to_navigation", add_to_navigation)
         self.navigation_label = _check_option("navigation_label", navigation_label)
@@ -1567,6 +1574,7 @@ class SharePointLibraryManager:
         create_onedrive_shortcuts: bool,
         max_removals_per_group: int,
         allow_mass_removal: bool,
+        planned_removals: _ThreadSafeLog,
         *,
         action_log: _ThreadSafeLog,
     ) -> None:
@@ -1582,7 +1590,9 @@ class SharePointLibraryManager:
         Removals of a member kind are skipped for a role when any of that
         role's lookups of that kind failed (incomplete data must not drive
         removals), and all removals are skipped when they exceed
-        *max_removals_per_group* without *allow_mass_removal*.
+        *max_removals_per_group* without *allow_mass_removal*.  The removals
+        that remain aren't made here: they're added to *planned_removals*, so
+        update_memberships can check them against its run-wide limit first.
         """
         logger.info("Updating memberships for '%s' on '%s' …", library_code, site_url)
 
@@ -2011,39 +2021,57 @@ class SharePointLibraryManager:
                         "Removal guardrail: %d planned removals from '%s' exceed cap %d — skipped",
                         len(removal_candidates), group_display_name, max_removals_per_group,
                     )
-                elif dry_run:
-                    for member_key in removal_candidates:
-                        _append_log(
-                            action_log, site_url, library_code,
-                            "remove_from_group (dry run)", "would remove from group",
-                            group=group_display_name, user=member_key, permission=role,
-                        )
-                else:
-                    for member_key, member_oid in removal_candidates.items():
-                        try:
-                            _remove_group_member(self._graph_token, group_id, member_oid)
-                            _append_log(
-                                action_log, site_url, library_code,
-                                "removed_from_group", "success",
-                                group=group_display_name, user=member_key, permission=role,
-                            )
-                            logger.info("Removed '%s' from group '%s'", member_key, group_display_name)
-                        except requests.HTTPError as exc:
-                            _append_log(
-                                action_log, site_url, library_code,
-                                "remove_failed", str(exc),
-                                group=group_display_name, user=member_key, permission=role,
-                            )
-                            logger.error(
-                                "Failed to remove '%s' from group '%s': %s",
-                                member_key, group_display_name, exc,
-                            )
+                elif removal_candidates:
+                    # Made once every library is planned, so the run-wide
+                    # limit can see them all (see update_memberships)
+                    planned_removals.append({
+                        "site_url": site_url, "library_code": library_code, "group": group_display_name,
+                        "role": role, "group_id": group_id, "members": removal_candidates,
+                    })
 
         except (requests.RequestException, ValueError) as exc:
             logger.error(
                 "Error updating memberships for '%s' on '%s': %s", library_code, site_url, exc,
             )
             _append_log(action_log, site_url, library_code, "error", str(exc))
+
+    def _process_removals(
+        self, removal: dict, dry_run: bool, *, action_log: _ThreadSafeLog,
+    ) -> None:
+        """Remove the members _process_update_memberships planned to remove from one group.
+
+        Args:
+            removal: A planned removal: ``site_url``, ``library_code``,
+                ``group``, ``role``, ``group_id`` and ``members`` (member key ->
+                object ID).
+            dry_run: Log the removals rather than make them.
+            action_log: The operation's action log.
+        """
+        site_url, library_code = removal["site_url"], removal["library_code"]
+        group_name, role = removal["group"], removal["role"]
+        for member_key, member_oid in removal["members"].items():
+            if dry_run:
+                _append_log(
+                    action_log, site_url, library_code,
+                    "remove_from_group (dry run)", "would remove from group",
+                    group=group_name, user=member_key, permission=role,
+                )
+                continue
+            try:
+                _remove_group_member(self._graph_token, removal["group_id"], member_oid)
+                _append_log(
+                    action_log, site_url, library_code,
+                    "removed_from_group", "success",
+                    group=group_name, user=member_key, permission=role,
+                )
+                logger.info("Removed '%s' from group '%s'", member_key, group_name)
+            except requests.HTTPError as exc:
+                _append_log(
+                    action_log, site_url, library_code,
+                    "remove_failed", str(exc),
+                    group=group_name, user=member_key, permission=role,
+                )
+                logger.error("Failed to remove '%s' from group '%s': %s", member_key, group_name, exc)
 
     def update_memberships(
         self,
@@ -2056,6 +2084,7 @@ class SharePointLibraryManager:
         include_site_name: bool | None = None,
         create_onedrive_shortcuts: bool | None = None,
         max_removals_per_group: int | None = None,
+        max_removals_per_run: int | None = None,
         allow_mass_removal: bool | None = None,
     ) -> pd.DataFrame:
         """Sync Entra ID security group memberships for SharePoint libraries.
@@ -2080,9 +2109,15 @@ class SharePointLibraryManager:
              guardrail can intervene:
                - removals of a member kind are skipped for a role when any of
                  that role's user / nested-group lookups failed
-                 (``removals_skipped``), and
-               - removals are skipped when they exceed *max_removals_per_group*
-                 without *allow_mass_removal* (``removal_guardrail_triggered``).
+                 (``removals_skipped``),
+               - a group's removals are skipped when they exceed
+                 *max_removals_per_group* without *allow_mass_removal*
+                 (``removal_guardrail_triggered``), and
+               - every group's removals are skipped when, across the call,
+                 they would exceed *max_removals_per_run* without
+                 *allow_mass_removal* (one ``removal_guardrail_triggered``
+                 row).  Removals are made after every library's adds, once
+                 the total is known.
           6. Optionally creates a OneDrive shortcut in each newly added user's
              OneDrive so the library appears in their drive root immediately.
 
@@ -2127,6 +2162,7 @@ class SharePointLibraryManager:
                 the SharePoint library.  Shortcut failures are logged but
                 never block membership sync.
             max_removals_per_group: Override instance default.
+            max_removals_per_run:   Override instance default.
             allow_mass_removal:     Override instance default.
 
         Returns:
@@ -2137,11 +2173,12 @@ class SharePointLibraryManager:
                 not_found = results[results["action"] == "user_not_found"]
         """
         (dry_run_, max_workers_, include_site_name_, create_onedrive_shortcuts_,
-         max_removals_, allow_mass_removal_) = self._resolve_config(
+         max_removals_, max_removals_per_run_, allow_mass_removal_) = self._resolve_config(
             dry_run=dry_run, max_workers=max_workers,
             include_site_name=include_site_name,
             create_onedrive_shortcuts=create_onedrive_shortcuts,
             max_removals_per_group=max_removals_per_group,
+            max_removals_per_run=max_removals_per_run,
             allow_mass_removal=allow_mass_removal,
         )
 
@@ -2235,6 +2272,7 @@ class SharePointLibraryManager:
         empty_group_df = df.iloc[0:0]
         empty_nested_df = nested_groups_df.iloc[0:0]
 
+        planned_removals = _ThreadSafeLog()
         items = []
         for (site_url, library_code), group_prefix in prefix_by_library.items():
             group_df = grouped.get((site_url, library_code), empty_group_df)
@@ -2254,9 +2292,31 @@ class SharePointLibraryManager:
                 create_onedrive_shortcuts_,
                 max_removals_,
                 allow_mass_removal_,
+                planned_removals,
             ))
 
         _run_parallel(self._process_update_memberships, items, max_workers_, action_log)
+
+        # Each group's removals were within max_removals_per_group, but an
+        # empty or truncated members table would empty every small group, so
+        # the call's total is checked before any member is removed.
+        removals = planned_removals.to_list()
+        total = sum(len(removal["members"]) for removal in removals)
+        if total > max_removals_per_run_ and not allow_mass_removal_:
+            logger.warning(
+                "Removal guardrail: %d planned removals from %d groups exceed the run limit %d — none made",
+                total, len(removals), max_removals_per_run_,
+            )
+            _append_log(
+                action_log, "", "", "removal_guardrail_triggered",
+                f"would remove {total} member(s) from {len(removals)} group(s), above the run limit of "
+                f"{max_removals_per_run_} — no members removed; verify the input data and re-run with "
+                f"allow_mass_removal=True to proceed",
+            )
+        else:
+            _run_parallel(
+                self._process_removals, [(removal, dry_run_) for removal in removals], max_workers_, action_log,
+            )
         return _action_log_to_dataframe(action_log)
 
     # -------------------------------------------------------------------
