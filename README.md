@@ -1431,18 +1431,15 @@ Outside Fabric, `KeyVaultCertificateCredential` isn't available (it needs `noteb
 
 ## Upgrading to 2.0.0
 
-2.0.0 has two changes that can break a notebook written for 1.x, such as 1.1.0 or 1.2.0:
+2.0.0 renames the dry-run actions that weren't named after the action a live run logs: see [Dry-run actions are renamed](#dry-run-actions-are-renamed). Live runs log exactly what they did before, and `FATAL_ACTIONS`, `WARNING_ACTIONS` and the action log's columns don't change. Everything else new in 2.0.0 works with a 1.3.0 notebook unchanged; it's listed in the version history under [Installation](#installation).
 
-- `get_library_metadata` returns an extra column, `status`. **If you're upgrading from 1.1.0, the notebook needs a change where it reads the metadata:** see the next section.
-- Dry-run actions that weren't named after the action a live run logs are renamed: see [Dry-run actions are renamed](#dry-run-actions-are-renamed).
-
-Live runs log exactly what they did before, and `FATAL_ACTIONS`, `WARNING_ACTIONS` and the action log's columns don't change. Everything else new in 2.0.0 works with a 1.x notebook unchanged; it's listed in the version history under [Installation](#installation).
+**If you're upgrading from 1.1.0 or 1.2.0, the notebook also needs a change where it reads library metadata.** 1.3.0 added a column to what `get_library_metadata` returns: see [get_library_metadata returns a status column](#get_library_metadata-returns-a-status-column).
 
 ### get_library_metadata returns a status column
 
-`get_library_metadata` now returns a `status` column alongside each library's `source_system` and `source_id`: `ok` where it read the library, `library_not_found`, or `error: <reason>` where it couldn't read the site or library. In 1.x, a library that couldn't be read looked like one with no metadata set: both gave `None`. Code that unpacks a row into four values, saves the result to a table, or checks its columns breaks on the fifth column.
+From 1.3.0, `get_library_metadata` returns a `status` column alongside each library's `source_system` and `source_id`: `ok` where it read the library, `library_not_found`, or `error: <reason>` where it couldn't read the site or library. Before 1.3.0, a library that couldn't be read looked like one with no metadata set: both gave `None`. Code written for 1.1.0 or 1.2.0 that unpacks a row into four values, saves the result to a table, or checks its columns breaks on the fifth column. 1.3.0 added it in a minor version, so this applies whether you upgrade to 1.3.0 or straight to 2.0.0.
 
-**Where, in the faculty notebook:** the first cell under the *Smoke Test* heading, which calls `mgr.get_library_metadata(query)` for the demo library and displays the result. Upgrading from 1.1.0, change it to stop the smoke test when the read failed. On a first run the demo library doesn't exist yet, as the next cell creates it, so `library_not_found` is expected there:
+**Where, in the faculty notebook:** the first cell under the *Smoke Test* heading, which calls `mgr.get_library_metadata(query)` for the demo library and displays the result. Change it to stop the smoke test when the read failed. On a first run the demo library doesn't exist yet, as the next cell creates it, so `library_not_found` is expected there:
 
 ```python
 metadata_df = mgr.get_library_metadata(query)
@@ -1508,7 +1505,7 @@ old_log["action"] = old_log["action"].replace(DRY_RUN_RENAMES)
 
 ### To upgrade
 
-1. Make the change in [get_library_metadata returns a status column](#get_library_metadata-returns-a-status-column) wherever a notebook uses `get_library_metadata`'s result.
+1. If you're upgrading from 1.1.0 or 1.2.0, make the change in [get_library_metadata returns a status column](#get_library_metadata-returns-a-status-column) wherever a notebook uses `get_library_metadata`'s result.
 2. Change anything that reads dry-run rows by their action, such as a filter, a report or a comparison of two dry runs, to the new names.
 3. Set `alt-fabric-m365` to 2.0.0 in each Fabric environment (see [Installation](#installation)) and publish it.
 4. Run the notebook with `DRY_RUN = True` and `RUN_SMOKE_TEST = True`, check its action log, then let the pipeline run it live.
