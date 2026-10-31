@@ -1188,7 +1188,7 @@ if not DRY_RUN and not changed.empty:
 
 The skeleton is deliberately generic. Most settings add a few rules of their own, at the two places marked in it. These are the patterns the [example notebook](#example-notebook) uses for its school faculties; swap in your own names.
 
-**Scope and exclusions**, straight after reading the libraries table. Everything after it works on the filtered rows, so a filtered-out library is neither created nor synced. Include the scope in the watermark's `process` key, so widening it starts a fresh watermark and the newly included rows are processed:
+**Scope and exclusions**, straight after reading the libraries table. Everything after it works on the filtered rows, so a filtered-out library is neither created nor synced. That includes a library already provisioned: excluding it, or narrowing the scope past it, leaves the library and its groups as they are, and its Auto groups stop being synced, so leavers keep their access. To take a library out of use, set `deleted` instead, so it's unlinked and its Auto groups emptied, and exclude it only after that run. Include the scope in the watermark's `process` key, so widening it starts a fresh watermark and the newly included rows are processed:
 
 ```python
 # Roll out a few sites at a time, let the source opt rows out, and keep the
