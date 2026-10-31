@@ -891,6 +891,39 @@ def test_unknown_permission_for_a_nested_group_never_removes_nested_groups(make_
     assert actions(results) == ["removals_skipped", "skip"]
 
 
+# HR and MIS extracts often have staff with no email
+@pytest.mark.parametrize("missing, action", [
+    (("MATH", None, "read"), "user_not_found"),
+    (("MATH", "sam@contoso.com", None), "skip"),
+    (("MATH", np.nan, "read"), "user_not_found"),
+])
+def test_a_member_row_missing_its_user_or_permission_is_a_row_not_a_failed_sync(
+    make_manager, tenant, site, library, missing, action,
+):
+    tenant.add_user("jo@contoso.com")
+    left = tenant.add_user("left@contoso.com")
+    read_group = tenant.group_named("BAA-Sharepoint-MATH-Auto-Read")
+    read_group["members"][left["id"]] = left
+    df = memberships_df(site, [("MATH", "jo@contoso.com", "read"), missing])
+
+    results = make_manager().update_memberships(df)
+
+    assert actions(results) == sorted(["added_to_group", "already_assigned", action, "removals_skipped"])
+    # The others are synced, and, as for any user who can't be found, nobody is removed
+    assert tenant.member_upns("BAA-Sharepoint-MATH-Auto-Read") == ["jo@contoso.com", "left@contoso.com"]
+
+
+def test_a_nested_group_row_missing_its_group_is_a_row_not_a_failed_sync(make_manager, tenant, site, library):
+    staff = tenant.add_group("BAA All Staff")
+    tenant.group_named("BAA-Sharepoint-MATH-Auto-Read")["members"][staff["id"]] = staff
+
+    results = make_manager().update_memberships(memberships_df(site, []), nested_groups_df=nested_df(site.url, None))
+
+    assert "removals_skipped" in actions(results)
+    assert rows(results, "error").empty
+    assert staff["id"] in tenant.group_named("BAA-Sharepoint-MATH-Auto-Read")["members"]
+
+
 def test_nested_groups_are_added_and_unresolvable_ones_reported(make_manager, tenant, site, library):
     all_staff = tenant.add_group("BAA All Staff")
     old_nested = tenant.add_group("Old Nested")

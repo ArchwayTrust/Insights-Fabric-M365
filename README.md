@@ -1027,7 +1027,7 @@ A blank (null) in `auto_groups`, `manual_read`, `manual_contribute` or `app_owne
 | Column | Type | Required | Meaning |
 | --- | --- | --- | --- |
 | `library_id` | string | Yes | Joins to `sharepoint_libraries`. |
-| `user_principal_name` | string | Yes | The person's sign-in name or email. Aliases and secondary addresses are resolved. |
+| `user_principal_name` | string | Yes | The person's sign-in name or email. Aliases and secondary addresses are resolved. A blank or null one is reported as `user_not_found`, and nobody is removed from that permission's group, as for any user who can't be found. |
 | `permission` | string | Yes | `read`, `contribute` or `owner`. |
 
 **`sharepoint_library_nested_groups`** (optional): existing Entra ID security groups to nest in a library's Auto groups, such as an all-staff group.
