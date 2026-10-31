@@ -63,6 +63,14 @@ MAX_REMOVALS_PER_GROUP = 10
 MAX_REMOVALS_PER_RUN = 100
 ALLOW_MASS_REMOVAL = False
 
+# A live run takes a lease in the sync-state table before it changes
+# anything, so a second live run (a run by hand while the pipeline runs, say)
+# stops rather than syncing the same groups at the same time. The lease is
+# checked and renewed before and after each pass, and released when the run
+# ends. One a crashed run leaves behind expires this many minutes after it
+# was last renewed, so keep it above the longest single pass.
+LEASE_MINUTES = 120
+
 # Site-level hardening: once per site per run, turn off "Allow members to
 # share the site and individual files and folders", "Allow access requests",
 # and "Allow members to invite others to the site members group". False
@@ -167,7 +175,7 @@ print(unresolved_users_table)
 import logging
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 
@@ -221,6 +229,11 @@ for flag_name, flag_value in {
         raise TypeError(
             f"{flag_name} must be True or False, not {flag_value!r}: give its pipeline parameter the type Bool"
         )
+if not isinstance(LEASE_MINUTES, int) or isinstance(LEASE_MINUTES, bool) or LEASE_MINUTES < 1:
+    raise TypeError(
+        f"LEASE_MINUTES must be a whole number of minutes above 0, not {LEASE_MINUTES!r}: "
+        "give its pipeline parameter the type Int"
+    )
 
 # No scope: the manager requests Graph and SharePoint tokens as it needs them.
 credential = KeyVaultCertificateCredential(
@@ -269,6 +282,7 @@ def persist_action_log(results_pdf: pd.DataFrame, operation: str) -> None:
     run_results.append((operation, results_pdf))
     if results_pdf.empty:
         print(f"{operation}: no actions logged.")
+        renew_lease()
         return
     log_pdf = results_pdf.copy()
     log_pdf["run_id"] = RUN_ID
@@ -278,6 +292,8 @@ def persist_action_log(results_pdf: pd.DataFrame, operation: str) -> None:
     (spark.createDataFrame(log_pdf)
         .write.format("delta").mode("append").saveAsTable(action_log_table))
     print(f"{operation}: {len(log_pdf)} action(s) persisted to {action_log_table} (run {RUN_ID}).")
+    # After the log is saved, so a run that has lost its lease still records what it did
+    renew_lease()
 
 
 # ACADEMY_FILTER parsed once: comma-separated codes → sorted, deduplicated
@@ -353,6 +369,146 @@ def eligible(alias: str, *, reserved_code: bool = False) -> str:
 # META   "language_group": "synapse_pyspark"
 # META }
 
+# CELL ********************
+
+# Run lease: one row in the sync-state table, held by at most one live run.
+
+# Timestamps are read with toPandas() and written as TIMESTAMP literals,
+# which both use Spark's session time zone (collect() would use the Python
+# process's instead). UTC has no daylight-saving hour that happens twice.
+spark.conf.set("spark.sql.session.timeZone", "UTC")
+
+# CREATE TABLE does not create its schema — a fresh schema-enabled
+# lakehouse fails with SCHEMA_NOT_FOUND without this.
+spark.sql(f"CREATE SCHEMA IF NOT EXISTS {STORE_WORKSPACE_NAME}.{BASE_LH_NAME}.it")
+
+spark.sql(f"""
+    CREATE TABLE IF NOT EXISTS {sync_state_table} (
+        process            STRING,
+        last_processed_ts  TIMESTAMP,
+        updated_at         TIMESTAMP,
+        lease_holder       STRING,
+        lease_expires_at   TIMESTAMP
+    )
+    USING DELTA
+""")
+
+# A table made before the lease existed gets its columns
+LEASE_COLUMNS = {"lease_holder": "STRING", "lease_expires_at": "TIMESTAMP"}
+missing_lease_columns = [name for name in LEASE_COLUMNS if name not in spark.table(sync_state_table).columns]
+if missing_lease_columns:
+    spark.sql(f"""
+        ALTER TABLE {sync_state_table}
+        ADD COLUMNS ({", ".join(f"{name} {LEASE_COLUMNS[name]}" for name in missing_lease_columns)})
+    """)
+
+# One lease whatever the rollout scope, as two scopes can share sites and groups
+LEASE_PROCESS = "faculty_sharepoint_sync|lease"
+holds_lease = False
+
+
+def _timestamp_literal(moment: datetime) -> str:
+    """A UTC datetime as the text of a Spark TIMESTAMP literal."""
+    return moment.strftime("%Y-%m-%d %H:%M:%S.%f")
+
+
+def _lease_holder() -> tuple:
+    """Returns the lease's holder and expiry, or (None, None) if no run has taken it."""
+    lease = spark.sql(f"""
+        SELECT lease_holder, lease_expires_at FROM {sync_state_table}
+        WHERE process = '{LEASE_PROCESS}'
+    """).toPandas()
+    return (None, None) if lease.empty else tuple(lease.iloc[0])
+
+
+def take_lease() -> None:
+    """Takes the lease for this run, once, before it changes anything. Raises RuntimeError if another run holds it."""
+    global holds_lease
+    now = datetime.now(timezone.utc)
+    now_literal = _timestamp_literal(now)
+    expires_literal = _timestamp_literal(now + timedelta(minutes=LEASE_MINUTES))
+    # One MERGE, so of two runs taking the lease at the same moment, Delta
+    # fails the second one's write rather than letting both have it
+    spark.sql(f"""
+        MERGE INTO {sync_state_table} AS t
+        USING (SELECT '{LEASE_PROCESS}' AS process) AS s
+        ON t.process = s.process
+        WHEN MATCHED AND (
+            t.lease_holder IS NULL OR t.lease_holder = '{RUN_ID}' OR t.lease_expires_at < TIMESTAMP'{now_literal}'
+        ) THEN UPDATE SET
+            t.lease_holder = '{RUN_ID}',
+            t.lease_expires_at = TIMESTAMP'{expires_literal}',
+            t.updated_at = TIMESTAMP'{now_literal}'
+        WHEN NOT MATCHED THEN INSERT (process, lease_holder, lease_expires_at, updated_at)
+        VALUES (s.process, '{RUN_ID}', TIMESTAMP'{expires_literal}', TIMESTAMP'{now_literal}')
+    """)
+    holder, expires = _lease_holder()
+    if holder != RUN_ID:
+        raise RuntimeError(
+            f"Run {holder} holds the lease in {sync_state_table} until {expires} UTC, so this run changes "
+            "nothing. Wait for that run to finish, or for its lease to expire if it crashed."
+        )
+    holds_lease = True
+
+
+def renew_lease() -> None:
+    """For a live run, checks it still holds the lease and extends it. Raises RuntimeError if it doesn't.
+
+    Called just before each pass that changes anything, after each pass, and
+    before the watermark is written. Only a lease still in this run's name is
+    extended: once another run has taken it, this run stops, even if the
+    lease is free again, as that run may have changed things since.
+    """
+    global holds_lease
+    if not holds_lease:
+        return
+    now = datetime.now(timezone.utc)
+    spark.sql(f"""
+        UPDATE {sync_state_table}
+        SET lease_expires_at = TIMESTAMP'{_timestamp_literal(now + timedelta(minutes=LEASE_MINUTES))}',
+            updated_at = TIMESTAMP'{_timestamp_literal(now)}'
+        WHERE process = '{LEASE_PROCESS}' AND lease_holder = '{RUN_ID}'
+    """)
+    holder, expires = _lease_holder()
+    if holder != RUN_ID:
+        holds_lease = False
+        raise RuntimeError(
+            f"This run's lease in {sync_state_table} expired before it was renewed, and "
+            + (f"run {holder} holds it until {expires} UTC" if holder else "another run may have held it since")
+            + ", so this run stops. Raise LEASE_MINUTES above the longest pass."
+        )
+
+
+def release_lease() -> None:
+    """Releases the lease, if this run holds it, so the next run needn't wait for it to expire."""
+    global holds_lease
+    if not holds_lease:
+        return
+    spark.sql(f"""
+        UPDATE {sync_state_table}
+        SET lease_holder = NULL, lease_expires_at = NULL,
+            updated_at = TIMESTAMP'{_timestamp_literal(datetime.now(timezone.utc))}'
+        WHERE process = '{LEASE_PROCESS}' AND lease_holder = '{RUN_ID}'
+    """)
+    holds_lease = False
+    print("Lease released.")
+
+
+# Taken before the smoke test, the first cell that can change anything. A dry
+# run changes nothing, so it takes no lease and can run alongside a live run.
+if DRY_RUN:
+    print("DRY_RUN — no lease taken.")
+else:
+    take_lease()
+    print(f"Run {RUN_ID} holds the lease for up to {LEASE_MINUTES} minutes between passes.")
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
 # MARKDOWN ********************
 
 # ## Smoke Test (RUN_SMOKE_TEST only)
@@ -401,6 +557,7 @@ if RUN_SMOKE_TEST:
         "source_id": ["Manual01"],              # optional: source record ID
     })
 
+    renew_lease()
     results = mgr.create_libraries(pdf_test_libs)
     persist_action_log(results, "smoke_test_create_libraries")
     display(results)
@@ -449,6 +606,7 @@ if RUN_SMOKE_TEST:
     # assertion. NOTE: a live (non-dry) run genuinely turns off member
     # sharing, access requests, and member invites on the IT team site —
     # the same change the real pass applies to every faculty hub.
+    renew_lease()
     results = mgr.enforce_site_sharing_lockdown([SMOKE_SITE_URL])
     persist_action_log(results, "smoke_test_site_sharing_lockdown")
     display(results)
@@ -494,6 +652,7 @@ if RUN_SMOKE_TEST:
         group_prefix="IT-Sharepoint",
     )
 
+    renew_lease()
     results = mgr.update_memberships(pdf_test_memberships, create_onedrive_shortcuts=True)
     persist_action_log(results, "smoke_test_update_memberships")
     display(results)
@@ -522,24 +681,8 @@ if RUN_SMOKE_TEST:
 # CELL ********************
 
 # Watermark: process faculty-list rows changed since the last successful run.
-
-# Timestamps are read with toPandas() and written as TIMESTAMP literals,
-# which both use Spark's session time zone (collect() would use the Python
-# process's instead). UTC has no daylight-saving hour that happens twice.
-spark.conf.set("spark.sql.session.timeZone", "UTC")
-
-# CREATE TABLE does not create its schema — a fresh schema-enabled
-# lakehouse fails with SCHEMA_NOT_FOUND without this.
-spark.sql(f"CREATE SCHEMA IF NOT EXISTS {STORE_WORKSPACE_NAME}.{BASE_LH_NAME}.it")
-
-spark.sql(f"""
-    CREATE TABLE IF NOT EXISTS {sync_state_table} (
-        process            STRING,
-        last_processed_ts  TIMESTAMP,
-        updated_at         TIMESTAMP
-    )
-    USING DELTA
-""")
+# The sync-state table and Spark's UTC session time zone are set up in the
+# run lease cell, under Core Setup.
 
 # The watermark is keyed by rollout scope: changing ACADEMY_FILTER /
 # FACULTY_CODE_FILTER starts a fresh watermark row at 1900 for the new
@@ -641,6 +784,7 @@ display(pdf_sites)
 # CELL ********************
 
 if ENFORCE_SITE_SHARING_LOCKDOWN:
+    renew_lease()
     results = mgr.enforce_site_sharing_lockdown(pdf_sites["site_url"])
     persist_action_log(results, "site_sharing_lockdown")
     display(results)
@@ -753,6 +897,7 @@ display(pdf_slt_libraries)
 # CELL ********************
 
 if MANAGE_SLT_LIBRARY:
+    renew_lease()
     results = mgr.create_libraries(pdf_slt_libraries)
     persist_action_log(results, "create_slt_libraries")
     display(results)
@@ -816,6 +961,7 @@ display(pdf_library_changes)
 # With ADD_TO_SITE_NAVIGATION on, the library is also linked in the site's
 # quick-launch navigation under the NAVIGATION_LABEL heading.
 
+renew_lease()
 results = mgr.create_libraries(pdf_library_changes)
 persist_action_log(results, "create_libraries")
 display(results)
@@ -864,6 +1010,7 @@ display(pdf_deleted_in_source)
 
 # CELL ********************
 
+renew_lease()
 results = mgr.unlink_libraries(pdf_deleted_in_source)
 persist_action_log(results, "unlink_libraries")
 display(results)
@@ -924,6 +1071,7 @@ display(pdf_hub_moves)
 
 # CELL ********************
 
+renew_lease()
 results = mgr.retire_moved_libraries(pdf_hub_moves)
 persist_action_log(results, "retire_moved_libraries")
 display(results)
@@ -988,6 +1136,7 @@ display(pdf_slt_grants)
 # CELL ********************
 
 if MANAGE_SLT_LIBRARY:
+    renew_lease()
     results = mgr.grant_group_access(pdf_slt_grants)
     persist_action_log(results, "grant_slt_access")
     display(results)
@@ -1088,6 +1237,7 @@ display(pdf_nested_groups)
 
 # CELL ********************
 
+renew_lease()
 results = mgr.update_memberships(
     pdf_memberships,
     libraries_df=pdf_sync_libraries,
@@ -1187,6 +1337,8 @@ if not warning_rows.empty:
 fatal_rows = all_results[all_results["action"].isin(FATAL_ACTIONS)]
 if not fatal_rows.empty:
     display(fatal_rows)
+    # The failed actions are retried by the next run, which needn't wait for the lease to expire
+    release_lease()
     raise RuntimeError(
         f"{len(fatal_rows)} failed action(s) this run — "
         f"see {action_log_table} where run_id = '{RUN_ID}'"
@@ -1220,6 +1372,8 @@ else:
         print("No watermark events processed — watermark unchanged.")
     else:
         new_watermark = pd.Timestamp(max(processed_ts)).strftime("%Y-%m-%d %H:%M:%S.%f")
+        # A run that lost its lease mustn't overwrite the watermark of the run that took it
+        renew_lease()
         spark.sql(f"""
             MERGE INTO {sync_state_table} AS t
             USING (
@@ -1235,6 +1389,8 @@ else:
             VALUES (s.process, s.last_processed_ts, current_timestamp())
         """)
         print(f"Watermark advanced to {new_watermark}.")
+
+release_lease()
 
 # METADATA ********************
 
