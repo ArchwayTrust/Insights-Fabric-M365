@@ -13,6 +13,7 @@ from conftest import make_response
 
 GRAPH = "https://graph.microsoft.com/v1.0"
 MAILBOX = "reports@contoso.com"
+MAILBOX_PATH = "reports%40contoso.com"  # as it appears in a URL path
 TIMEOUT = Emails.REQUEST_TIMEOUT_SECONDS
 
 FILE = "#microsoft.graph.fileAttachment"
@@ -50,7 +51,7 @@ def test_mailbox_is_optional_when_each_call_passes_one(credential):
     with patch_get(return_value=make_response(200, {"value": []})) as get:
         emails.get_attachment_ids_and_names("m", shared_mailbox_email="other@contoso.com")
 
-    assert get.call_args.args[0] == f"{GRAPH}/users/other@contoso.com/messages/m/attachments"
+    assert get.call_args.args[0] == f"{GRAPH}/users/other%40contoso.com/messages/m/attachments"
 
 
 @pytest.mark.parametrize("call", [
@@ -69,12 +70,39 @@ def test_no_mailbox_raises_before_any_request(credential, call):
     assert not any(m.called for m in mocks.values())
 
 
+# '#' would end the URL, and '?' or '/' change the resource asked for, so each is percent-encoded
+@pytest.mark.parametrize("call, method, path", [
+    (lambda e: e.get_attachment_ids_and_names("m/1=", "a#b?c/d@contoso.com"), "get",
+     "/users/a%23b%3Fc%2Fd%40contoso.com/messages/m%2F1%3D/attachments"),
+    (lambda e: e.download_attachment("m/1=", "x?y#z", shared_mailbox_email="a#b?c/d@contoso.com"), "get",
+     "/users/a%23b%3Fc%2Fd%40contoso.com/messages/m%2F1%3D/attachments/x%3Fy%23z"),
+    (lambda e: e.delete_email("m/1=", "a#b?c/d@contoso.com"), "delete",
+     "/users/a%23b%3Fc%2Fd%40contoso.com/messages/m%2F1%3D"),
+    (lambda e: e._check_if_message_exists("m/1=", "a#b?c/d@contoso.com"), "get",
+     "/users/a%23b%3Fc%2Fd%40contoso.com/messages/m%2F1%3D"),
+    (lambda e: e.send_email("s", "c", ["to@contoso.com"], "a#b?c/d@contoso.com"), "post",
+     "/users/a%23b%3Fc%2Fd%40contoso.com/sendMail"),
+    (lambda e: e.search_message_by_subject_and_sender("s", "from@contoso.com", shared_mailbox_email="a#b?c/d@contoso.com"),
+     "get", "/users/a%23b%3Fc%2Fd%40contoso.com/mailFolders/Inbox/messages"),
+])
+def test_mailboxes_and_ids_are_quoted_in_the_url_path(emails, call, method, path):
+    responses = {
+        "get": make_response(200, {"value": [{"id": "1", "receivedDateTime": "2026-01-01"}], "contentBytes": "aGk=",
+                                   "@odata.type": FILE, "id": "m"}),
+        "delete": make_response(204), "post": make_response(202),
+    }
+    with mock.patch.object(emails_module.requests, method, return_value=responses[method]) as request:
+        call(emails)
+
+    assert request.call_args.args[0] == GRAPH + path
+
+
 def test_shared_mailbox_overrides_the_default(emails):
     with patch_get(return_value=make_response(200, {"value": []})) as get:
         # Second positional argument is still shared_mailbox_email
         emails.get_attachment_ids_and_names("m", "other@contoso.com")
 
-    assert "/users/other@contoso.com/" in get.call_args.args[0]
+    assert "/users/other%40contoso.com/" in get.call_args.args[0]
 
 
 # Searching
@@ -88,7 +116,7 @@ def test_search_escapes_quotes_and_returns_the_latest(emails):
         message_id = emails.search_message_by_subject_and_sender("Bob's report", "o'neil@contoso.com")
 
     assert message_id == "newer"
-    assert get.call_args.args[0] == f"{GRAPH}/users/{MAILBOX}/mailFolders/Inbox/messages"
+    assert get.call_args.args[0] == f"{GRAPH}/users/{MAILBOX_PATH}/mailFolders/Inbox/messages"
     assert get.call_args.kwargs["params"]["$filter"] == (
         "subject eq 'Bob''s report' and from/emailAddress/address eq 'o''neil@contoso.com'"
     )
@@ -103,7 +131,7 @@ def test_search_follows_pages_and_can_return_all(emails):
         messages = emails.search_message_by_subject_and_sender("s", "a@b.c", only_search_inbox=False, only_return_latest=False)
 
     assert [m["id"] for m in messages] == ["2", "1"]
-    assert get.call_args_list[0].args[0] == f"{GRAPH}/users/{MAILBOX}/messages"
+    assert get.call_args_list[0].args[0] == f"{GRAPH}/users/{MAILBOX_PATH}/messages"
     assert get.call_args_list[1].args[0] == "https://next"
     assert get.call_args_list[1].kwargs["params"] is None
 
@@ -165,7 +193,7 @@ def test_download_decodes_text_or_returns_bytes(emails):
         assert emails.download_attachment("m", "a") == "col1,col2\n"
         assert emails.download_attachment("m", "a", is_binary=True) == b"col1,col2\n"
 
-    assert get.call_args.args[0] == f"{GRAPH}/users/{MAILBOX}/messages/m/attachments/a"
+    assert get.call_args.args[0] == f"{GRAPH}/users/{MAILBOX_PATH}/messages/m/attachments/a"
 
 
 def test_download_of_non_file_attachment_raises(emails):
@@ -180,7 +208,7 @@ def test_delete_email(emails):
     with mock.patch.object(emails_module.requests, "delete", return_value=make_response(204)) as delete:
         assert emails.delete_email("m") is True
 
-    assert delete.call_args.args[0] == f"{GRAPH}/users/{MAILBOX}/messages/m"
+    assert delete.call_args.args[0] == f"{GRAPH}/users/{MAILBOX_PATH}/messages/m"
 
 
 def test_delete_failure_raises(emails):
@@ -193,7 +221,7 @@ def test_send_email(emails):
     with mock.patch.object(emails_module.requests, "post", return_value=make_response(202)) as post:
         emails.send_email("Subject", "Body", ["a@contoso.com", "b@contoso.com"])
 
-    assert post.call_args.args[0] == f"{GRAPH}/users/{MAILBOX}/sendMail"
+    assert post.call_args.args[0] == f"{GRAPH}/users/{MAILBOX_PATH}/sendMail"
     message = json.loads(post.call_args.kwargs["data"])["message"]
     assert message["subject"] == "Subject"
     assert message["body"] == {"contentType": "Text", "content": "Body"}
@@ -223,13 +251,36 @@ def test_send_failure_raises(emails):
             emails.send_email("Subject", "Body", ["a@contoso.com"])
 
 
+# Errors
+
+ACCESS_DENIED = {"error": {"code": "ErrorAccessDenied", "message": "Access is denied. Check credentials and try again."}}
+
+
+# The README's troubleshooting table matches on Graph's error code, such as ErrorAccessDenied for a missing Exchange role
+@pytest.mark.parametrize("call, method, error", [
+    (lambda e: e.search_message_by_subject_and_sender("s", "from@contoso.com"), "get", Exception),
+    (lambda e: e.get_attachment_ids_and_names("m"), "get", requests.HTTPError),
+    (lambda e: e.download_attachment("m", "a"), "get", requests.HTTPError),
+    (lambda e: e.delete_email("m"), "delete", Exception),
+    (lambda e: e.send_email("s", "c", ["to@contoso.com"]), "post", Exception),
+    (lambda e: e._check_if_message_exists("m"), "get", Exception),
+])
+def test_errors_include_graphs_error_code_and_message(emails, capsys, call, method, error):
+    with mock.patch.object(emails_module.requests, method, return_value=make_response(403, ACCESS_DENIED)):
+        with pytest.raises(error) as raised:
+            call(emails)
+
+    assert "Status code: 403, Error code: ErrorAccessDenied, Message: Access is denied." in str(raised.value)
+    assert capsys.readouterr().out == ""  # raised, not printed as well
+
+
 # Checking a message exists
 
 def test_existing_message(emails):
     with patch_get(return_value=make_response(200, {"id": "m"})) as get:
         assert emails._check_if_message_exists("m") is True
 
-    assert get.call_args.args[0] == f"{GRAPH}/users/{MAILBOX}/messages/m"
+    assert get.call_args.args[0] == f"{GRAPH}/users/{MAILBOX_PATH}/messages/m"
 
 
 def test_missing_message(emails):
