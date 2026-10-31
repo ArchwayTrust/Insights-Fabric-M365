@@ -8,7 +8,6 @@ import re
 import shutil
 import subprocess
 import sys
-import tarfile
 from pathlib import Path
 
 import pytest
@@ -32,7 +31,9 @@ def test_public_names_are_exported():
 
 
 def test_source_distribution_has_what_its_tests_need(tmp_path, monkeypatch):
+    import tarfile
     from setuptools import build_meta
+
     # Build from a clean copy, as setuptools adds the files listed by an earlier build's egg-info
     source = tmp_path / "source"
     shutil.copytree(ROOT, source, ignore=shutil.ignore_patterns(
