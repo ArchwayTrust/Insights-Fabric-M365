@@ -38,6 +38,15 @@ METADATA_PROPERTY_KEYS = {
     "source_id": "SourceId",
 }
 
+# The type each SharePointLibraryManager option must have.  Notebook and
+# pipeline parameters can arrive as strings, and 'False' is truthy, so an
+# option's type is checked rather than its truthiness used.
+OPTION_TYPES = {
+    "dry_run": bool, "max_workers": int, "include_site_name": bool,
+    "create_onedrive_shortcuts": bool, "max_removals_per_group": int,
+    "allow_mass_removal": bool, "add_to_navigation": bool, "navigation_label": str,
+}
+
 # Columns of every action-log DataFrame the operations return.
 ACTION_LOG_COLUMNS = [
     "site_url", "document_library", "group", "user",
@@ -124,6 +133,63 @@ def _validate_required_columns(df: pd.DataFrame, required_columns: set[str]) -> 
             )
         if not pd.api.types.is_string_dtype(df[col]):
             df[col] = df[col].astype(str)
+    return df
+
+
+def _check_option(name: str, value: object) -> bool | int | str:
+    """Return a manager option's value, after checking its type.
+
+    Args:
+        name: The option, a key of OPTION_TYPES.
+        value: The value given for it.
+
+    Returns:
+        The value as a bool, int or str. numpy's booleans and integers, as pandas returns them, are converted.
+
+    Raises:
+        TypeError: If the value isn't of the option's type, such as the string 'False' for a True/False option.
+    """
+    expected = OPTION_TYPES[name]
+    if expected is bool and pd.api.types.is_bool(value):
+        return bool(value)
+    if expected is int and pd.api.types.is_integer(value) and not pd.api.types.is_bool(value):
+        return int(value)
+    if expected is str and isinstance(value, str):
+        return value
+    wanted = {bool: "True or False", int: "a whole number", str: "a string"}[expected]
+    raise TypeError(f"{name} must be {wanted}, not {value!r}")
+
+
+def _fill_flag_columns(df: pd.DataFrame, defaults: dict[str, bool]) -> pd.DataFrame:
+    """Return *df* with each optional True/False column holding bools, and blanks set to its default.
+
+    bool() of a blank is True for NaN, False for None and an error for pd.NA,
+    and bool('False') is True, so values are checked rather than converted.
+
+    Args:
+        df: The input DataFrame. It isn't changed.
+        defaults: Each optional column's default, used where the column is missing or a value is blank.
+
+    Returns:
+        A copy of *df* with every column in *defaults*, holding only True and False.
+
+    Raises:
+        ValueError: If a column holds anything other than True, False, 1, 0 or a blank.
+    """
+    df = df.copy()
+    for column, default in defaults.items():
+        if column not in df.columns:
+            df[column] = default
+            continue
+        values = []
+        for value in df[column]:
+            if pd.isna(value):
+                values.append(default)
+            elif not isinstance(value, str) and value in (0, 1):
+                values.append(bool(value))
+            else:
+                raise ValueError(f"Column '{column}' must hold True, False or blanks, not {value!r}")
+        df[column] = pd.Series(values, index=df.index, dtype=bool)
     return df
 
 

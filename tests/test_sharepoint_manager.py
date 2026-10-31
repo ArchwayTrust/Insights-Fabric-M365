@@ -6,6 +6,7 @@ running it again changes nothing and that a dry run makes no writes.
 """
 import time
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -148,6 +149,31 @@ def test_missing_columns_raise_before_any_request(make_manager, tenant, site):
     assert tenant.calls == []
 
 
+# A pipeline parameter typed as String arrives as a str, and 'False' is truthy
+@pytest.mark.parametrize("option, value", [
+    ("dry_run", "False"), ("allow_mass_removal", "False"), ("include_site_name", 1), ("add_to_navigation", None),
+    ("create_onedrive_shortcuts", "True"), ("max_workers", "4"), ("max_workers", True),
+    ("max_removals_per_group", 10.5), ("navigation_label", 5),
+])
+def test_options_of_the_wrong_type_are_refused(credential, option, value):
+    with pytest.raises(TypeError, match=option):
+        SharePointLibraryManager(credential, HOST, **{option: value})
+
+
+def test_per_call_options_of_the_wrong_type_are_refused(make_manager, tenant, site):
+    with pytest.raises(TypeError, match="allow_mass_removal"):
+        make_manager().update_memberships(memberships_df(site, []), allow_mass_removal="False")
+
+    assert tenant.calls == []
+
+
+def test_numpy_booleans_and_integers_are_accepted(credential):
+    manager = SharePointLibraryManager(credential, HOST, dry_run=np.bool_(True), max_workers=np.int64(2))
+
+    assert manager.dry_run is True
+    assert manager.max_workers == 2 and type(manager.max_workers) is int
+
+
 # create_libraries
 
 def test_create_library_with_groups_metadata_and_navigation(make_manager, tenant, site):
@@ -243,6 +269,34 @@ def test_create_manual_only_library(make_manager, tenant, site):
     assert sorted(g["displayName"] for g in tenant.groups.values()) == [
         "BAA-Sharepoint-SLT-Manual-Contribute", "BAA-Sharepoint-SLT-Manual-Read",
     ]
+
+
+@pytest.mark.parametrize("blank", [None, float("nan"), pd.NA])
+def test_blank_flags_take_their_defaults(make_manager, tenant, site, blank):
+    flags = {flag: pd.Series([blank], dtype=object) for flag in
+             ("auto_groups", "manual_read", "manual_contribute", "app_owned")}
+
+    results = make_manager().create_libraries(libraries_df(site, "MATH", **flags))
+
+    assert rows(results, "error").empty
+    assert sorted(g["displayName"] for g in tenant.groups.values()) == [
+        "BAA-Sharepoint-MATH-Auto-Contribute", "BAA-Sharepoint-MATH-Auto-Read",
+    ]
+    assert all(g["owners"] == {APP_ID} for g in tenant.groups.values())
+
+
+def test_flags_given_as_numbers_are_accepted(make_manager, tenant, site):
+    make_manager().create_libraries(libraries_df(site, "SLT", auto_groups=0, manual_read=1.0))
+
+    assert [g["displayName"] for g in tenant.groups.values()] == ["BAA-Sharepoint-SLT-Manual-Read"]
+
+
+@pytest.mark.parametrize("value", ["False", "yes", 2])
+def test_flags_that_arent_booleans_are_refused(make_manager, tenant, site, value):
+    with pytest.raises(ValueError, match="manual_read"):
+        make_manager().create_libraries(libraries_df(site, "MATH", manual_read=value))
+
+    assert tenant.calls == []
 
 
 def test_colliding_codes_are_skipped_and_others_proceed(make_manager, tenant, site):

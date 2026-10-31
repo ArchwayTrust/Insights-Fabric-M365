@@ -12,8 +12,8 @@ import requests
 from ..auth import Scopes
 from ._common import (
     ALL_GROUP_SUFFIXES, AUTO_GROUP_SUFFIXES, METADATA_PROPERTY_KEYS, REPLICATION_BASE_DELAY, VALID_ROLES,
-    _action_log_to_dataframe, _append_log, _run_parallel, _ThreadSafeLog, _validate_required_columns,
-    _validate_site_urls,
+    _action_log_to_dataframe, _append_log, _check_option, _fill_flag_columns, _run_parallel, _ThreadSafeLog,
+    _validate_required_columns, _validate_site_urls,
 )
 from ._graph import (
     _create_onedrive_shortcut, _ensure_document_library, _find_title_conflict, _get_library_display_name, _get_list_id,
@@ -106,6 +106,16 @@ class SharePointLibraryManager:
         navigation_label: str = "Document Libraries",
         service_principal_id: str | None = None,
     ):
+        self.dry_run = _check_option("dry_run", dry_run)
+        self.max_workers = _check_option("max_workers", max_workers)
+        self.include_site_name = _check_option("include_site_name", include_site_name)
+        self.create_onedrive_shortcuts = _check_option("create_onedrive_shortcuts", create_onedrive_shortcuts)
+        self.max_removals_per_group = _check_option("max_removals_per_group", max_removals_per_group)
+        self.allow_mass_removal = _check_option("allow_mass_removal", allow_mass_removal)
+        self.add_to_navigation = _check_option("add_to_navigation", add_to_navigation)
+        self.navigation_label = _check_option("navigation_label", navigation_label)
+        self._service_principal_id = service_principal_id
+
         # Tokens are requested per use via the properties below.  The
         # credential caches them and requests new ones near expiry, so runs
         # longer than a token lifetime (~60-90 min) keep working.
@@ -118,16 +128,6 @@ class SharePointLibraryManager:
         _ = self._graph_token  # fail fast on bad credentials
         _ = self._sp_token
         logger.info("Tokens acquired successfully.")
-
-        self.dry_run = dry_run
-        self.max_workers = max_workers
-        self.include_site_name = include_site_name
-        self.create_onedrive_shortcuts = create_onedrive_shortcuts
-        self.max_removals_per_group = max_removals_per_group
-        self.allow_mass_removal = allow_mass_removal
-        self.add_to_navigation = add_to_navigation
-        self.navigation_label = navigation_label
-        self._service_principal_id = service_principal_id
 
     @property
     def service_principal_id(self) -> str:
@@ -192,9 +192,13 @@ class SharePointLibraryManager:
 
         Adding a per-call override to an operation is therefore one keyword
         here, not a copied resolution block.
+
+        Each value's type is checked (see _check_option), including an
+        instance default changed after construction, so a string such as
+        'False' raises TypeError rather than counting as True.
         """
         return tuple(
-            value if value is not None else getattr(self, name)
+            _check_option(name, value if value is not None else getattr(self, name))
             for name, value in overrides.items()
         )
 
@@ -566,14 +570,9 @@ class SharePointLibraryManager:
         df = _validate_required_columns(df, required)
         _validate_site_urls(df["site_url"].unique(), self.sharepoint_hostname)
 
-        if "auto_groups" not in df.columns:
-            df["auto_groups"] = True
-        if "manual_read" not in df.columns:
-            df["manual_read"] = False
-        if "manual_contribute" not in df.columns:
-            df["manual_contribute"] = False
-        if "app_owned" not in df.columns:
-            df["app_owned"] = True
+        df = _fill_flag_columns(df, {
+            "auto_groups": True, "manual_read": False, "manual_contribute": False, "app_owned": True,
+        })
         if "source_system" not in df.columns:
             df["source_system"] = None
         if "source_id" not in df.columns:
