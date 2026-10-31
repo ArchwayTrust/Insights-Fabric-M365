@@ -118,7 +118,7 @@ attachment_id, file_name = csv_files[0]
 csv_text = mailbox.download_attachment(message_id, attachment_id)
 
 lakehouse = "abfss://<workspace>@onelake.dfs.fabric.microsoft.com/<lakehouse>.Lakehouse"
-notebookutils.fs.put(f"{lakehouse}/Files/Reports/{file_name}", csv_text, overwrite=True)
+notebookutils.fs.put(f"{lakehouse}/Files/Reports/daily_sales.csv", csv_text, overwrite=True)
 
 mailbox.delete_email(message_id)
 ```
@@ -618,11 +618,17 @@ Inline images, such as logos in an email signature, are left out unless you pass
 `download_attachment` returns the attachment's content. By default it's decoded as UTF-8 text, which suits CSV and text files:
 
 ```python
+import os
+
 for attachment_id, file_name in attachments:
-    if file_name.endswith(".csv"):
+    if file_name.lower().endswith(".csv"):
         csv_text = mailbox.download_attachment(message_id, attachment_id)
-        notebookutils.fs.put(f"{lakehouse}/Files/Sales/{file_name}", csv_text, overwrite=True)
+        # The sender chooses the name, so keep only its last part
+        safe_name = os.path.basename(file_name.replace("\\", "/"))
+        notebookutils.fs.put(f"{lakehouse}/Files/Sales/{safe_name}", csv_text, overwrite=True)
 ```
+
+An attachment's name is chosen by whoever sent the email, and could contain `/` or `..` that point somewhere else, so don't put it into a path as it is. Keep only its last part, as above, or, when you keep one attachment, save it to a fixed name, as the other examples do. Neither stops two attachments with the same name overwriting each other in the loop, so if you keep several, make each name unique, for example by adding its position in the list.
 
 Use `encoding` for text in another encoding, for example `encoding="cp1252"` for some Windows exports.
 
@@ -638,7 +644,7 @@ content = mailbox.download_attachment(message_id, attachment_id, is_binary=True)
 df = pd.read_excel(io.BytesIO(content))
 
 # Or save it to the notebook's default lakehouse
-with open(f"/lakehouse/default/Files/Sales/{file_name}", "wb") as f:
+with open("/lakehouse/default/Files/Sales/sales.xlsx", "wb") as f:
     f.write(content)
 ```
 
