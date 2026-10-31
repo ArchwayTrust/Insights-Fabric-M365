@@ -21,6 +21,11 @@ def _base64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
 
+def _path(value: str) -> str:
+    """Quotes a value for one segment of a URL path, so a / or ? in it can't select a different resource."""
+    return requests.utils.quote(value, safe="")
+
+
 def _describe_error(response: requests.Response) -> str:
     """Summarises an error response from Microsoft Entra ID or Azure Key Vault without including request data."""
     try:
@@ -114,7 +119,7 @@ class KeyVaultCertificateCredential:
         self.certificate_name = certificate_name
         self.scope = scope
         self.certificate_version = certificate_version
-        self.token_endpoint = f"https://login.microsoftonline.com/{self.tenant_id}/oauth2/v2.0/token"
+        self.token_endpoint = f"https://login.microsoftonline.com/{_path(self.tenant_id)}/oauth2/v2.0/token"
 
         # Cached AccessTokens, keyed by the sorted, de-duplicated scopes. The lock stops concurrent callers
         # each requesting a new token when the cached one expires.
@@ -306,9 +311,9 @@ class KeyVaultCertificateCredential:
         Returns:
             The key identifier (URL including version) to sign with, and the certificate's DER encoded bytes.
         """
-        url = f"{self.akv_url}/certificates/{self.certificate_name}"
+        url = f"{self.akv_url}/certificates/{_path(self.certificate_name)}"
         if self.certificate_version:
-            url += f"/{self.certificate_version}"
+            url += f"/{_path(self.certificate_version)}"
 
         response = requests.get(
             url,
