@@ -514,19 +514,25 @@ class FakeTenant:
         lst = site.lists.get(guid)
         if lst is None:
             return response(200, [{"SchemaVersion": "15.0.0.0", "ErrorInfo": {"ErrorMessage": "List does not exist."}}])
-        # SetFieldValue on the root folder's Properties only stages a value. SharePoint saves the staged values when
-        # the request also calls Update on that folder, and otherwise reports success without saving anything.
+        # SetFieldValue on the root folder's Properties only stages a value, and Update on that folder saves what's
+        # staged so far. CSOM runs the actions in order, so a value set after the last Update isn't saved, and
+        # SharePoint reports success either way.
         folder = re.search(r'<Property Id="(\d+)" ParentId="\d+" Name="RootFolder" />', xml)
         bag = folder and re.search(rf'<Property Id="(\d+)" ParentId="{folder.group(1)}" Name="Properties" />', xml)
-        if bag and re.search(rf'<Method Name="Update" Id="\d+" ObjectPathId="{folder.group(1)}" />', xml):
-            pairs = re.findall(
-                rf'<Method Name="SetFieldValue" Id="\d+" ObjectPathId="{bag.group(1)}"><Parameters>'
+        if bag:
+            staged = {}
+            actions = re.finditer(
+                r'<Method Name="(SetFieldValue|Update)" Id="\d+" ObjectPathId="(\d+)"(?: />|><Parameters>'
                 r'<Parameter Type="String">(.*?)</Parameter><Parameter Type="String">(.*?)</Parameter>'
-                r'</Parameters></Method>',
+                r'</Parameters></Method>)',
                 xml,
             )
-            for key, value in pairs:
-                lst["properties"][_xml_unescape(key)] = _xml_unescape(value)
+            for name, path_id, key, value in (action.groups() for action in actions):
+                if name == "SetFieldValue" and path_id == bag.group(1):
+                    staged[_xml_unescape(key)] = _xml_unescape(value)
+                elif name == "Update" and path_id == folder.group(1):
+                    lst["properties"].update(staged)
+                    staged = {}
         return response(200, [{"SchemaVersion": "15.0.0.0", "ErrorInfo": None}])
 
 
