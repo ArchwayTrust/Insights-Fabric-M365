@@ -195,12 +195,14 @@ def _blank_nulls(df: pd.DataFrame, columns: tuple[str, ...]) -> pd.DataFrame:
         columns: The columns to blank, where present.
 
     Returns:
-        The copy.
+        The copy, with those columns as text. Converting them here matters on
+        pandas 1.5, which counts any object column as strings, so
+        _validate_required_columns wouldn't convert them.
     """
     df = df.copy()
     for column in columns:
         if column in df.columns:
-            df[column] = df[column].astype(object).where(df[column].notna(), "")
+            df[column] = df[column].map(lambda value: "" if pd.isna(value) else str(value))
     return df
 
 

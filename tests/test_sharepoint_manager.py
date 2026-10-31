@@ -913,6 +913,25 @@ def test_a_member_row_missing_its_user_or_permission_is_a_row_not_a_failed_sync(
     assert tenant.member_upns("BAA-Sharepoint-MATH-Auto-Read") == ["jo@contoso.com", "left@contoso.com"]
 
 
+@pytest.mark.parametrize("pandas_1_5", [False, True])
+def test_a_numeric_permission_beside_a_missing_one_is_skipped_on_every_pandas(
+    make_manager, tenant, site, library, monkeypatch, pandas_1_5,
+):
+    from alt_fabric_m365.sharepoint import _common
+    if pandas_1_5:
+        # pandas 1.5, which older Fabric runtimes have, counts any object column as strings
+        monkeypatch.setattr(
+            _common.pd.api.types, "is_string_dtype", lambda column: getattr(column, "dtype", None) == object,
+        )
+    tenant.add_user("jo@contoso.com")
+    df = memberships_df(site, [("MATH", "jo@contoso.com", 7), ("MATH", "jo@contoso.com", None)])
+
+    results = make_manager().update_memberships(df)
+
+    assert rows(results, "error").empty
+    assert sorted(rows(results, "skip")["permission"]) == ["", "7.0"]
+
+
 def test_a_nested_group_row_missing_its_group_is_a_row_not_a_failed_sync(make_manager, tenant, site, library):
     staff = tenant.add_group("BAA All Staff")
     tenant.group_named("BAA-Sharepoint-MATH-Auto-Read")["members"][staff["id"]] = staff
