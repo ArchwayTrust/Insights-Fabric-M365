@@ -2955,16 +2955,17 @@ class SharePointLibraryManager:
             group_ids[group_name] = group["id"]
 
         sites = self._prefetch_sites(df["site_url"].unique(), action_log, role_definitions=True)
-
-        # A group's SharePoint principal is per site, and getting its ID
-        # (ensureuser) is a write, so it's only got for a grant a library
-        # doesn't hold yet, and then once per site and group.  The lock is
-        # held while it's got, so libraries running in parallel don't each
-        # get it.
         principal_ids: dict[tuple[str, str], int] = {}
         principal_ids_lock = threading.Lock()
 
         def principal_id(site_url: str, group_id: str) -> int:
+            """Return a group's principal ID on a site, registering it there (ensureuser) the first time.
+
+            A principal is per site, and ensureuser is a write, so it's only
+            called for a grant a library doesn't hold yet, and then once per
+            site and group.  The lock is held while the ID is got, so
+            libraries running in parallel don't each get it.
+            """
             with principal_ids_lock:
                 if (site_url, group_id) not in principal_ids:
                     principal_ids[(site_url, group_id)] = _resolve_group_principal_id(
