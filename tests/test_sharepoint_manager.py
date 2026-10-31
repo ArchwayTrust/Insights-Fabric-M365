@@ -1588,6 +1588,25 @@ def test_navigation_label_failure_does_not_block_permissions(make_manager, tenan
     assert site.nav == []
 
 
+def test_a_navigation_link_is_not_posted_again_after_a_server_error(make_manager, tenant, site):
+    from sharepoint_fake import response
+    # A 5xx may come after SharePoint created the link, so posting it again could duplicate it
+    tenant.fail("POST", r"/GetNodeById\(\d+\)/Children$", response(503))
+
+    results = make_manager(add_to_navigation=True).create_libraries(libraries_df(site, "MATH"))
+
+    posts = [url for method, url, _ in tenant.calls if method == "POST" and url.endswith("/Children")]
+    assert len(posts) == 1
+    [error] = rows(results, "error").itertuples()
+    assert error.document_library == "MATH" and "Status code: 503" in error.status
+    [label] = site.nav
+    assert label["Children"] == []
+
+    make_manager(add_to_navigation=True).create_libraries(libraries_df(site, "MATH"))
+
+    assert [child["Title"] for child in label["Children"]] == ["MATH Faculty"]
+
+
 def test_failure_rows_give_graphs_error_code_and_message(make_manager, tenant, site, library):
     from sharepoint_fake import graph_error
     tenant.add_user("jo@contoso.com")
