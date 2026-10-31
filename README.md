@@ -1328,7 +1328,7 @@ On its own, the Tests workflow only reports a result: GitHub still lets a pull r
 1. On GitHub, go to **Settings** > **Rules** > **Rulesets** > **New ruleset** > **New branch ruleset**.
 2. Name it, for example `Protect main`, and set **Enforcement status** to **Active**.
 3. Under **Target branches**, select **Add target** > **Include default branch**.
-4. Turn on **Require a pull request before merging**. Under it, turn on **Require review from Code Owners**, so changes need a review from the teams in [`.github/CODEOWNERS`](.github/CODEOWNERS): Insights for the package, and IT Approvers for the SharePoint library manager, as it changes the tenant's libraries, permissions and groups.
+4. Turn on **Require a pull request before merging**. Under it, turn on **Require review from Code Owners**, so changes need a review from the teams in [`.github/CODEOWNERS`](https://github.com/ArchwayTrust/Insights-Fabric-M365/blob/main/.github/CODEOWNERS): Insights for the package, and IT Approvers for the SharePoint library manager, the example notebook that runs it and their tests, as they change the tenant's libraries, permissions and groups.
 5. Turn on **Require status checks to pass**, select **Add checks**, and add `test (3.10)`, `test (3.11)` and `test (3.12)`.
 6. Turn on **Block force pushes**, then select **Create**.
 
