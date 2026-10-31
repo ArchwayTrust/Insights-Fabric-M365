@@ -1,11 +1,14 @@
 import base64
+import email.utils
 import hashlib
 import json
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 import pytest
+import requests
 
 from alt_fabric_m365.auth import keyvault
 from alt_fabric_m365.auth import KeyVaultCertificateCredential, Scopes
@@ -371,3 +374,157 @@ def test_describe_error(response, expected):
 ])
 def test_base64url_is_unpadded_and_url_safe(data, expected):
     assert keyvault._base64url(data) == expected
+
+
+# Retries
+
+def throttled(status=429, retry_after=None):
+    response = make_response(status, {"error": {"code": "Throttled", "message": "Too many requests"}})
+    if retry_after is not None:
+        response.headers["Retry-After"] = retry_after
+    return response
+
+
+@pytest.fixture
+def sleeps(monkeypatch):
+    """Retries wait with time.sleep; this records the waits instead."""
+    calls = []
+    monkeypatch.setattr(keyvault.time, "sleep", calls.append)
+    return calls
+
+
+def fail_first(fake, call, *outcomes):
+    """Patches requests so the first calls of one kind (certificate, sign or token) give outcomes, then FakeAzure."""
+    remaining = list(outcomes)
+
+    def handle(kind, real):
+        def send(url, **kwargs):
+            if kind == call and remaining:
+                outcome = remaining.pop(0)
+                getattr(fake, f"{kind}_calls").append((url, kwargs))
+                if isinstance(outcome, Exception):
+                    raise outcome
+                return outcome
+            return real(url, **kwargs)
+        return send
+
+    def post(url, **kwargs):
+        return handle("sign" if url.endswith("/sign") else "token", fake.post)(url, **kwargs)
+
+    return mock.patch.multiple(keyvault.requests, get=handle("certificate", fake.get), post=post)
+
+
+@pytest.mark.parametrize("call", ["certificate", "sign", "token"])
+def test_throttling_is_waited_out_for_as_long_as_retry_after_says(fake_notebookutils, sleeps, call):
+    fake = FakeAzure()
+    with fail_first(fake, call, throttled(retry_after="7")):
+        token = make_credential().get_token("a")
+
+    assert fake.issued == [token.token]
+    assert sleeps == [7]
+    assert len(getattr(fake, f"{call}_calls")) == 2
+
+
+@pytest.mark.parametrize("call", ["certificate", "sign", "token"])
+@pytest.mark.parametrize("failure", [
+    throttled(503),
+    throttled(500),
+    requests.ConnectionError("Connection reset by peer"),
+    requests.Timeout("Read timed out"),
+    requests.exceptions.ChunkedEncodingError("Connection broken: IncompleteRead"),
+])
+def test_server_errors_and_dropped_connections_are_retried(fake_notebookutils, sleeps, call, failure):
+    fake = FakeAzure()
+    with fail_first(fake, call, failure):
+        make_credential().get_token("a")
+
+    assert len(sleeps) == 1 and 1 <= sleeps[0] <= 1.25
+    assert len(fake.token_calls) == 2 if call == "token" else len(fake.token_calls) == 1
+
+
+def test_a_retried_token_request_resends_its_assertion_without_asking_key_vault_again(fake_notebookutils, sleeps):
+    fake = FakeAzure()
+    with fail_first(fake, "token", throttled(503)):
+        make_credential().get_token("a")
+
+    assertions = [kwargs["data"]["client_assertion"] for _, kwargs in fake.token_calls]
+    assert len(assertions) == 2 and assertions[0] == assertions[1]
+    assert len(fake.certificate_calls) == len(fake.sign_calls) == 1
+
+
+def test_retries_stop_after_max_attempts(fake_notebookutils, sleeps):
+    fake = FakeAzure()
+    attempts = KeyVaultCertificateCredential.MAX_ATTEMPTS
+    with fail_first(fake, "certificate", *[throttled(503) for _ in range(attempts)]):
+        with pytest.raises(Exception, match="Failed to get certificate cert from key vault. Status code: 503"):
+            make_credential().get_token("a")
+
+    assert len(fake.certificate_calls) == attempts and len(sleeps) == attempts - 1
+
+
+def test_a_connection_that_keeps_dropping_is_raised(fake_notebookutils, sleeps):
+    fake = FakeAzure()
+    attempts = KeyVaultCertificateCredential.MAX_ATTEMPTS
+    with fail_first(fake, "sign", *[requests.ConnectionError("Connection reset") for _ in range(attempts)]):
+        with pytest.raises(requests.ConnectionError):
+            make_credential().get_token("a")
+
+    assert len(fake.sign_calls) == attempts
+
+
+@pytest.mark.parametrize("failure", [
+    throttled(400),
+    throttled(401),
+    throttled(403),
+    requests.exceptions.SSLError("certificate verify failed"),
+])
+def test_client_errors_and_certificate_failures_are_not_retried(fake_notebookutils, sleeps, failure):
+    fake = FakeAzure()
+    with fail_first(fake, "certificate", failure):
+        with pytest.raises(Exception):
+            make_credential().get_token("a")
+
+    assert len(fake.certificate_calls) == 1 and sleeps == []
+
+
+def in_seconds(seconds):
+    """An HTTP date that many seconds from now, as a Retry-After header can give."""
+    return email.utils.format_datetime(datetime.now(timezone.utc) + timedelta(seconds=seconds), usegmt=True)
+
+
+@pytest.mark.parametrize("retry_after, expected, tolerance", [
+    ("7", 7, 0),
+    ("2.5", 2.5, 0),
+    ("-5", 0, 0),
+    # Built when the test runs, not when it's collected. An HTTP date has whole seconds, so up to a second is lost
+    (lambda: in_seconds(7), 6.5, 0.5),
+    ("Mon, 01 Jan 2001 00:00:00 GMT", 0, 0),  # in the past
+], ids=["seconds", "fraction", "negative", "date", "past date"])
+def test_retry_after_in_seconds_or_as_a_date_is_waited_out(
+    fake_notebookutils, sleeps, retry_after, expected, tolerance,
+):
+    fake = FakeAzure()
+    retry_after = retry_after() if callable(retry_after) else retry_after
+    with fail_first(fake, "token", throttled(retry_after=retry_after)):
+        make_credential().get_token("a")
+
+    [slept] = sleeps
+    assert slept == pytest.approx(expected, abs=tolerance)
+
+
+@pytest.mark.parametrize("retry_after", ["soon", "nan", "inf", ""])
+def test_an_unreadable_retry_after_falls_back_to_backoff(fake_notebookutils, sleeps, retry_after):
+    fake = FakeAzure()
+    with fail_first(fake, "token", throttled(retry_after=retry_after)):
+        make_credential().get_token("a")
+
+    [slept] = sleeps
+    assert 1 <= slept <= 1.25
+
+
+def test_a_long_retry_after_is_capped(fake_notebookutils, sleeps):
+    fake = FakeAzure()
+    with fail_first(fake, "token", throttled(retry_after="3600")):
+        make_credential().get_token("a")
+
+    assert sleeps == [KeyVaultCertificateCredential.RETRY_MAX_DELAY_SECONDS]

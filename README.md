@@ -192,6 +192,8 @@ Anyone who can run code as the workspace identity can then act as the app too, s
 4. The signed assertion is exchanged with Microsoft Entra ID for an access token.
 5. Access tokens are cached per scope and renewed when they have less than 5 minutes left, so the credential can be used for long-running notebooks.
 
+Each request to Key Vault and Entra ID is tried up to three times when it's throttled (`429`, honouring `Retry-After` up to 30 seconds), fails with a server error or loses its connection. A retried token request resends its assertion rather than asking Key Vault to sign another.
+
 Two identities are involved, and each needs different permissions:
 
 | Identity | What it is | What it needs |
