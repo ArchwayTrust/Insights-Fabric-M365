@@ -1422,6 +1422,38 @@ def test_sharepoint_token_is_never_sent_to_another_host(make_manager, tenant, si
     assert tenant.calls == []
 
 
+# Every DataFrame a library code reaches the manager in, each called with the code under test
+LIBRARY_CODE_OPERATIONS = {
+    "create_libraries": lambda m, site, code: m.create_libraries(libraries_df(site, code)),
+    "set_library_metadata": lambda m, site, code: m.set_library_metadata(libraries_df(site, code, source_system="MIS")),
+    "get_library_metadata": lambda m, site, code: m.get_library_metadata(libraries_df(site, code)),
+    "rename_libraries": lambda m, site, code: m.rename_libraries(libraries_df(site, code)),
+    "unlink_libraries": lambda m, site, code: m.unlink_libraries(libraries_df(site, code)),
+    "retire_moved_libraries": lambda m, site, code: m.retire_moved_libraries(libraries_df(site, code)),
+    "update_memberships": lambda m, site, code: m.update_memberships(
+        memberships_df(site, [(code, "jo@contoso.com", "read")])),
+    "update_memberships libraries_df": lambda m, site, code: m.update_memberships(
+        memberships_df(site, []), libraries_df=libraries_df(site, code)),
+    "update_memberships nested_groups_df": lambda m, site, code: m.update_memberships(
+        memberships_df(site, []), nested_groups_df=nested_df(site.url).assign(library_code=code)),
+    "grant_group_access": lambda m, site, code: m.grant_group_access(grants_df(site, [(code, "Staff", "read")])),
+    "ensure_onedrive_shortcuts": lambda m, site, code: m.ensure_onedrive_shortcuts(
+        memberships_df(site, [(code, "jo@contoso.com", "read")])),
+}
+
+
+# SharePoint drops '&' from a library's URL and trims spaces, so no later run would find the library
+@pytest.mark.parametrize("code", ["D&T", "MATH "])
+@pytest.mark.parametrize("operation", LIBRARY_CODE_OPERATIONS)
+def test_library_codes_sharepoint_would_change_are_refused_before_anything_changes(
+    make_manager, tenant, site, operation, code,
+):
+    with pytest.raises(ValueError, match="library_code"):
+        LIBRARY_CODE_OPERATIONS[operation](make_manager(), site, code)
+
+    assert tenant.calls == []
+
+
 @pytest.mark.parametrize("operation", ["update_memberships", "create_libraries"])
 def test_a_group_made_earlier_in_the_run_is_not_made_again_while_it_replicates(make_manager, tenant, site, operation):
     manager = make_manager()
