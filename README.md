@@ -1247,6 +1247,8 @@ Outside Fabric, `KeyVaultCertificateCredential` isn't available (it needs `noteb
 
 ## Troubleshooting
 
+`SharePointLibraryManager`'s failure rows give the status code and the service's error code and message, such as `Status code: 403, Authorization_RequestDenied: Insufficient privileges to complete the operation.`
+
 | Error | Likely cause |
 | --- | --- |
 | `Failed to get certificate ... Status code: 403, Forbidden` | The identity running the notebook can't read the certificate. Assign Key Vault Reader on the certificate, or the certificate **Get** access policy. |
