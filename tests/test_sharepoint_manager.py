@@ -1424,6 +1424,28 @@ def test_grant_group_access_is_additive_and_idempotent(make_manager, tenant, sit
     assert actions(results) == ["already_assigned", "already_assigned"]
 
 
+# SharePoint pages a library's role assignments, so a group's may only be on a later page
+@pytest.mark.parametrize("operation", ["create_libraries", "grant_group_access"])
+def test_role_assignments_on_a_later_page_are_seen(make_manager, tenant, site, library, slt_groups, operation):
+    df = grants_df(site, [
+        ("MATH", "BAA-Sharepoint-SLT-Manual-Contribute", "contribute"),
+        ("MATH", "BAA-Sharepoint-SLT-Manual-Read", "read"),
+    ])
+    make_manager().grant_group_access(df)
+    tenant.role_assignment_page_size = 1
+    tenant.calls.clear()
+
+    if operation == "create_libraries":
+        results = make_manager().create_libraries(libraries_df(site, "MATH"))
+        assert "already_assigned" in actions(results) and "group_assigned" not in actions(results)
+    else:
+        results = make_manager().grant_group_access(df)
+        assert actions(results) == ["already_assigned", "already_assigned"]
+
+    assert created(tenant, "addroleassignment") == []
+    assert any("$skiptoken=" in url for method, url, _ in tenant.calls if url.split("?")[0].endswith("/roleassignments"))
+
+
 def test_grant_reports_missing_groups_libraries_and_duplicate_names(make_manager, tenant, site, library, slt_groups):
     tenant.add_group("Dup")
     tenant.add_group("Dup")
