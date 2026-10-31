@@ -213,29 +213,37 @@ class FakeTenant:
 
     def _request(self, method, url, **kwargs):
         self.calls.append((method.upper(), url, kwargs))
-        effective = _effective_method(method, kwargs)
+        parsed = urlparse(url)
 
+        # Graph and SharePoint each refuse a token issued for another audience, before anything else
+        if url.startswith(GRAPH) and _audience(kwargs) != "https://graph.microsoft.com":
+            return graph_error(401, "InvalidAuthenticationToken", "Access token validation failure. Invalid audience.")
+        if parsed.hostname == HOST and _audience(kwargs) != f"https://{HOST}":
+            return response(401, {"error": "invalid_request", "error_description": "Invalid audience Uri."})
+
+        resp = self._respond(method, url, parsed, kwargs)
+        # Without odata=verbose, SharePoint Online leaves out the "d" wrapper the package reads
+        accept = (kwargs.get("headers") or {}).get("Accept", "")
+        if parsed.hostname == HOST and "/_api/" in parsed.path and "odata=verbose" not in accept:
+            return _without_verbose_metadata(resp)
+        return resp
+
+    def _respond(self, method, url, parsed, kwargs):
+        """Returns the response to a request with an accepted token: a failure from fail(), or the service's own."""
+        effective = _effective_method(method, kwargs)
         for failure in self.failures:
             if failure[3] > 0 and failure[0] == effective and failure[1].search(url):
                 failure[3] -= 1
                 return failure[2]
 
-        parsed = urlparse(url)
         query = {k: v[0] for k, v in parse_qs(parsed.query).items()}
         query.update(kwargs.get("params") or {})
         body = kwargs.get("json")
 
-        # Graph and SharePoint each refuse a token issued for another audience
         if url.startswith(GRAPH):
-            if _audience(kwargs) != "https://graph.microsoft.com":
-                return graph_error(
-                    401, "InvalidAuthenticationToken", "Access token validation failure. Invalid audience.",
-                )
             return self._graph(effective, unquote(parsed.path[len("/v1.0"):]), query, body, url)
 
         if parsed.hostname == HOST:
-            if _audience(kwargs) != f"https://{HOST}":
-                return response(401, {"error": "invalid_request", "error_description": "Invalid audience Uri."})
             if "/_vti_bin/client.svc/ProcessQuery" in parsed.path:
                 site = self._site_for(parsed.path.split("/_vti_bin/")[0])
                 return self._process_query(site, kwargs["data"].decode("utf-8"))
@@ -244,11 +252,7 @@ class FakeTenant:
                 site = self._site_for(site_path)
                 if site is None:
                     return response(404)
-                resp = self._sharepoint(effective, site, unquote(api_path), query, body)
-                # Without odata=verbose, SharePoint Online leaves out the "d" wrapper the package reads
-                if "odata=verbose" not in (kwargs.get("headers") or {}).get("Accept", ""):
-                    return _without_verbose_metadata(resp)
-                return resp
+                return self._sharepoint(effective, site, unquote(api_path), query, body)
 
         raise AssertionError(f"Unexpected request: {method} {url}")
 
