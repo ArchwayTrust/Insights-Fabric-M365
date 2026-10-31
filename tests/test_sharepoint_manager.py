@@ -542,9 +542,63 @@ def test_set_and_get_library_metadata(make_manager, site):
     assert actions(results) == ["metadata_set", "skipped"]
     metadata = manager.get_library_metadata(pd.DataFrame({"site_url": [site.url] * 2, "library_code": ["MATH", "ENG"]}))
     assert metadata.to_dict("records") == [
-        {"site_url": site.url, "library_code": "MATH", "source_system": None, "source_id": "F1"},
-        {"site_url": site.url, "library_code": "ENG", "source_system": None, "source_id": None},
+        {"site_url": site.url, "library_code": "MATH", "source_system": None, "source_id": "F1", "status": "ok"},
+        {"site_url": site.url, "library_code": "ENG", "source_system": None, "source_id": None,
+         "status": "library_not_found"},
     ]
+
+
+def test_get_metadata_of_a_library_with_none_set_is_ok(make_manager, site):
+    site.add_list("MATH")
+
+    metadata = make_manager().get_library_metadata(libraries_df(site, "MATH"))
+
+    assert metadata[["source_system", "source_id", "status"]].values.tolist() == [[None, None, "ok"]]
+
+
+def _fail_site_read(tenant, monkeypatch):
+    from sharepoint_fake import graph_error
+    tenant.fail("GET", r":/sites/BAA$", graph_error(403, "accessDenied", "Access denied"))
+
+
+def _fail_properties_read(tenant, monkeypatch):
+    from sharepoint_fake import response
+    tenant.fail("GET", r"/rootfolder/properties$", response(403, {"error": {
+        "code": "-2147024891, System.UnauthorizedAccessException", "message": {"value": "Access denied."},
+    }}))
+
+
+def _drop_properties_connection(tenant, monkeypatch):
+    import requests
+    from alt_fabric_m365.sharepoint import _http
+
+    def request(method, url, **kwargs):
+        if "/sites/BAA/" in url and url.endswith("/rootfolder/properties"):
+            raise requests.ConnectionError("Connection reset by peer")
+        return tenant.request(method, url, **kwargs)
+    monkeypatch.setattr(_http.requests, "request", request)
+
+
+# Unset values are None too, so a row that couldn't be read must say so rather than look unset
+@pytest.mark.parametrize("fail, reason", [
+    (_fail_site_read, "error: site could not be read: Status code: 403, accessDenied: Access denied"),
+    (_fail_properties_read, "error: Status code: 403"),
+    (_drop_properties_connection, "error: Connection reset by peer"),
+])
+def test_get_metadata_reports_a_library_it_could_not_read(make_manager, tenant, site, monkeypatch, fail, reason):
+    site.add_list("MATH")["properties"] = {"SourceSystem": "MIS", "SourceId": "F1"}
+    other = tenant.add_site("/sites/BAA2")
+    other.add_list("ENG")["properties"] = {"SourceSystem": "MIS", "SourceId": "F2"}
+    fail(tenant, monkeypatch)
+
+    metadata = make_manager().get_library_metadata(
+        pd.concat([libraries_df(site, "MATH"), libraries_df(other, "ENG")]),
+    )
+
+    [math, eng] = metadata.to_dict("records")
+    assert (math["source_system"], math["source_id"]) == (None, None)
+    assert math["status"].startswith(reason)
+    assert (eng["source_id"], eng["status"]) == ("F2", "ok")
 
 
 def test_set_metadata_needs_a_metadata_column(make_manager, site):
@@ -684,6 +738,18 @@ def test_unlink_empties_the_rest_of_a_group_when_one_member_cant_be_removed(make
     assert (failed.group, failed.user) == ("BAA-Sharepoint-MATH-Auto-Contribute", "sam@contoso.com")
     assert "remove_failed" in FATAL_ACTIONS
     assert tenant.member_upns("BAA-Sharepoint-MATH-Auto-Contribute") == ["sam@contoso.com"]
+
+
+def test_unlinking_a_library_deleted_by_hand_removes_its_navigation_link(make_manager, tenant, site):
+    make_manager(add_to_navigation=True).create_libraries(libraries_df(site, "MATH"))
+    del site.lists[site.list_by_slug("MATH")["id"]]
+
+    results = make_manager(add_to_navigation=True).unlink_libraries(libraries_df(site, "MATH"))
+
+    assert {"library_not_found", "navigation_link_removed"} <= set(actions(results))
+    assert site.nav[0]["Children"] == []
+    # The removal is reported by its own row, once it's done
+    assert "navigation" not in rows(results, "library_not_found")["status"].iloc[0]
 
 
 def test_unlink_dry_run_makes_no_writes(make_manager, tenant, site):

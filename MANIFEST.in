@@ -1,0 +1,4 @@
+# The tests in the source distribution need their fixtures, fake and the example notebook they run
+include tests/conftest.py tests/sharepoint_fake.py
+graft examples
+global-exclude __pycache__ *.py[cod]

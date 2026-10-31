@@ -83,7 +83,10 @@ class SharePointLibraryManager:
         sharepoint_hostname:  e.g. ``"contoso.sharepoint.com"``.
         dry_run:              Default dry-run mode for all operations.
         max_workers:          Default parallelism for all operations.
-        include_site_name:    Include the site name in security group names.
+        include_site_name:    Include the site name in security group names.  The
+            site name is the last segment of the site URL, letters and digits
+            only, so two sites can share it (``/sites/hr``, ``/teams/hr``):
+            give such sites different group prefixes.
         create_onedrive_shortcuts:
             Default for ``update_memberships``.  When True, a OneDrive
             shortcut is created for each newly added user.
@@ -952,14 +955,19 @@ class SharePointLibraryManager:
 
         Returns:
             DataFrame with columns: site_url, library_code, source_system,
-            source_id.  Values are ``None`` where a property has not been set.
+            source_id, status.  ``status`` is ``ok`` where the library was
+            read, ``library_not_found`` where it doesn't exist on the site,
+            and ``error: <reason>`` where the site or library couldn't be
+            read.  Values are ``None`` where a property has not been set or
+            the status isn't ``ok``.
         """
         required = {"site_url", "library_code"}
         df = _validate_required_columns(df, required)
         _validate_site_urls(df["site_url"].unique(), self.sharepoint_hostname)
 
-        # A site that can't be read gives None values for its libraries
-        sites = self._prefetch_sites(df["site_url"].unique(), _ThreadSafeLog())
+        site_log = _ThreadSafeLog()
+        sites = self._prefetch_sites(df["site_url"].unique(), site_log)
+        site_errors = {row["site_url"]: row["status"] for row in site_log.to_list() if row["action"] == "error"}
 
         deduped = df.drop_duplicates(subset=["site_url", "library_code"], keep="first")
 
@@ -967,37 +975,35 @@ class SharePointLibraryManager:
         for _, row in deduped.iterrows():
             site_url = row["site_url"]
             library_code = row["library_code"]
-            try:
-                if site_url not in sites:
-                    raise ValueError(f"site '{site_url}' could not be read")
-                site = sites[site_url]
-                list_id = _get_list_id(self._graph_token, site["site_id"], library_code, existing=site["lists"])
-                props = _get_library_properties(
-                    self._sp_token, site_url, list_id,
-                    list(METADATA_PROPERTY_KEYS.values()),
-                )
-                results.append({
-                    "site_url": site_url,
-                    "library_code": library_code,
-                    "source_system": props.get("SourceSystem"),
-                    "source_id": props.get("SourceId"),
-                })
-            except (requests.HTTPError, ValueError) as exc:
-                logger.error(
-                    "Error reading metadata for library '%s' on '%s': %s",
-                    library_code, site_url, exc,
-                )
-                results.append({
-                    "site_url": site_url,
-                    "library_code": library_code,
-                    "source_system": None,
-                    "source_id": None,
-                })
+            site = sites.get(site_url)
+            library = site["lists"].get(library_code.lower()) if site else None
+            values = {"source_system": None, "source_id": None}
+            # Unset values are None too, so the status is what says whether they were read
+            if site is None:
+                status = f"error: site could not be read: {site_errors.get(site_url, '')}"
+            elif library is None:
+                logger.warning("Library '%s' not found on '%s' — metadata not read", library_code, site_url)
+                status = "library_not_found"
+            else:
+                try:
+                    props = _get_library_properties(
+                        self._sp_token, site_url, library["id"],
+                        list(METADATA_PROPERTY_KEYS.values()),
+                    )
+                    values = {"source_system": props.get("SourceSystem"), "source_id": props.get("SourceId")}
+                    status = "ok"
+                except (requests.RequestException, ValueError) as exc:
+                    logger.error(
+                        "Error reading metadata for library '%s' on '%s': %s",
+                        library_code, site_url, exc,
+                    )
+                    status = f"error: {exc}"
+            results.append({"site_url": site_url, "library_code": library_code, **values, "status": status})
 
         # object dtype keeps unset values as None — pandas 3 would otherwise
         # infer a string dtype and turn them into NaN.
         return pd.DataFrame(
-            results, columns=["site_url", "library_code", "source_system", "source_id"], dtype=object,
+            results, columns=["site_url", "library_code", "source_system", "source_id", "status"], dtype=object,
         )
 
     # -------------------------------------------------------------------
@@ -1222,6 +1228,9 @@ class SharePointLibraryManager:
                     "library does not exist on the site — nothing to rename; "
                     "its Auto groups are still emptied",
                 )
+                # Its link would otherwise stay, as nothing else removes it.
+                # A library's URL is its code, so the link is found by that.
+                lib_web_url = f"{site_url.rstrip('/')}/{library_code}"
             elif library.get("displayName") == unlinked_display:
                 # Unlinked by an earlier run: a re-run writes nothing
                 lib_web_url = library.get("webUrl", "")
