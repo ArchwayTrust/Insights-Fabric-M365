@@ -1598,6 +1598,31 @@ def test_grant_dry_run_reports_what_a_live_run_does(make_manager, tenant, site, 
     ])
 
 
+def test_a_grant_run_again_makes_no_writes(make_manager, tenant, site, library, slt_groups):
+    df = grants_df(site, [("MATH", "BAA-Sharepoint-SLT-Manual-Read", "read")])
+    make_manager().grant_group_access(df)
+    tenant.calls.clear()
+
+    results = make_manager().grant_group_access(df)
+
+    assert actions(results) == ["already_assigned"]
+    # A grant the library already holds doesn't register the group on the site (ensureuser) either
+    assert tenant.writes() == []
+
+
+def test_a_group_is_registered_once_per_site_for_all_its_libraries(make_manager, tenant, site, library, slt_groups):
+    make_manager().create_libraries(libraries_df(site, "ENG", "ART"))
+    tenant.calls.clear()
+
+    results = make_manager(max_workers=3).grant_group_access(grants_df(site, [
+        (code, "BAA-Sharepoint-SLT-Manual-Read", "read") for code in ("MATH", "ENG", "ART")
+    ]))
+
+    assert actions(results) == ["group_access_granted"] * 3
+    assert len(created(tenant, "/web/ensureuser")) == 1
+    assert len(created(tenant, "addroleassignment")) == 3
+
+
 # enforce_site_sharing_lockdown
 
 def test_lockdown_turns_sharing_off_once_per_site(make_manager, tenant, site):
@@ -2482,6 +2507,23 @@ def test_one_unresolvable_group_does_not_skip_the_sites_other_grants(make_manage
     results = make_manager().grant_group_access(df)
 
     assert sorted(actions(results)) == ["error", "group_access_granted"]
+
+
+def test_a_group_that_cant_be_registered_on_a_site_is_tried_once_for_all_its_libraries(
+    make_manager, tenant, site, library, slt_groups,
+):
+    from sharepoint_fake import response
+    make_manager().create_libraries(libraries_df(site, "ENG"))
+    tenant.fail("POST", r"/web/ensureuser$", response(400), times=1)
+    tenant.calls.clear()
+
+    results = make_manager().grant_group_access(grants_df(site, [
+        (code, "BAA-Sharepoint-SLT-Manual-Read", "read") for code in ("MATH", "ENG")
+    ]))
+
+    # Each library still gets its own error row, without registering the group again
+    assert rows(results, "error")["document_library"].tolist() == ["MATH", "ENG"]
+    assert len(created(tenant, "/web/ensureuser")) == 1
 
 
 def test_each_user_is_resolved_once_per_sync(make_manager, tenant, site):

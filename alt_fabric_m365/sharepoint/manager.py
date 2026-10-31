@@ -4,7 +4,7 @@ SharePointLibraryManager: manages SharePoint document libraries and their permis
 import logging
 import threading
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -36,7 +36,7 @@ from ._navigation import (
 )
 from ._sharepoint import (
     _add_role_assignment, _break_role_inheritance, _disable_site_sharing, _ensure_group_assigned_to_library,
-    _ensure_library_metadata, _get_library_group_roles, _get_library_properties, _get_library_role_assignments,
+    _ensure_library_metadata, _get_library_group_roles, _get_library_properties,
     _get_site_sharing_settings, _group_claims, _has_unique_permissions, _remove_library_role_assignment,
     _resolve_group_principal_id, _resolve_role_def_ids,
 )
@@ -2895,19 +2895,22 @@ class SharePointLibraryManager:
         self,
         site_url: str,
         library_code: str,
-        grants: list[tuple[str, str, str, int | None]],
+        grants: list[tuple[str, str, str]],
         dry_run: bool,
         role_def_ids: dict[str, int],
         existing_lists: dict[str, dict],
+        principal_id: Callable[[str, str], int],
         *,
         action_log: _ThreadSafeLog,
     ) -> None:
-        """Ensure each (group_name, role, group_id, principal_id) grant on one library.
+        """Ensure each (group_name, role, group_id) grant on one library.
 
-        Principal IDs are pre-resolved per site by grant_group_access (None
-        in a dry run, as resolving one is a write).  The library's role
-        assignments are read once so only missing bindings are written, and
-        the audit log distinguishes real grants from no-ops.
+        The library's role assignments are read once, by the groups' claims
+        login names, so a grant it already holds needs no write, not even the
+        ensureuser that gives a group's principal ID.  Only a missing grant
+        gets the principal ID, from *principal_id*, which grant_group_access
+        caches per site and group.  A group SharePoint can't resolve gets an
+        error row, and the library's other grants still go ahead.
         """
         try:
             # Same reasoning as membership sync: a missing library is a
@@ -2924,18 +2927,10 @@ class SharePointLibraryManager:
                 return
 
             list_id = existing_lists[library_code.lower()]["id"]
-            if dry_run:
-                # Without principal IDs, match groups by their claims login name
-                held_by_login = _get_library_group_roles(self._sp_token, site_url, list_id)
-            else:
-                bindings = _get_library_role_assignments(self._sp_token, site_url, list_id)
-            for group_name, role, group_id, principal_id in grants:
+            held_by_login = _get_library_group_roles(self._sp_token, site_url, list_id)
+            for group_name, role, group_id in grants:
                 role_def_id = role_def_ids[role]
-                held = (
-                    held_by_login.get(_group_claims(group_id).lower(), set()) if dry_run
-                    else bindings.get(principal_id, set())
-                )
-                if role_def_id in held:
+                if role_def_id in held_by_login.get(_group_claims(group_id).lower(), set()):
                     _append_log(
                         action_log, site_url, library_code,
                         "already_assigned", "no change needed",
@@ -2950,7 +2945,13 @@ class SharePointLibraryManager:
                         group=group_name, permission=role,
                     )
                     continue
-                _add_role_assignment(self._sp_token, site_url, list_id, principal_id, role_def_id)
+                try:
+                    group_principal_id = principal_id(site_url, group_id)
+                except (requests.RequestException, ValueError, KeyError) as exc:
+                    logger.error("Group '%s' on '%s': %s", group_name, site_url, exc)
+                    _append_log(action_log, site_url, library_code, "error", str(exc), group=group_name)
+                    continue
+                _add_role_assignment(self._sp_token, site_url, list_id, group_principal_id, role_def_id)
                 logger.info(
                     "Granted '%s' %s on library '%s' (%s)",
                     group_name, role, library_code, site_url,
@@ -2990,9 +2991,12 @@ class SharePointLibraryManager:
         unique permissions (as ``create_libraries`` leaves them); SharePoint
         rejects role assignments on a library that still inherits.
 
-        A dry run reads the groups, sites and role assignments, so it logs
-        the same rows a live run would, with ``grant_group_access (dry run)``
-        in place of ``group_access_granted``.
+        A grant a library already holds makes no write, so a run that changes
+        nothing writes nothing: a group is only registered on a site
+        (ensureuser) when one of its libraries needs a new grant, and then
+        once per site.  A dry run reads the groups, sites and role
+        assignments, so it logs the same rows a live run would, with
+        ``grant_group_access (dry run)`` in place of ``group_access_granted``.
 
         Required DataFrame columns:
           - site_url:      Full SharePoint site URL
@@ -3031,11 +3035,9 @@ class SharePointLibraryManager:
 
         action_log = _ThreadSafeLog()
 
-        # Per-site prefetch: lists, role definitions, and each group's
-        # SharePoint principal ID — the principal is per site, so ensureuser
-        # runs once per (site, group) rather than once per library.  A site
-        # whose prefetch fails gets an error row and its grants are skipped.
-        # Everything but ensureuser is a read, so dry runs do the rest too.
+        # Per-site prefetch: lists and role definitions.  A site whose
+        # prefetch fails gets an error row and its grants are skipped.  It's
+        # all reads, so dry runs do it too.
         group_ids: dict[str, str] = {}
         for group_name in df["group_name"].unique():
             # Exact-name lookup, as create_libraries uses when ensuring
@@ -3061,35 +3063,38 @@ class SharePointLibraryManager:
             df["site_url"].unique(), action_log, role_definitions=True, max_workers=max_workers_,
         )
         principal_ids: dict[tuple[str, str], int] = {}
-        if not dry_run_:
-            for site_url_key in sites:
-                site_groups = df.loc[df["site_url"] == site_url_key, "group_name"].unique()
-                for group_name in site_groups:
-                    if group_name not in group_ids:
-                        continue
-                    # Per group, so one group that SharePoint can't resolve
-                    # doesn't skip the other groups' grants on the site.
+        principal_ids_lock = threading.Lock()
+        principal_id_failures: dict[tuple[str, str], Exception] = {}
+
+        def principal_id(site_url: str, group_id: str) -> int:
+            """Return a group's principal ID on a site, registering it there (ensureuser) the first time.
+
+            A principal is per site, and ensureuser is a write, so it's only
+            called for a grant a library doesn't hold yet, and then once per
+            site and group.  The lock is held while the ID is got, so
+            libraries running in parallel don't each get it.  A failure is
+            kept too, and raised again for the site's other libraries rather
+            than tried again with its retries.
+            """
+            key = (site_url, group_id)
+            with principal_ids_lock:
+                if key not in principal_ids and key not in principal_id_failures:
                     try:
-                        principal_ids[(site_url_key, group_name)] = _resolve_group_principal_id(
-                            self._sp_token, site_url_key, _group_claims(group_ids[group_name]),
+                        principal_ids[key] = _resolve_group_principal_id(
+                            self._sp_token, site_url, _group_claims(group_id),
                         )
                     except (requests.RequestException, ValueError, KeyError) as exc:
-                        logger.error("Group '%s' on '%s': %s", group_name, site_url_key, exc)
-                        _append_log(
-                            action_log, site_url_key, "", "error", str(exc), group=group_name,
-                        )
+                        principal_id_failures[key] = exc
+                if key in principal_id_failures:
+                    raise principal_id_failures[key]
+                return principal_ids[key]
 
-        grants_by_library: dict[tuple[str, str], list[tuple[str, str, str, int | None]]] = {}
+        grants_by_library: dict[tuple[str, str], list[tuple[str, str, str]]] = {}
         for row in df.itertuples(index=False):
             if row.site_url not in sites or row.group_name not in group_ids:
                 continue  # site prefetch failed, or group missing or ambiguous — already logged
-            principal_id = None
-            if not dry_run_:
-                principal_id = principal_ids.get((row.site_url, row.group_name))
-                if principal_id is None:
-                    continue  # SharePoint couldn't resolve the group — already logged
             grants_by_library.setdefault((row.site_url, row.library_code), []).append(
-                (row.group_name, row.permission, group_ids[row.group_name], principal_id)
+                (row.group_name, row.permission, group_ids[row.group_name])
             )
 
         items = [
@@ -3097,6 +3102,7 @@ class SharePointLibraryManager:
                 site_url, library_code, grants, dry_run_,
                 sites[site_url]["role_def_ids"],
                 sites[site_url]["lists"],
+                principal_id,
             )
             for (site_url, library_code), grants in grants_by_library.items()
         ]
