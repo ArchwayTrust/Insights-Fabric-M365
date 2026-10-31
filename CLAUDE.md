@@ -89,7 +89,7 @@ No test calls a real service. `requests` is mocked and `notebookutils` and Spark
 | `test_sharepoint_manager.py` | Each `SharePointLibraryManager` operation end to end |
 | `test_readme_flow.py` | Runs the README's recommended flow |
 | `test_faculty_notebook.py` | Runs the example notebook cell by cell |
-| `test_packaging.py` | The version, public names, that removed names stay removed, and that every README Python example parses |
+| `test_packaging.py` | The version, public names, that removed names stay removed, what the source distribution ships and its licence metadata, and that every README Python example parses |
 
 Expectations for a change:
 
