@@ -83,6 +83,14 @@ def test_parse_retry_after_date_in_the_past_is_zero():
      "Status code: 403, invalid_request: Token type is not allowed."),
     ({"error": {"message": {"value": "The specified user could not be found."}}},
      "Status code: 403, The specified user could not be found."),
+    # A code without a message, or a message that's empty
+    ({"error": {"code": "Authorization_RequestDenied"}}, "Status code: 403, Authorization_RequestDenied"),
+    ({"error": {"code": "Authorization_RequestDenied", "message": ""}}, "Status code: 403, Authorization_RequestDenied"),
+    ({"error": "invalid_request"}, "Status code: 403, invalid_request"),
+    # Fields that aren't text are left out, not written to the action log
+    ({"error": {"message": {"value": {"unexpected": "payload"}}}}, "Status code: 403, Forbidden"),
+    ({"error": {"code": {"nested": 1}, "message": "Access denied."}}, "Status code: 403, Access denied."),
+    ({"error": "invalid_request", "error_description": ["a", "list"]}, "Status code: 403, invalid_request"),
     # Not a service error: the reason phrase
     (["not", "a", "dict"], "Status code: 403, Forbidden"),
     (None, "Status code: 403, Forbidden"),

@@ -131,8 +131,12 @@ def _service_error(resp: requests.Response) -> tuple[str | None, str | None]:
         resp: The response.
 
     Returns:
-        The code and message. Either is None if the body isn't one of those shapes.
+        The code and message. Either is None if the body isn't one of those shapes, or the value isn't a non-empty
+        string: the message is written to the action log, so nothing else from the body is.
     """
+    def text(value: object) -> str | None:
+        return value if isinstance(value, str) and value.strip() else None
+
     try:
         body = resp.json()
     except ValueError:
@@ -144,9 +148,9 @@ def _service_error(resp: requests.Response) -> tuple[str | None, str | None]:
         message = error.get("message")
         if isinstance(message, dict):
             message = message.get("value")
-        return error.get("code"), message
+        return text(error.get("code")), text(message)
     if isinstance(error, str):
-        return error, body.get("error_description")
+        return text(error), text(body.get("error_description"))
     return None, None
 
 
@@ -167,10 +171,7 @@ def _raise_for_status(resp: requests.Response) -> None:
     if resp.status_code < 400:
         return
     code, message = _service_error(resp)
-    if code or message:
-        detail = f"{code}: {message}" if code else message
-    else:
-        detail = resp.reason or "no error details"
+    detail = ": ".join(part for part in (code, message) if part) or resp.reason or "no error details"
     raise requests.HTTPError(f"Status code: {resp.status_code}, {detail}", response=resp)
 
 
