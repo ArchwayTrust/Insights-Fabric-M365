@@ -368,6 +368,18 @@ def test_each_attempt_sends_a_current_token(sleeps, first):
     assert headers["Authorization"] == "Bearer token-0"  # the caller's headers are left alone
 
 
+def test_each_redirect_hop_sends_a_current_token(sleeps):
+    issued = iter(range(10))
+    token = _http._RenewableToken(lambda: f"token-{next(issued)}")  # renewed whenever it's asked for
+    redirect = response(307, headers={"Location": URL + "?hop=1"})
+    with patch_request(side_effect=[redirect, response(200, {})]) as request:
+        _request_with_retry("POST", URL, headers={"Authorization": _http._bearer(token)})
+
+    assert [call.kwargs["headers"]["Authorization"] for call in request.call_args_list] == [
+        "Bearer token-1", "Bearer token-2",
+    ]
+
+
 def test_a_plain_token_is_sent_as_given(sleeps):
     with patch_request(side_effect=[response(503), response(200, {})]) as request:
         _request_with_retry("GET", URL, headers={"Authorization": _http._bearer("abc")})
