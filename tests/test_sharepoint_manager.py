@@ -621,6 +621,59 @@ def test_onedrive_shortcut_failure_does_not_block_the_sync(make_manager, tenant,
     assert tenant.member_upns("BAA-Sharepoint-MATH-Auto-Contribute") == ["jo@contoso.com"]
 
 
+def test_memberships_dry_run_shows_the_adds_and_removals_a_live_run_makes(make_manager, tenant, site, library):
+    jo, sam, _ = (tenant.add_user(f"{name}@contoso.com") for name in ("jo", "sam", "ali"))
+    tenant.group_named("BAA-Sharepoint-MATH-Auto-Contribute")["members"].update({jo["id"]: jo, sam["id"]: sam})
+    df = memberships_df(site, [("MATH", "jo@contoso.com", "contribute"), ("MATH", "ali@contoso.com", "contribute")])
+    tenant.calls.clear()
+
+    dry = make_manager(dry_run=True).update_memberships(df)
+
+    assert tenant.writes() == []
+    assert sorted(dry[["action", "user"]].values.tolist()) == [
+        ["add_to_group (dry run)", "ali@contoso.com"], ["already_assigned", ""],
+        ["already_member", "jo@contoso.com"], ["remove_from_group (dry run)", "sam@contoso.com"],
+    ]
+
+    live = make_manager().update_memberships(df)
+
+    assert sorted(live[["action", "user"]].values.tolist()) == [
+        ["added_to_group", "ali@contoso.com"], ["already_assigned", ""],
+        ["already_member", "jo@contoso.com"], ["removed_from_group", "sam@contoso.com"],
+    ]
+
+
+@pytest.mark.parametrize("allow_mass_removal", [False, True])
+def test_memberships_dry_run_shows_the_removal_guardrail(make_manager, tenant, site, library, allow_mass_removal):
+    contribute = tenant.group_named("BAA-Sharepoint-MATH-Auto-Contribute")
+    for i in range(11):
+        user = tenant.add_user(f"user{i}@contoso.com")
+        contribute["members"][user["id"]] = user
+    tenant.calls.clear()
+
+    results = make_manager(dry_run=True, allow_mass_removal=allow_mass_removal).update_memberships(
+        memberships_df(site, []), libraries_df=libraries_df(site, "MATH"),
+    )
+
+    assert tenant.writes() == []
+    assert actions(results) == (
+        ["remove_from_group (dry run)"] * 11 if allow_mass_removal else ["removal_guardrail_triggered"]
+    )
+
+
+def test_memberships_dry_run_shows_removals_skipped_for_unresolved_users(make_manager, tenant, site, library):
+    sam = tenant.add_user("sam@contoso.com")
+    tenant.group_named("BAA-Sharepoint-MATH-Auto-Contribute")["members"][sam["id"]] = sam
+    tenant.calls.clear()
+
+    results = make_manager(dry_run=True).update_memberships(
+        memberships_df(site, [("MATH", "nobody@contoso.com", "contribute")]),
+    )
+
+    assert tenant.writes() == []
+    assert actions(results) == ["removals_skipped", "user_not_found"]
+
+
 def test_memberships_dry_run_makes_no_writes(make_manager, tenant, site, library):
     tenant.add_user("jo@contoso.com")
     tenant.calls.clear()
@@ -801,7 +854,7 @@ def test_nested_group_add_failure_is_fatal(make_manager, tenant, site, library):
     assert "nested group 'BAA All Staff'" in failed.status
 
 
-def test_memberships_dry_run_lists_shortcuts_nested_groups_and_reconciles(make_manager, tenant, site, library):
+def test_memberships_dry_run_lists_new_groups_shortcuts_and_nested_groups(make_manager, tenant, site, library):
     tenant.add_user("jo@contoso.com")
     tenant.add_group("BAA All Staff")
     nested = pd.DataFrame({
@@ -816,10 +869,9 @@ def test_memberships_dry_run_lists_shortcuts_nested_groups_and_reconciles(make_m
 
     assert tenant.writes() == []
     assert actions(results) == sorted([
-        "ensure_group (dry run)", "add_to_group (dry run)", "onedrive_shortcut (dry run)",  # owner
-        "ensure_group (dry run)", "add_to_group (dry run)",  # read, nested group
-        "reconcile_group (dry run)",  # contribute exists but has no desired members
-    ])
+        "ensure_group (dry run)", "add_to_group (dry run)", "onedrive_shortcut (dry run)",  # owner, a new group
+        "already_assigned", "add_to_group (dry run)",  # read, nested group
+    ])  # contribute exists, but has no members to remove
 
 
 def test_rename_dry_run_with_a_changed_code(make_manager, tenant, site):
@@ -1131,8 +1183,8 @@ def test_dry_run_reports_ownership_without_changing_it(make_manager, tenant, sit
     assert tenant.writes() == []
     assert legacy["owners"] == set()
     assert results[["document_library", "action"]].values.tolist() == [
-        ["MATH", "group_owner_added (dry run)"], ["MATH", "ensure_group (dry run)"], ["MATH", "add_to_group (dry run)"],
-        ["ENG", "group_not_owned"],
+        ["MATH", "group_owner_added (dry run)"], ["MATH", "group_assigned (dry run)"],
+        ["MATH", "add_to_group (dry run)"], ["ENG", "group_not_owned"],
     ]
 
 
@@ -1158,6 +1210,8 @@ def test_create_dry_run_reports_ownership_without_changing_it(make_manager, tena
 def test_dry_run_reports_adopting_a_group_it_would_empty(make_manager, tenant, site):
     site.add_list("MATH", unique=True)
     legacy = tenant.add_group("BAA-Sharepoint-MATH-Auto-Read")
+    jo = tenant.add_user("jo@contoso.com")
+    legacy["members"][jo["id"]] = jo
     tenant.calls.clear()
 
     results = make_manager(dry_run=True).update_memberships(
@@ -1166,7 +1220,7 @@ def test_dry_run_reports_adopting_a_group_it_would_empty(make_manager, tenant, s
 
     assert tenant.writes() == []
     assert legacy["owners"] == set()
-    assert results["action"].tolist() == ["group_owner_added (dry run)", "reconcile_group (dry run)"]
+    assert results["action"].tolist() == ["group_owner_added (dry run)", "remove_from_group (dry run)"]
 
 
 def test_renaming_a_library_keeps_group_names_and_updates_descriptions(make_manager, tenant, site):

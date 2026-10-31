@@ -938,7 +938,7 @@ if not failures.empty:
 
 ### Safety features
 
-- **Dry run.** With `dry_run=True` nothing is changed; the log shows what would be, with actions ending `(dry run)`.
+- **Dry run.** With `dry_run=True` nothing is changed; the log shows what would be, with actions ending `(dry run)`. A dry run of `update_memberships` reads each group's current members, so it lists the members a live run would add and remove, and shows `removals_skipped` and `removal_guardrail_triggered` where a live run would.
 - **Removal guardrail.** If syncing a group would remove more than `max_removals_per_group` members, its removals are skipped and logged as `removal_guardrail_triggered` (additions still happen). Re-run with `allow_mass_removal=True` once you've checked the data.
 - **Incomplete data never drives removals.** If any user (or nested group) for a role can't be resolved, removals of that kind from that role's group are skipped (`removals_skipped`), as the "stale" member may be the one that failed to resolve.
 - **Manual groups are never synced or emptied,** and service principals and devices in Auto groups are left in place.

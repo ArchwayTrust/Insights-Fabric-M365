@@ -1605,9 +1605,9 @@ class SharePointLibraryManager:
                 )
                 return
 
-            # Resolve the SP list ID for role assignment calls
-            if not dry_run:
-                list_id = _get_list_id(self._graph_token, site_id, library_code, existing=existing_lists)
+            # Resolve the SP list ID for role assignment calls (from the
+            # prefetched lists, so dry runs can read the assignments too)
+            list_id = _get_list_id(self._graph_token, site_id, library_code, existing=existing_lists)
 
             # Build desired state grouped by permission level.  Seeding every
             # valid role keeps absent roles in the reconcile loop (desired-empty).
@@ -1711,9 +1711,10 @@ class SharePointLibraryManager:
             # proceed for all groups in parallel instead of waiting sequentially.
             # Roles with an empty desired set only reconcile groups that already
             # exist — a group is never created just to be emptied.
-            created_role_groups: list[tuple[str, str, str, bool, set[str], dict[str, str], bool]] = []
+            created_role_groups: list[tuple[str, str, str | None, bool, set[str], dict[str, str], bool]] = []
             # Each entry: (role, group_display_name, group_id, is_new_group,
-            #              desired_upns, desired_groups, assign_needed)
+            #              desired_upns, desired_groups, assign_needed).
+            # group_id is None for a group a dry run would create.
 
             for role in VALID_ROLES:
                 desired_upns = real_desired_by_role.get(role, set())
@@ -1728,69 +1729,28 @@ class SharePointLibraryManager:
                     f"on {site_url} — managed by SharePoint Library Permissions Manager"
                 )
 
-                if dry_run:
-                    if desired_upns or desired_groups:
-                        # Ownership is only read, so the dry run shows groups
-                        # a live run would refuse or adopt.
-                        existing_group = _get_unique_group(existing_groups_by_name, group_display_name)
-                        if existing_group and not self._check_group_owner(
-                            existing_group["id"], group_display_name, site_url, library_code,
-                            role, action_log, dry_run=True,
-                        ):
-                            continue
-                        logger.info("[DRY RUN] Would ensure group '%s'", group_display_name)
+                existing_group = _get_unique_group(existing_groups_by_name, group_display_name)
+                # Auto groups are the automation's own: never add members to,
+                # grant, or empty a same-named group it doesn't own.  A dry
+                # run only reads the owners, so it shows groups a live run
+                # would refuse or adopt.
+                if existing_group and not self._check_group_owner(
+                    existing_group["id"], group_display_name, site_url, library_code,
+                    role, action_log, dry_run=dry_run,
+                ):
+                    continue
+                if desired_upns or desired_groups:
+                    if existing_group:
+                        group_id, is_new_group = existing_group["id"], False
+                    elif dry_run:
+                        logger.info("[DRY RUN] Would create group '%s'", group_display_name)
                         _append_log(
                             action_log, site_url, library_code,
                             "ensure_group (dry run)",
-                            "would ensure group exists and is assigned to library",
+                            "would create the group and assign it to the library",
                             group=group_display_name, permission=role,
                         )
-                        for upn in desired_upns:
-                            _append_log(
-                                action_log, site_url, library_code,
-                                "add_to_group (dry run)", "would add to group",
-                                group=group_display_name, user=upn, permission=role,
-                            )
-                            if create_onedrive_shortcuts:
-                                _append_log(
-                                    action_log, site_url, library_code,
-                                    "onedrive_shortcut (dry run)", "would create OneDrive shortcut",
-                                    group=group_display_name, user=upn, permission=role,
-                                )
-                        for member_key, member_name in desired_groups.items():
-                            _append_log(
-                                action_log, site_url, library_code,
-                                "add_to_group (dry run)",
-                                f"would nest group '{member_name}' in group",
-                                group=group_display_name, user=member_key, permission=role,
-                            )
-                    else:
-                        existing_group = _get_unique_group(existing_groups_by_name, group_display_name)
-                        if existing_group and self._check_group_owner(
-                            existing_group["id"], group_display_name, site_url, library_code,
-                            role, action_log, dry_run=True,
-                        ):
-                            _append_log(
-                                action_log, site_url, library_code,
-                                "reconcile_group (dry run)",
-                                "no desired members — would remove all current members "
-                                "(subject to the removal guardrail)",
-                                group=group_display_name, permission=role,
-                            )
-                    continue
-
-                existing_group = _get_unique_group(existing_groups_by_name, group_display_name)
-                if desired_upns or desired_groups:
-                    if existing_group:
-                        # Auto groups are the automation's own: never add
-                        # members to, or grant, a same-named group it
-                        # doesn't own.
-                        if not self._check_group_owner(
-                            existing_group["id"], group_display_name, site_url, library_code,
-                            role, action_log,
-                        ):
-                            continue
-                        group_id, is_new_group = existing_group["id"], False
+                        group_id, is_new_group = None, True
                     else:
                         group_id = _create_security_group(
                             self._graph_token, group_display_name, group_description,
@@ -1801,11 +1761,7 @@ class SharePointLibraryManager:
                         (role, group_display_name, group_id, is_new_group,
                          desired_upns, desired_groups, True)
                     )
-                # Emptying is destructive, so only for the app's own groups
-                elif existing_group and self._check_group_owner(
-                    existing_group["id"], group_display_name, site_url, library_code,
-                    role, action_log,
-                ):
+                elif existing_group:
                     created_role_groups.append(
                         (role, group_display_name, existing_group["id"], False,
                          desired_upns, desired_groups, False)
@@ -1835,7 +1791,17 @@ class SharePointLibraryManager:
 
             for (role, group_display_name, group_id, is_new_group,
                  desired_upns, desired_groups, assign_needed) in created_role_groups:
-                if assign_needed:
+                if assign_needed and dry_run:
+                    # A group the dry run would create was logged as ensure_group above
+                    if not is_new_group:
+                        held = role_def_ids[role] in existing_roles.get(_group_claims(group_id).lower(), set())
+                        _append_log(
+                            action_log, site_url, library_code,
+                            *(("already_assigned", "no change needed") if held
+                              else ("group_assigned (dry run)", "would assign the group to the library")),
+                            group=group_display_name, permission=role,
+                        )
+                elif assign_needed:
                     role_def_id = role_def_ids[role]
                     granted = _ensure_group_assigned_to_library(
                         self._sp_token, site_url, list_id,
@@ -1864,6 +1830,21 @@ class SharePointLibraryManager:
                                 "already_member", "no change needed",
                                 group=group_display_name, user=upn, permission=role,
                             )
+                            continue
+
+                        if dry_run:
+                            _append_log(
+                                action_log, site_url, library_code,
+                                "add_to_group (dry run)", "would add to group",
+                                group=group_display_name, user=upn, permission=role,
+                            )
+                            if create_onedrive_shortcuts and upn not in shortcuts_created:
+                                shortcuts_created.add(upn)
+                                _append_log(
+                                    action_log, site_url, library_code,
+                                    "onedrive_shortcut (dry run)", "would create OneDrive shortcut",
+                                    group=group_display_name, user=upn, permission=role,
+                                )
                             continue
 
                         _add_group_member(
@@ -1930,6 +1911,14 @@ class SharePointLibraryManager:
                                 action_log, site_url, library_code,
                                 "already_member",
                                 f"no change needed (nested group '{member_name}')",
+                                group=group_display_name, user=member_key, permission=role,
+                            )
+                            continue
+
+                        if dry_run:
+                            _append_log(
+                                action_log, site_url, library_code,
+                                "add_to_group (dry run)", f"would nest group '{member_name}' in group",
                                 group=group_display_name, user=member_key, permission=role,
                             )
                             continue
@@ -2016,6 +2005,13 @@ class SharePointLibraryManager:
                         "Removal guardrail: %d planned removals from '%s' exceed cap %d — skipped",
                         len(removal_candidates), group_display_name, max_removals_per_group,
                     )
+                elif dry_run:
+                    for member_key in removal_candidates:
+                        _append_log(
+                            action_log, site_url, library_code,
+                            "remove_from_group (dry run)", "would remove from group",
+                            group=group_display_name, user=member_key, permission=role,
+                        )
                 else:
                     for member_key, member_oid in removal_candidates.items():
                         try:
@@ -2086,6 +2082,12 @@ class SharePointLibraryManager:
 
         This method does NOT create libraries or break role inheritance — call
         ``create_libraries`` first for new libraries.
+
+        A dry run reads each group's owners, current members and library
+        assignment, so it logs the same rows a live run would (adds and
+        removals as ``add_to_group (dry run)`` and ``remove_from_group (dry
+        run)``, including ``removals_skipped`` and
+        ``removal_guardrail_triggered``), without changing anything.
 
         Required DataFrame columns:
           - site_url:             Full SharePoint site URL
