@@ -83,7 +83,10 @@ class SharePointLibraryManager:
         sharepoint_hostname:  e.g. ``"contoso.sharepoint.com"``.
         dry_run:              Default dry-run mode for all operations.
         max_workers:          Default parallelism for all operations.
-        include_site_name:    Include the site name in security group names.
+        include_site_name:    Include the site name in security group names.  The
+            site name is the last segment of the site URL, letters and digits
+            only, so two sites can share it (``/sites/hr``, ``/teams/hr``):
+            give such sites different group prefixes.
         create_onedrive_shortcuts:
             Default for ``update_memberships``.  When True, a OneDrive
             shortcut is created for each newly added user.
