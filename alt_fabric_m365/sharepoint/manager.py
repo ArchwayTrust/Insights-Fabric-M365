@@ -1243,12 +1243,20 @@ class SharePointLibraryManager:
                         group=group_name,
                     )
                 else:
-                    removed = _empty_group_members(self._graph_token, existing_group["id"])
+                    removed, failures = _empty_group_members(self._graph_token, existing_group["id"])
                     _append_log(
                         action_log, site_url, library_code,
-                        "group_emptied", f"removed {removed} member(s)",
+                        "group_emptied",
+                        f"removed {removed} member(s)" + (
+                            f"; {len(failures)} couldn't be removed" if failures else ""
+                        ),
                         group=group_name,
                     )
+                    for member_key, exc in failures.items():
+                        _append_log(
+                            action_log, site_url, library_code, "remove_failed", str(exc),
+                            group=group_name, user=member_key,
+                        )
 
             # Manual groups are deliberately preserved (never emptied or
             # synced).  Recorded unconditionally — a Graph existence check is
@@ -2223,10 +2231,10 @@ class SharePointLibraryManager:
                 )
                 continue
             try:
-                _remove_group_member(self._graph_token, removal["group_id"], member_oid)
+                removed = _remove_group_member(self._graph_token, removal["group_id"], member_oid)
                 _append_log(
                     action_log, site_url, library_code,
-                    "removed_from_group", "success",
+                    "removed_from_group", "success" if removed else "already removed",
                     group=group_name, user=member_key, permission=role,
                 )
                 logger.info("Removed '%s' from group '%s'", member_key, group_name)
