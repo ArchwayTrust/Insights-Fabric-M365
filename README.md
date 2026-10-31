@@ -949,7 +949,7 @@ if not failures.empty:
 - **Only document libraries count as libraries.** An ordinary list whose URL ends in the code (`/Lists/ENG`) is never adopted, though its title still counts for `library_name_conflict`.
 - **A moved library keeps working until its replacement exists.** Given `new_site_url`, `retire_moved_libraries` leaves the old library alone (`retire_deferred`) until the library exists on the new site.
 - **Permission levels are found by type**, not by name, so sites in another language, or with renamed levels, work too.
-- **Tokens only go to your tenant.** Every `site_url` must be `https://` on `sharepoint_hostname`, and redirects to another host or to plain http are refused. A redirect that can't be followed is an error, never a success.
+- **Tokens only go to your tenant.** Every `site_url` must be `https://` on `sharepoint_hostname`, with no user name and no backslash before its path (which some URL parsers read as part of the host and others don't), and redirects to another host or to plain http are refused. A redirect that can't be followed is an error, never a success.
 - **Throttling and transient errors are retried,** honouring `Retry-After`, with exponential backoff.
 
 ### Adopting groups created by earlier versions
@@ -1242,7 +1242,7 @@ Outside Fabric, `KeyVaultCertificateCredential` isn't available (it needs `noteb
 | Graph or SharePoint `403` for every site | `Sites.Selected` (or another `Sites.*` permission) is missing from that API on the app registration, or lacks admin consent. Graph and SharePoint each need their own. Check the token's `roles` claim, see [Checking what a token contains](#checking-what-a-token-contains). |
 | `403` when running `New-MgSitePermission` | The account running it needs `Sites.FullControl.All` consented for Microsoft Graph PowerShell, a SharePoint Administrator role, and access to the site. |
 | Graph `403` after granting a permission | Tokens issued before the change don't include it. Create a new credential or start a new session to get a fresh token. |
-| `ValueError: site_url '...' is not on https://...` | A `site_url` isn't on the `sharepoint_hostname` the manager was created with, or uses `http://`. |
+| `ValueError: site_url '...' is not on https://...` | A `site_url` isn't on the `sharepoint_hostname` the manager was created with, uses `http://`, or has a user name or a backslash before its path. |
 | `error` row: `Multiple Entra groups share displayName` | Two groups have the name the manager uses for a library. Delete or rename the duplicate. |
 | `user_not_found` rows | The address matches no user's UPN, mail or proxy addresses. Fix it in the source data; the next run picks the user up. |
 | `removal_guardrail_triggered` row | A sync would remove more members than `max_removals_per_group`. Check the input data, then re-run with `allow_mass_removal=True`. |

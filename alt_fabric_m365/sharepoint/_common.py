@@ -9,6 +9,8 @@ from urllib.parse import urlparse
 
 import pandas as pd
 
+from ._http import _has_ambiguous_host
+
 GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0"
 
 # Permission levels accepted in input DataFrames (ordered for deterministic
@@ -132,7 +134,8 @@ def _validate_site_urls(site_urls: Iterable[str], sharepoint_hostname: str | Non
 
     With *sharepoint_hostname*, each URL must also be https on that host:
     the SharePoint bearer token is sent to the site URL, so a URL on any
-    other host (or over plain http) would hand the token to it.
+    other host (or over plain http) would hand the token to it.  So would a
+    URL that requests reads as being on another host, see _has_ambiguous_host.
     """
     for site_url in site_urls:
         parsed = urlparse(site_url)
@@ -142,7 +145,9 @@ def _validate_site_urls(site_urls: Iterable[str], sharepoint_hostname: str | Non
                 f"— expected https://{{tenant}}.sharepoint.com/sites/{{name}}"
             )
         if sharepoint_hostname is not None and (
-            parsed.scheme != "https" or parsed.hostname.lower() != sharepoint_hostname.lower()
+            parsed.scheme != "https"
+            or _has_ambiguous_host(site_url)
+            or parsed.hostname.lower() != sharepoint_hostname.lower()
         ):
             raise ValueError(
                 f"site_url '{site_url}' is not on https://{sharepoint_hostname} — "
