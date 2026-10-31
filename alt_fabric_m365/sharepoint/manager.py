@@ -2085,6 +2085,8 @@ class SharePointLibraryManager:
                  without *allow_mass_removal* (``removal_guardrail_triggered``).
           6. Optionally creates a OneDrive shortcut in each newly added user's
              OneDrive so the library appears in their drive root immediately.
+             A shortcut that fails is logged as ``onedrive_shortcut_failed``
+             and not tried again, as later runs find the user already a member.
 
         This method does NOT create libraries or break role inheritance — call
         ``create_libraries`` first for new libraries.
