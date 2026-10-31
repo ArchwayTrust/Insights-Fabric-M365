@@ -90,7 +90,7 @@ logger = logging.getLogger(__name__)
 class _ThreadSafeLog:
     """Append-only log safe for concurrent use from multiple threads."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._entries: list[dict] = []
         self._lock = threading.Lock()
 

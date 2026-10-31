@@ -6,6 +6,7 @@ import threading
 import time
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
+from typing import Any
 
 import pandas as pd
 import requests
@@ -60,9 +61,8 @@ class SharePointLibraryManager:
     """Manage SharePoint document library permissions via Entra ID security groups.
 
     Authenticate once in the constructor, then call any operation method.
-    Instance-level defaults for ``dry_run``, ``max_workers``,
-    ``include_site_name``, and ``create_onedrive_shortcuts`` can be
-    overridden per call.
+    Every option but ``service_principal_id`` is a default that the
+    operations taking it can override per call.
 
     The app registration needs these application permissions, with admin
     consent: Microsoft Graph ``Sites.FullControl.All`` (or
@@ -81,38 +81,59 @@ class SharePointLibraryManager:
                               use a certificate, as SharePoint rejects app-only
                               tokens obtained with a client secret.
         sharepoint_hostname:  e.g. ``"contoso.sharepoint.com"``.
-        dry_run:              Default dry-run mode for all operations.
-        max_workers:          Default parallelism for all operations.
-        include_site_name:    Include the site name in security group names.  The
-            site name is the last segment of the site URL, letters and digits
-            only, so two sites can share it (``/sites/hr``, ``/teams/hr``):
-            give such sites different group prefixes.
+        dry_run:              Optional. Default dry-run mode for all operations.
+                              Defaults to False.
+        max_workers:          Optional. Default parallelism for all operations.
+                              Defaults to 1.
+        include_site_name:    Optional. Include the site name in security group
+            names.  The site name is the last segment of the site URL, letters
+            and digits only, so two sites can share it (``/sites/hr``,
+            ``/teams/hr``): give such sites different group prefixes.  Defaults
+            to True.
         create_onedrive_shortcuts:
-            Default for ``update_memberships``.  When True, a OneDrive
-            shortcut is created for each newly added user.
+            Optional. Default for ``update_memberships``.  When True, a OneDrive
+            shortcut is created for each newly added user.  Defaults to False.
         max_removals_per_group:
-            Guardrail for ``update_memberships``: when a single group's sync
-            would remove more members than this, the removals are skipped and
-            logged as ``removal_guardrail_triggered`` (adds still proceed).
+            Optional. Guardrail for ``update_memberships``: when a single group's
+            sync would remove more members than this, the removals are skipped
+            and logged as ``removal_guardrail_triggered`` (adds still proceed).
+            Defaults to 10.
         max_removals_per_run:
-            Guardrail for ``update_memberships``: when one call would remove
-            more members than this across all its groups, as an empty or
+            Optional. Guardrail for ``update_memberships``: when one call would
+            remove more members than this across all its groups, as an empty or
             truncated members table would, no members are removed and one
             ``removal_guardrail_triggered`` row is logged (adds still proceed).
+            Defaults to 100.
         allow_mass_removal:
-            When True, disables both removal guardrails for the run.
+            Optional. When True, disables both removal guardrails for the run.
+            Defaults to False.
         add_to_navigation:
-            Default for ``create_libraries``, ``rename_libraries``,
+            Optional. Default for ``create_libraries``, ``rename_libraries``,
             ``unlink_libraries`` and ``retire_moved_libraries``.  When True,
             each library is linked into the site's quick-launch navigation,
             nested under the ``navigation_label`` heading (created when
-            missing); unlinking removes the link again.
+            missing); unlinking removes the link again.  Defaults to False.
         navigation_label:
-            Title of the navigation label the library links are nested under.
+            Optional. Title of the navigation label the library links are nested
+            under.  Defaults to ``"Document Libraries"``.
         service_principal_id:
-            Object ID of the app's service principal, which is made owner of
-            the groups the manager creates.  Read from the Graph token's
-            ``oid`` claim when not given.
+            Optional. Object ID of the app's service principal, which is made
+            owner of the groups the manager creates.  Defaults to the Graph
+            token's ``oid`` claim.
+
+    Attributes:
+        credential (TokenCredential): The credential tokens are requested from.
+        sharepoint_hostname (str): The SharePoint host, such as ``"contoso.sharepoint.com"``.
+        service_principal_id (str): Object ID of the app's service principal.
+        dry_run (bool): Default for each operation's ``dry_run``.
+        max_workers (int): Default for each operation's ``max_workers``.
+        include_site_name (bool): Default for each operation's ``include_site_name``.
+        create_onedrive_shortcuts (bool): Default for ``update_memberships``.
+        max_removals_per_group (int): Default for ``update_memberships``.
+        max_removals_per_run (int): Default for ``update_memberships``.
+        allow_mass_removal (bool): Default for ``update_memberships``.
+        add_to_navigation (bool): Default for the operations that take it.
+        navigation_label (str): Default for the operations that take it.
 
     Raises:
         TypeError: If an option isn't of its type, such as the string 'False'
@@ -136,7 +157,7 @@ class SharePointLibraryManager:
         add_to_navigation: bool = False,
         navigation_label: str = "Document Libraries",
         service_principal_id: str | None = None,
-    ):
+    ) -> None:
         self.dry_run = _check_option("dry_run", dry_run)
         self.max_workers = _check_option("max_workers", max_workers)
         self.include_site_name = _check_option("include_site_name", include_site_name)
@@ -252,7 +273,7 @@ class SharePointLibraryManager:
     def _sp_token(self) -> str:
         return _RenewableToken(lambda: self.credential.get_token(self._sp_scope).token)
 
-    def _resolve_config(self, **overrides) -> tuple:
+    def _resolve_config(self, **overrides: Any) -> tuple:
         """Resolve per-call overrides against instance defaults.
 
         Each keyword must name an instance attribute; None means "use the
@@ -725,11 +746,11 @@ class SharePointLibraryManager:
 
         Args:
             df:               DataFrame with the required columns.
-            dry_run:          Override instance default.
-            max_workers:      Override instance default.
-            include_site_name: Override instance default.
-            add_to_navigation: Override instance default.
-            navigation_label:  Override instance default.
+            dry_run:          Optional. Defaults to the manager's dry_run.
+            max_workers:      Optional. Defaults to the manager's max_workers.
+            include_site_name: Optional. Defaults to the manager's include_site_name.
+            add_to_navigation: Optional. Defaults to the manager's add_to_navigation.
+            navigation_label:  Optional. Defaults to the manager's navigation_label.
 
         Returns:
             Action-log DataFrame with columns: site_url, document_library,
@@ -913,8 +934,8 @@ class SharePointLibraryManager:
 
         Args:
             df:          DataFrame with the required columns.
-            dry_run:     Override instance default.
-            max_workers: Override instance default.
+            dry_run:     Optional. Defaults to the manager's dry_run.
+            max_workers: Optional. Defaults to the manager's max_workers.
 
         Returns:
             Action-log DataFrame.
@@ -1153,12 +1174,12 @@ class SharePointLibraryManager:
 
         Args:
             df:               DataFrame with the required columns.
-            dry_run:          Override instance default.
-            max_workers:      Override instance default.
-            include_site_name: Ignored, as group names don't change.  Kept so
-                               existing calls keep working.
-            add_to_navigation: Override instance default.
-            navigation_label:  Override instance default.
+            dry_run:          Optional. Defaults to the manager's dry_run.
+            max_workers:      Optional. Defaults to the manager's max_workers.
+            include_site_name: Optional. Ignored, as group names don't change.
+                               Kept so existing calls keep working.
+            add_to_navigation: Optional. Defaults to the manager's add_to_navigation.
+            navigation_label:  Optional. Defaults to the manager's navigation_label.
 
         Returns:
             Action-log DataFrame.
@@ -1420,11 +1441,11 @@ class SharePointLibraryManager:
 
         Args:
             df:               DataFrame with the required columns.
-            dry_run:          Override instance default.
-            max_workers:      Override instance default.
-            include_site_name: Override instance default.
-            add_to_navigation: Override instance default.
-            navigation_label:  Override instance default.
+            dry_run:          Optional. Defaults to the manager's dry_run.
+            max_workers:      Optional. Defaults to the manager's max_workers.
+            include_site_name: Optional. Defaults to the manager's include_site_name.
+            add_to_navigation: Optional. Defaults to the manager's add_to_navigation.
+            navigation_label:  Optional. Defaults to the manager's navigation_label.
 
         Returns:
             Action-log DataFrame.
@@ -1721,11 +1742,11 @@ class SharePointLibraryManager:
 
         Args:
             df:               DataFrame with the required columns.
-            dry_run:          Override instance default.
-            max_workers:      Override instance default.
-            include_site_name: Override instance default.
-            add_to_navigation: Override instance default.
-            navigation_label:  Override instance default.
+            dry_run:          Optional. Defaults to the manager's dry_run.
+            max_workers:      Optional. Defaults to the manager's max_workers.
+            include_site_name: Optional. Defaults to the manager's include_site_name.
+            add_to_navigation: Optional. Defaults to the manager's add_to_navigation.
+            navigation_label:  Optional. Defaults to the manager's navigation_label.
 
         Returns:
             Action-log DataFrame.
@@ -2445,11 +2466,12 @@ class SharePointLibraryManager:
 
         Args:
             df:               DataFrame with the required columns.
-            libraries_df:     Optional DataFrame (site_url, library_code,
+            libraries_df:     Optional. DataFrame (site_url, library_code,
                               group_prefix) of libraries to reconcile even when
                               they have no rows in *df* — e.g. a faculty whose
                               last member left still needs its groups emptied.
-            nested_groups_df: Optional DataFrame (site_url, library_code,
+                              Defaults to None.
+            nested_groups_df: Optional. DataFrame (site_url, library_code,
                               member_group, permission, group_prefix) of
                               existing Entra security groups to nest in the
                               library's Auto group for *permission*.
@@ -2458,18 +2480,19 @@ class SharePointLibraryManager:
                               a Microsoft 365 group / distribution list, which
                               Entra cannot nest) is logged as
                               ``group_not_found``.  Its libraries are reconciled
-                              even when they have no rows in *df*.
-            dry_run:          Override instance default.
-            max_workers:      Override instance default.
-            include_site_name: Override instance default.
+                              even when they have no rows in *df*.  Defaults to
+                              None.
+            dry_run:          Optional. Defaults to the manager's dry_run.
+            max_workers:      Optional. Defaults to the manager's max_workers.
+            include_site_name: Optional. Defaults to the manager's include_site_name.
             create_onedrive_shortcuts:
-                Override instance default.  When True, create a OneDrive
-                shortcut in each newly added user's drive root pointing to
-                the SharePoint library.  Shortcut failures are logged but
-                never block membership sync.
-            max_removals_per_group: Override instance default.
-            max_removals_per_run:   Override instance default.
-            allow_mass_removal:     Override instance default.
+                Optional. When True, create a OneDrive shortcut in each newly
+                added user's drive root pointing to the SharePoint library.
+                Shortcut failures are logged but never block membership sync.
+                Defaults to the manager's create_onedrive_shortcuts.
+            max_removals_per_group: Optional. Defaults to the manager's max_removals_per_group.
+            max_removals_per_run:   Optional. Defaults to the manager's max_removals_per_run.
+            allow_mass_removal:     Optional. Defaults to the manager's allow_mass_removal.
 
         Returns:
             Action-log DataFrame.  Rows with ``action == "user_not_found"``
@@ -2736,8 +2759,8 @@ class SharePointLibraryManager:
 
         Args:
             df:          DataFrame with the required columns.
-            dry_run:     Override instance default.
-            max_workers: Override instance default.
+            dry_run:     Optional. Defaults to the manager's dry_run.
+            max_workers: Optional. Defaults to the manager's max_workers.
 
         Returns:
             Action-log DataFrame: ``onedrive_shortcut_created``,
@@ -2897,8 +2920,8 @@ class SharePointLibraryManager:
 
         Args:
             df:          DataFrame with the required columns.
-            dry_run:     Override instance default.
-            max_workers: Override instance default.
+            dry_run:     Optional. Defaults to the manager's dry_run.
+            max_workers: Optional. Defaults to the manager's max_workers.
 
         Returns:
             Action-log DataFrame.
@@ -3092,8 +3115,8 @@ class SharePointLibraryManager:
                          more than once, including spelt differently (in
                          case, or with a trailing slash), is checked once,
                          under its first spelling.
-            dry_run:     Override instance default.
-            max_workers: Override instance default.
+            dry_run:     Optional. Defaults to the manager's dry_run.
+            max_workers: Optional. Defaults to the manager's max_workers.
 
         Returns:
             Action-log DataFrame (``document_library`` is empty for these
@@ -3152,7 +3175,10 @@ class SharePointLibraryManager:
             site_url:          Full SharePoint site URL.
             library_code:      Library code (URL slug).
             suffix:            Role suffix, e.g. 'Auto-Read' or 'Manual-Contribute'.
-            include_site_name: Override instance default.
+            include_site_name: Optional. Defaults to the manager's include_site_name.
+
+        Returns:
+            The group's display name.
 
         Raises:
             TypeError: If include_site_name, given here or to the constructor,
@@ -3166,6 +3192,9 @@ class SharePointLibraryManager:
 
     def get_site_sharing_settings(self, site_url: str) -> dict:
         """Read the site sharing settings enforce_site_sharing_lockdown governs.
+
+        Args:
+            site_url: Full SharePoint site URL.
 
         Returns:
             Dict with ``members_can_share``, ``access_requests_enabled`` and
@@ -3195,7 +3224,7 @@ class SharePointLibraryManager:
         Args:
             site_url:         Full SharePoint site URL.
             library_code:     Library code (URL slug).
-            navigation_label: Override instance default.
+            navigation_label: Optional. Defaults to the manager's navigation_label.
 
         Returns:
             The navigation node (``Id``, ``Title``, ``Url``, …), or None when

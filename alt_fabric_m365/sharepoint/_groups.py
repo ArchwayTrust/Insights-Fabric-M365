@@ -7,6 +7,7 @@ import logging
 import re
 import time
 from collections.abc import Iterable
+from typing import Any
 from urllib.parse import urlparse
 
 import requests
@@ -23,7 +24,14 @@ logger = logging.getLogger(__name__)
 
 
 def sanitise_for_group_name(name: str) -> str:
-    """Remove spaces and special chars to build a clean group name segment."""
+    """Remove spaces and special characters to build a clean group name segment.
+
+    Args:
+        name: A site name or library code, such as ``"Policy Documents"``.
+
+    Returns:
+        *name* with only its letters and digits, such as ``"PolicyDocuments"``.
+    """
     return "".join(c for c in name if c.isalnum())
 
 
@@ -46,20 +54,23 @@ def build_group_name(
 ) -> str:
     """Build a deterministic security group name.
 
-    The role suffix is used as-is, so callers control capitalisation.
+    The role suffix is used as-is, so callers control capitalisation.  For
+    example, ``build_group_name("SP", "https://…/sites/hr", "Policy Documents",
+    "Auto-Read")`` gives ``"SP-hr-PolicyDocuments-Auto-Read"``, and
+    ``"SP-PolicyDocuments-Auto-Read"`` with ``include_site_name=False``.
 
     Args:
-        include_site_name: When True (default), the site name extracted from
-            *site_url* is included in the group name.  When False it is
-            omitted, producing shorter names.
+        group_prefix: Prefix for the group name, such as ``"SP"``.
+        site_url: Full SharePoint site URL. Its last path segment, with only
+            its letters and digits, is the site name.
+        library_name: Library code. Only its letters and digits are used.
+        role: Role suffix, such as ``"Auto-Read"`` or ``"Manual-Contribute"``.
+        include_site_name: Optional. Whether to include the site name, which
+            makes names longer but unique across sites with the same prefix.
+            Defaults to True.
 
-    Examples:
-        build_group_name("SP", "https://…/sites/hr", "Policy Documents", "Auto-Read")
-        -> "SP-hr-PolicyDocuments-Auto-Read"
-
-        build_group_name("SP", "https://…/sites/hr", "Policy Documents", "Auto-Read",
-                          include_site_name=False)
-        -> "SP-PolicyDocuments-Auto-Read"
+    Returns:
+        The group's display name.
     """
     sanitised_lib = sanitise_for_group_name(library_name)
     if include_site_name:
@@ -199,7 +210,7 @@ def _set_group_description(token: str, group_id: str, description: str) -> None:
 
 
 def _request_while_replicating(
-    method: str, url: str, token: str, *, is_new_group: bool, **kwargs,
+    method: str, url: str, token: str, *, is_new_group: bool, **kwargs: Any,
 ) -> requests.Response:
     """Send a Graph request about a group, waiting out the 404 Graph returns while a new group replicates.
 
@@ -366,9 +377,19 @@ class UserResolutionError(Exception):
 
     Carries the original input and a human-readable reason so callers can
     log a clean, per-user warning instead of a raw HTTP error dump.
+
+    Attributes:
+        user_principal_name (str): The user principal name or email that was looked up.
+        reason (str): Why it couldn't be resolved, such as ``"not found by UPN, mail, or proxyAddresses"``.
     """
 
-    def __init__(self, user_principal_name: str, reason: str):
+    def __init__(self, user_principal_name: str, reason: str) -> None:
+        """Initialises the error.
+
+        Args:
+            user_principal_name: The user principal name or email that was looked up.
+            reason: Why it couldn't be resolved.
+        """
         self.user_principal_name = user_principal_name
         self.reason = reason
         super().__init__(f"Cannot resolve '{user_principal_name}': {reason}")
@@ -481,9 +502,19 @@ class GroupResolutionError(Exception):
     The group counterpart of UserResolutionError: carries the original
     reference and a human-readable reason so callers can log a clean,
     per-reference warning.
+
+    Attributes:
+        group_reference (str): The display name or object ID that was looked up.
+        reason (str): Why it couldn't be resolved, such as ``"no group has this object ID"``.
     """
 
-    def __init__(self, group_reference: str, reason: str):
+    def __init__(self, group_reference: str, reason: str) -> None:
+        """Initialises the error.
+
+        Args:
+            group_reference: The display name or object ID that was looked up.
+            reason: Why it couldn't be resolved.
+        """
         self.group_reference = group_reference
         self.reason = reason
         super().__init__(f"Cannot resolve group '{group_reference}': {reason}")

@@ -17,6 +17,7 @@ import time
 import uuid
 from collections.abc import Callable
 from datetime import datetime, timezone
+from typing import Any
 from urllib.parse import urlparse
 from azure.core.credentials import AccessToken
 
@@ -108,8 +109,9 @@ class KeyVaultCertificateCredential:
         client_id (str): Client ID of the app registration.
         akv_url (str): Azure Key Vault URL, in the form https://{key_vault_name}.vault.azure.net/.
         certificate_name (str): Name of the certificate in the Azure Key Vault.
-        scope (str): Default scope for get_access_token(), see Scopes. None if only used through get_token().
-        certificate_version (str): Version of the certificate to sign with. None uses the latest version.
+        scope (str | None): Default scope for get_access_token(), see Scopes. None if only used through get_token().
+        certificate_version (str | None): Version of the certificate to sign with. None uses the latest version.
+        token_endpoint (str): The tenant's Entra ID token endpoint, which client assertions are sent to.
     """
 
     AKV_API_VERSION = "7.4"
@@ -137,7 +139,7 @@ class KeyVaultCertificateCredential:
         certificate_name: str,
         scope: str | None = None,
         certificate_version: str | None = None,
-    ):
+    ) -> None:
         """Initialises the credential. No calls are made until an access token is requested.
 
         Args:
@@ -147,7 +149,7 @@ class KeyVaultCertificateCredential:
                 Must use https and a Key Vault host name, as the Key Vault token is sent to it.
             certificate_name: Name of the certificate in the Azure Key Vault.
             scope: Optional. Default scope for get_access_token(), in the form {resource}/.default. See Scopes.
-                Not needed when the credential is passed to semantic link or an Azure SDK client.
+                Not needed when the credential is passed to semantic link or an Azure SDK client. Defaults to None.
             certificate_version: Optional. Version of the certificate to sign with. Defaults to the latest version.
 
         Raises:
@@ -260,7 +262,7 @@ class KeyVaultCertificateCredential:
         claims: str | None = None,
         tenant_id: str | None = None,
         enable_cae: bool = False,
-        **kwargs,
+        **kwargs: Any,
     ) -> AccessToken:
         """Returns an access token for the given scopes. Implements azure.core.credentials.TokenCredential.
 
@@ -271,11 +273,12 @@ class KeyVaultCertificateCredential:
         Args:
             *scopes: Scopes to request the access token for, in the form {resource}/.default.
             claims: Optional. Additional claims required in the token, such as from an API's claims challenge.
-                A new token is always requested when claims are given, and it replaces the cached one.
+                A new token is always requested when claims are given, and it replaces the cached one. Defaults to
+                None.
             tenant_id: Optional. Tenant to request the token from. Only the tenant the credential was created
-                with is supported, so a ValueError is raised for any other tenant.
+                with is supported, so a ValueError is raised for any other tenant. Defaults to that tenant.
             enable_cae: Optional. Accepted for compatibility but ignored, as continuous access evaluation
-                isn't requested.
+                isn't requested. Defaults to False.
             **kwargs: Other keyword arguments are accepted for compatibility but ignored.
 
         Returns:
