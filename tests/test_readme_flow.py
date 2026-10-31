@@ -172,6 +172,19 @@ def test_readme_flow_treats_a_null_deleted_as_not_deleted(setting):
     assert sorted(lst["displayName"] for lst in setting.site.lists.values()) == ["English", "Mathematics"]
 
 
+def test_readme_flow_reports_a_library_with_no_last_changed_ts(setting):
+    setting.spark.tables["sharepoint_libraries"].loc[1, "last_changed_ts"] = pd.NaT
+
+    setting.run(dry_run=False)
+
+    log = pd.concat(pdf for _, pdf in setting.spark.saved)
+    [skip] = log[log["action"] == "skip"].itertuples()
+    assert (skip.site_url, skip.document_library) == (setting.site.url, "ENG")
+    assert skip.status.startswith("no last_changed_ts, so no run will create, unlink or retire it")
+    # No pass ever sees it as changed
+    assert setting.site.list_by_slug("ENG") is None
+
+
 def test_readme_flow_rerun_and_delete(setting):
     tenant, site, spark = setting.tenant, setting.site, setting.spark
     setting.run(dry_run=False)

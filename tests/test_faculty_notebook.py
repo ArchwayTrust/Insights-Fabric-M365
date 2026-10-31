@@ -408,6 +408,20 @@ def test_scope_values_with_spaces_hyphens_and_dots_are_used(tenant, run_notebook
     assert spark.watermark() == {"faculty_sharepoint_sync|BAA,N-C.A|MATH_%": "2026-10-01 09:00:00.000000"}
 
 
+def test_a_faculty_with_no_last_changed_ts_is_reported(tenant, run_notebook, spark):
+    seed_existing_libraries(tenant)
+    spark.add_faculties([faculty("F8", "MATHNEW", "New Maths", changed=None)])
+
+    run_notebook(spark)
+
+    log = pd.concat(spark.saved["sharepoint_action_log"])
+    [skip] = log[log["action"] == "skip"].itertuples()
+    assert (skip.site_url, skip.document_library) == (HUB, "MATHNEW")
+    assert skip.status.startswith("no last_changed_ts, so no run will create, unlink or retire it")
+    # No pass ever sees it as changed
+    assert tenant.sites[HUB.lower()].list_by_slug("MATHNEW") is None
+
+
 def test_rows_landing_mid_run_are_left_for_the_next_run(tenant, run_notebook, spark):
     seed_existing_libraries(tenant)
     late = [
