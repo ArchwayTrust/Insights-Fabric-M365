@@ -1107,6 +1107,31 @@ def test_add_and_remove_failures_are_fatal_rows(make_manager, tenant, site, libr
     assert sorted(failed["action"]) == ["add_failed", "remove_failed"]
 
 
+def test_a_removal_that_cannot_reach_graph_is_logged_against_its_group_and_member(
+    make_manager, tenant, site, library, monkeypatch,
+):
+    import requests
+    from alt_fabric_m365.sharepoint import _http
+    stale = tenant.add_user("left@contoso.com")
+    tenant.group_named("BAA-Sharepoint-MATH-Auto-Contribute")["members"][stale["id"]] = stale
+
+    def request(method, url, **kwargs):
+        if method == "DELETE":
+            raise requests.ConnectionError("Connection reset by peer")
+        return tenant.request(method, url, **kwargs)
+    monkeypatch.setattr(_http.requests, "request", request)
+
+    results = make_manager().update_memberships(
+        memberships_df(site, []), libraries_df=libraries_df(site, "MATH"),
+    )
+
+    [row] = results[results["action"].isin(FATAL_ACTIONS)].itertuples()
+    assert (row.action, row.document_library, row.group, row.user) == (
+        "remove_failed", "MATH", "BAA-Sharepoint-MATH-Auto-Contribute", "left@contoso.com",
+    )
+    assert "Connection reset by peer" in row.status
+
+
 def test_nested_group_add_failure_is_fatal(make_manager, tenant, site, library):
     from sharepoint_fake import graph_error
     tenant.add_group("BAA All Staff")

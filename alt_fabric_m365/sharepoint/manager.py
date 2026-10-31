@@ -2065,7 +2065,9 @@ class SharePointLibraryManager:
                     group=group_name, user=member_key, permission=role,
                 )
                 logger.info("Removed '%s' from group '%s'", member_key, group_name)
-            except requests.HTTPError as exc:
+            except requests.RequestException as exc:
+                # Includes timeouts and dropped connections, so the row names
+                # the group and member rather than being a bare error row
                 _append_log(
                     action_log, site_url, library_code,
                     "remove_failed", str(exc),
