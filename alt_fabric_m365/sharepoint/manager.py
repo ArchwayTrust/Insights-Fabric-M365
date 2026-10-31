@@ -1410,18 +1410,21 @@ class SharePointLibraryManager:
             _append_log(action_log, site_url, library_code, "error", str(exc))
 
     def _replacement_problem(
-        self, site_url: str, lists: dict[str, dict], library_code: str, group_prefix: str, include_site_name: bool,
+        self, site_url: str, site: dict, library_code: str, group_prefix: str, include_site_name: bool,
     ) -> str | None:
         """Return why a moved library's copy on its new site isn't working yet, or None if it is.
 
         Retiring removes the old library's access, so the new one must exist,
-        have its own permissions, and give at least one of its groups a role.
-        A library whose create failed part-way, or the {code}_MOVED leftover of
-        an earlier move back, can exist without them.
+        have its own permissions, and give at least one of its groups Read,
+        Contribute or Full Control.  A library whose create failed part-way,
+        or the {code}_MOVED leftover of an earlier move back, can exist
+        without them.  Limited Access, which a group gets from permissions on
+        something inside the library, doesn't count.
 
         Args:
             site_url: The new site's URL.
-            lists: The new site's lists, from _list_existing_lists.
+            site: The new site, from _prefetch_sites with role definitions, or
+                an empty dict if it couldn't be read.
             library_code: The library's code.
             group_prefix: Prefix of the library's group names.
             include_site_name: Whether group names include the site name.
@@ -1429,23 +1432,28 @@ class SharePointLibraryManager:
         Returns:
             The reason, to follow "the library", or None.
         """
-        library = lists.get(library_code.lower())
+        library = site.get("lists", {}).get(library_code.lower())
         if library is None:
             return f"isn't on its new site ({site_url}) yet"
         try:
             if not _has_unique_permissions(self._sp_token, site_url, library["id"]):
                 return f"on its new site ({site_url}) still inherits the site's permissions"
             roles = _get_library_group_roles(self._sp_token, site_url, library["id"])
+            library_roles = set(site["role_def_ids"].values())
             groups_by_name = _find_groups_by_name_prefix(
                 self._graph_token,
                 build_group_name(group_prefix, site_url, library_code, "", include_site_name=include_site_name),
             )
+            for suffix in ALL_GROUP_SUFFIXES:
+                name = build_group_name(
+                    group_prefix, site_url, library_code, suffix, include_site_name=include_site_name,
+                )
+                # A duplicated name raises ValueError: its library can't be synced, so it isn't working
+                group = _get_unique_group(groups_by_name, name)
+                if group is not None and roles.get(_group_claims(group["id"]).lower(), set()) & library_roles:
+                    return None
         except (requests.RequestException, ValueError, KeyError) as exc:
             return f"on its new site ({site_url}) couldn't be checked: {exc}"
-        for suffix in ALL_GROUP_SUFFIXES:
-            name = build_group_name(group_prefix, site_url, library_code, suffix, include_site_name=include_site_name)
-            if any(_group_claims(group["id"]).lower() in roles for group in groups_by_name.get(name.lower(), [])):
-                return None
         return f"on its new site ({site_url}) gives none of its groups access yet"
 
     def retire_moved_libraries(
@@ -1529,7 +1537,9 @@ class SharePointLibraryManager:
         # The new sites: to check the move's replacement exists, and that the
         # new site isn't the old one spelt differently.  Reads only, so dry
         # runs read them too.
-        new_sites = self._prefetch_sites(new_site_urls, _ThreadSafeLog()) if new_site_urls else {}
+        new_sites = (
+            self._prefetch_sites(new_site_urls, _ThreadSafeLog(), role_definitions=True) if new_site_urls else {}
+        )
 
         # Old hubs may have been deleted since the move — those are skipped
         # (nothing to retire), not errors.
@@ -1561,7 +1571,7 @@ class SharePointLibraryManager:
             problem = None
             if not dry_run_ and pd.notna(new_site_url):
                 problem = self._replacement_problem(
-                    new_site_url, new_sites.get(new_site_url, {}).get("lists", {}),
+                    new_site_url, new_sites.get(new_site_url, {}),
                     row["library_code"], row["group_prefix"], include_site_name_,
                 )
             if problem is not None:

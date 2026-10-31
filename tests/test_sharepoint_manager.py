@@ -1546,14 +1546,24 @@ def test_retire_waits_for_the_library_on_the_new_site(make_manager, tenant, site
     assert site.list_by_slug("MATH")["displayName"] == "MATH_MOVED"
 
 
-@pytest.mark.parametrize("replacement", ["still inherits", "move-back leftover"])
+@pytest.mark.parametrize("replacement", ["still inherits", "move-back leftover", "limited access", "duplicate group"])
 def test_retire_waits_for_a_working_replacement(make_manager, tenant, site, replacement):
     new_site = tenant.add_site("/sites/BAANew")
     make_manager().create_libraries(libraries_df(site, "MATH"))
+    contribute = tenant.group_named("BAA-Sharepoint-MATH-Auto-Contribute")
     if replacement == "still inherits":
         new_site.add_list("MATH")  # its create failed after the library was made
-    else:
+    elif replacement == "move-back leftover":
         new_site.add_list("MATH_MOVED", slug="MATH", unique=True)  # retired by an earlier move, no group access
+    else:
+        new_library = new_site.add_list("MATH", unique=True)
+        new_site.principals[f"c:0t.c|tenant|{contribute['id']}"] = 77
+        if replacement == "limited access":
+            # Only from a folder inside it with its own permissions, so no access to the library
+            new_library["role_assignments"][77] = {ROLE_DEFINITIONS["Limited Access"]}
+        else:
+            new_library["role_assignments"][77] = {CONTRIBUTE}
+            tenant.add_group("BAA-Sharepoint-MATH-Auto-Read")  # a second group with the library's group name
     tenant.calls.clear()
 
     results = make_manager().retire_moved_libraries(libraries_df(site, "MATH").assign(new_site_url=new_site.url))
