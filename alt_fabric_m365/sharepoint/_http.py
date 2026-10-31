@@ -154,9 +154,12 @@ def _request_with_retry(
       - HTTP 429 (Too Many Requests) — respects the Retry-After header
       - HTTP 5xx — server errors, respecting Retry-After when it is sent, as
         SharePoint and Graph send it with 503 when throttling
-      - Connection errors and timeouts
+      - Connection errors and timeouts, including a connection dropped while
+        the response body was being read
 
-    Does NOT retry on other 4xx errors (returns the response for the caller).
+    Does NOT retry on other 4xx errors (returns the response for the caller),
+    or on a TLS error such as a certificate that doesn't verify, which a
+    retry won't fix.
 
     An Authorization header built with _bearer from a _RenewableToken is
     renewed before every attempt, so a long wait doesn't leave a retry with
@@ -171,16 +174,26 @@ def _request_with_retry(
     Args:
         method:      HTTP method (GET, POST, DELETE, etc.).
         url:         Request URL.
-        max_retries: Maximum number of retry attempts.
-        base_delay:  Starting delay in seconds for exponential backoff.
-        max_delay:   Cap on backoff delay in seconds.
-        idempotent:  False for requests that must not be repeated, see above.
+        max_retries: Optional. Maximum number of retry attempts. Defaults to DEFAULT_MAX_RETRIES.
+        base_delay:  Optional. Starting delay in seconds for exponential backoff. Defaults to DEFAULT_BASE_DELAY.
+        max_delay:   Optional. Cap on the backoff delay in seconds, before up to 25% jitter is added. Defaults to
+                     DEFAULT_MAX_DELAY. A Retry-After header is honoured up to RETRY_AFTER_MAX_DELAY instead.
+        idempotent:  Optional. False for requests that must not be repeated, see above. Defaults to True.
         **kwargs:    Passed through to requests.request().
 
     Returns:
-        The requests.Response object.
+        The last response, for the caller to check: a success, a 4xx other
+        than 429, or the last 429 or 5xx once retries run out.
+
+    Raises:
+        requests.HTTPError: For a redirect that isn't followed: to another host,
+            from https to http, beyond MAX_REDIRECT_HOPS, or without a Location.
+        requests.RequestException: For a connection error or timeout once
+            retries run out, or straight away when it can't be retried.
+        ValueError: If max_retries is negative.
     """
-    last_exception = None
+    if max_retries < 0:
+        raise ValueError(f"max_retries must be 0 or more, not {max_retries}")
     kwargs.setdefault("timeout", DEFAULT_TIMEOUT)
 
     # Disable automatic redirects so we can follow them ourselves: every hop
@@ -279,10 +292,12 @@ def _request_with_retry(
             # Out of retries — return the last response so caller can raise_for_status
             return resp
 
-        except (requests.ConnectionError, requests.Timeout) as exc:
+        except (requests.ConnectionError, requests.Timeout, requests.exceptions.ChunkedEncodingError) as exc:
+            # A certificate that doesn't verify won't on a retry either
+            if isinstance(exc, requests.exceptions.SSLError):
+                raise
             if not idempotent and not isinstance(exc, requests.ConnectTimeout):
                 raise
-            last_exception = exc
             delay = min(base_delay * (2 ** attempt), max_delay)
             delay += delay * random.uniform(0, 0.25)
             logger.warning(
@@ -294,7 +309,5 @@ def _request_with_retry(
                 continue
             raise
 
-    # Should not reach here, but just in case
-    if last_exception:
-        raise last_exception
-    return resp  # type: ignore[possibly-undefined]
+    # The last attempt always returns or raises
+    raise AssertionError("unreachable")

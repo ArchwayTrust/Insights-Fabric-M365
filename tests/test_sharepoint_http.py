@@ -127,6 +127,30 @@ def test_timeout_then_success(sleeps):
         assert _request_with_retry("GET", URL).status_code == 200
 
 
+def test_a_connection_dropped_while_reading_the_body_is_retried(sleeps):
+    dropped = requests.exceptions.ChunkedEncodingError("Connection broken: IncompleteRead(512 bytes read)")
+    with patch_request(side_effect=[dropped, response(200, {})]) as request:
+        assert _request_with_retry("GET", URL).status_code == 200
+
+    assert request.call_count == 2 and len(sleeps) == 1
+
+
+def test_a_tls_error_is_raised_without_retrying(sleeps):
+    with patch_request(side_effect=requests.exceptions.SSLError("certificate verify failed")) as request:
+        with pytest.raises(requests.exceptions.SSLError):
+            _request_with_retry("GET", URL)
+
+    assert request.call_count == 1 and sleeps == []
+
+
+def test_a_negative_retry_count_is_refused_before_any_request():
+    with patch_request() as request:
+        with pytest.raises(ValueError, match="max_retries"):
+            _request_with_retry("GET", URL, max_retries=-1)
+
+    assert not request.called
+
+
 # Redirects
 
 def test_post_redirect_is_followed_with_the_same_method(sleeps):
@@ -211,7 +235,10 @@ def test_non_idempotent_request_is_not_repeated_after_a_server_error(sleeps):
     assert request.call_count == 1
 
 
-@pytest.mark.parametrize("error", [requests.ReadTimeout("slow"), requests.ConnectionError("reset")])
+@pytest.mark.parametrize("error", [
+    requests.ReadTimeout("slow"), requests.ConnectionError("reset"),
+    requests.exceptions.ChunkedEncodingError("Connection broken: IncompleteRead"),
+])
 def test_non_idempotent_request_is_not_repeated_after_it_may_have_arrived(sleeps, error):
     with patch_request(side_effect=error) as request:
         with pytest.raises(type(error)):
