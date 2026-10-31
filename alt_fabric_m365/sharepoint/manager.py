@@ -439,9 +439,11 @@ class SharePointLibraryManager:
 
             # Step 2.5: Set metadata properties on the library's root folder
             if source_system is not None or source_id is not None:
+                # A dry run has no list_id, but reads an existing library's values
                 _ensure_library_metadata(
-                    self._sp_token, site_url, list_id, library_code,
-                    source_system, source_id, action_log, dry_run=dry_run,
+                    self._sp_token, site_url,
+                    list_id if list_id is not None else (existing_list or {}).get("id"),
+                    library_code, source_system, source_id, action_log, dry_run=dry_run,
                 )
 
             # Step 3: Build the full list of groups to create

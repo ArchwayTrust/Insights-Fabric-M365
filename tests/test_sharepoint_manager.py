@@ -246,11 +246,15 @@ def test_create_library_with_groups_metadata_and_navigation(make_manager, tenant
 
 def test_create_library_again_changes_nothing(make_manager, tenant, site):
     manager = make_manager(add_to_navigation=True)
-    df = libraries_df(site, "MATH", manual_read=True)
+    df = libraries_df(site, "MATH", manual_read=True, source_system="Arbor", source_id="F1")
     manager.create_libraries(df)
     tenant.calls.clear()
 
     results = manager.create_libraries(df)
+
+    assert sorted(rows(results, "metadata_unchanged")["status"]) == ["SourceId=F1", "SourceSystem=Arbor"]
+    assert "metadata_set" not in actions(results)
+    assert created(tenant, "ProcessQuery") == []
 
     assert "navigation_label_created" not in actions(results)
     assert "navigation_link_added" not in actions(results)
@@ -261,6 +265,23 @@ def test_create_library_again_changes_nothing(make_manager, tenant, site):
     assert created(tenant, f"/sites/{site.id}/lists") == []
     assert created(tenant, "breakroleinheritance") == []
     assert len(site.lists) == 1 and len(site.nav[0]["Children"]) == 1
+
+
+@pytest.mark.parametrize("operation", ["create_libraries", "set_library_metadata"])
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_only_metadata_that_changed_is_written(make_manager, tenant, site, operation, dry_run):
+    make_manager().create_libraries(libraries_df(site, "MATH", source_system="Arbor", source_id="F1"))
+    tenant.calls.clear()
+
+    results = getattr(make_manager(dry_run=dry_run), operation)(
+        libraries_df(site, "MATH", source_system="Arbor", source_id="F2"),
+    )
+
+    set_action = "metadata_set (dry run)" if dry_run else "metadata_set"
+    assert rows(results, "metadata_unchanged")["status"].tolist() == ["SourceSystem=Arbor"]
+    assert rows(results, set_action)["status"].tolist() == ["SourceId=F2"]
+    assert site.list_by_slug("MATH")["properties"] == {"SourceSystem": "Arbor", "SourceId": "F1" if dry_run else "F2"}
+    assert len(created(tenant, "ProcessQuery")) == (0 if dry_run else 1)
 
 
 def test_create_library_renames_display_name_and_navigation_link(make_manager, site):
