@@ -177,6 +177,16 @@ def test_every_request_has_a_timeout(azure):
         assert kwargs["timeout"] == TIMEOUT
 
 
+def test_requests_carry_what_key_vault_and_entra_id_require(azure):
+    make_credential().get_token("a")
+
+    # Key Vault refuses a request without an api-version (400) or a bearer token (401)
+    for _, kwargs in azure.certificate_calls + azure.sign_calls:
+        assert kwargs["params"] == {"api-version": KeyVaultCertificateCredential.AKV_API_VERSION}
+        assert kwargs["headers"]["Authorization"] == "Bearer kv-token"
+    assert azure.token_calls[0][1]["data"]["client_id"] == CLIENT
+
+
 def test_key_vault_token_is_fetched_once_per_refresh(azure, fake_notebookutils):
     credential = make_credential()
 
@@ -194,16 +204,6 @@ def test_requests_go_to_the_expected_urls(azure):
     assert azure.certificate_calls[0][1]["headers"]["Authorization"] == "Bearer kv-token"
     assert azure.sign_calls[0][0] == f"{KID}/sign"
     assert azure.token_calls[0][0] == f"https://login.microsoftonline.com/{TENANT}/oauth2/v2.0/token"
-
-
-def test_requests_carry_what_key_vault_and_entra_id_require(azure):
-    make_credential().get_token("a")
-
-    # Key Vault refuses a request without an api-version (400) or a bearer token (401)
-    for _, kwargs in azure.certificate_calls + azure.sign_calls:
-        assert kwargs["params"] == {"api-version": KeyVaultCertificateCredential.AKV_API_VERSION}
-        assert kwargs["headers"]["Authorization"] == "Bearer kv-token"
-    assert azure.token_calls[0][1]["data"]["client_id"] == CLIENT
 
 
 def test_client_assertion_is_well_formed(azure):
