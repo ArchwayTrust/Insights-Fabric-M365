@@ -880,7 +880,7 @@ mgr = SharePointLibraryManager(
 )
 ```
 
-Create the credential without a scope: the manager asks it for a Graph token and a SharePoint token (`https://<sharepoint_hostname>/.default`), and the credential caches each until shortly before it expires. The constructor gets both tokens straight away, so wrong credentials or permissions fail here rather than part way through. `dry_run`, `max_workers`, `include_site_name`, `add_to_navigation`, `navigation_label`, `create_onedrive_shortcuts`, `max_removals_per_group` and `allow_mass_removal` are defaults that each operation can override, for example `mgr.create_libraries(df, dry_run=False)`.
+Create the credential without a scope: the manager asks it for a Graph token and a SharePoint token (`https://<sharepoint_hostname>/.default`), and the credential caches each until shortly before it expires. The constructor gets both tokens straight away, so wrong credentials or permissions fail here rather than part way through. `dry_run`, `max_workers`, `include_site_name`, `add_to_navigation`, `navigation_label`, `create_onedrive_shortcuts`, `max_removals_per_group` and `allow_mass_removal` are defaults that each operation can override, for example `mgr.create_libraries(df, dry_run=False)`. Each must be of its documented type: a notebook or pipeline parameter of type String, such as `"False"`, raises `TypeError` rather than counting as true, so give those parameters the type Bool or Int.
 
 ### Operations
 
@@ -995,6 +995,8 @@ Keep the desired state in a few lakehouse tables, maintained by whatever feeds t
 | `previous_site_url` | string | Flow only | The site the library was on before a move, or null. |
 | `deleted` | boolean | Flow only | True once the library has been removed at source. Keep the row, so the unlink pass sees it. |
 | `last_changed_ts` | timestamp | Flow only | When the row last changed. Drives the incremental passes. |
+
+A blank (null) in `auto_groups`, `manual_read`, `manual_contribute` or `app_owned` takes the default shown. They can also hold 1 and 0, but anything else, such as the text `"False"`, raises `ValueError` before anything is changed.
 
 **`sharepoint_library_members`**: one row per person per library. The full desired membership, not changes.
 
