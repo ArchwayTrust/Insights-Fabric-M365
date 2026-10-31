@@ -422,6 +422,14 @@ class FakeTenant:
             return response(200, {"d": dict(site.web)})
         if path == "web" and method == "MERGE":
             assert body["__metadata"] == {"type": "SP.Web"}
+            # A MERGE can't set a property SP.Web doesn't have, or UseAccessRequestDefault, which has no setter. Of
+            # the properties the package reads, only these two can be set this way.
+            unsettable = sorted(set(body) - {"__metadata", "MembersCanShare", "RequestAccessEmail"})
+            if unsettable:
+                return response(400, {"error": {
+                    "code": "-1, Microsoft.SharePoint.Client.InvalidClientQueryException",
+                    "message": {"lang": "en-US", "value": f"The property '{unsettable[0]}' cannot be set on SP.Web."},
+                }})
             if not site.ignore_sharing_writes:
                 site.web.update({k: v for k, v in body.items() if k != "__metadata"})
             return response(204)
@@ -518,13 +526,25 @@ class FakeTenant:
         lst = site.lists.get(guid)
         if lst is None:
             return response(200, [{"SchemaVersion": "15.0.0.0", "ErrorInfo": {"ErrorMessage": "List does not exist."}}])
-        pairs = re.findall(
-            r'<Method Name="SetFieldValue"[^>]*><Parameters><Parameter Type="String">(.*?)</Parameter>'
-            r'<Parameter Type="String">(.*?)</Parameter></Parameters></Method>',
-            xml,
-        )
-        for key, value in pairs:
-            lst["properties"][_xml_unescape(key)] = _xml_unescape(value)
+        # SetFieldValue on the root folder's Properties only stages a value, and Update on that folder saves what's
+        # staged so far. CSOM runs the actions in order, so a value set after the last Update isn't saved, and
+        # SharePoint reports success either way.
+        folder = re.search(r'<Property Id="(\d+)" ParentId="\d+" Name="RootFolder" />', xml)
+        bag = folder and re.search(rf'<Property Id="(\d+)" ParentId="{folder.group(1)}" Name="Properties" />', xml)
+        if bag:
+            staged = {}
+            actions = re.finditer(
+                r'<Method Name="(SetFieldValue|Update)" Id="\d+" ObjectPathId="(\d+)"(?: />|><Parameters>'
+                r'<Parameter Type="String">(.*?)</Parameter><Parameter Type="String">(.*?)</Parameter>'
+                r'</Parameters></Method>)',
+                xml,
+            )
+            for name, path_id, key, value in (action.groups() for action in actions):
+                if name == "SetFieldValue" and path_id == bag.group(1):
+                    staged[_xml_unescape(key)] = _xml_unescape(value)
+                elif name == "Update" and path_id == folder.group(1):
+                    lst["properties"].update(staged)
+                    staged = {}
         return response(200, [{"SchemaVersion": "15.0.0.0", "ErrorInfo": None}])
 
 
