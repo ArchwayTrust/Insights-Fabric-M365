@@ -13,7 +13,7 @@ import requests
 
 from ._common import GRAPH_BASE_URL, REPLICATION_BASE_DELAY, REPLICATION_MAX_ATTEMPTS, _append_log, _ThreadSafeLog
 from ._graph import _graph_headers
-from ._http import _request_with_retry
+from ._http import _raise_for_status, _request_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +86,7 @@ def _find_group_by_name(token: str, display_name: str) -> dict | None:
             "$select": "id,displayName,description,mailNickname,securityEnabled,groupTypes",
         },
     )
-    resp.raise_for_status()
+    _raise_for_status(resp)
     groups = resp.json().get("value", [])
     if len(groups) > 1:
         ids = ", ".join(g["id"] for g in groups)
@@ -121,7 +121,7 @@ def _find_groups_by_name_prefix(token: str, name_prefix: str) -> dict[str, list[
     groups_by_name: dict[str, list[dict]] = {}
     while url:
         resp = _request_with_retry("GET", url, headers=_graph_headers(token), params=params)
-        resp.raise_for_status()
+        _raise_for_status(resp)
         data = resp.json()
         for group in data.get("value", []):
             groups_by_name.setdefault((group.get("displayName") or "").lower(), []).append(group)
@@ -183,7 +183,7 @@ def _create_security_group(
         "POST", f"{GRAPH_BASE_URL}/groups", headers=_graph_headers(token), json=body,
         idempotent=False,
     )
-    resp.raise_for_status()
+    _raise_for_status(resp)
     group = resp.json()
     logger.info("Created security group '%s' (id=%s)", display_name, group["id"])
     return group
@@ -195,7 +195,7 @@ def _set_group_description(token: str, group_id: str, description: str) -> None:
         "PATCH", f"{GRAPH_BASE_URL}/groups/{group_id}", headers=_graph_headers(token),
         json={"description": description},
     )
-    resp.raise_for_status()
+    _raise_for_status(resp)
 
 
 def _request_while_replicating(
@@ -243,7 +243,7 @@ def _get_group_owner_ids(token: str, group_id: str, *, is_new_group: bool = Fals
     url: str | None = f"{GRAPH_BASE_URL}/groups/{group_id}/owners?$select=id"
     while url:
         resp = _request_while_replicating("GET", url, token, is_new_group=is_new_group)
-        resp.raise_for_status()
+        _raise_for_status(resp)
         data = resp.json()
         owners.update(owner["id"].lower() for owner in data.get("value", []))
         url = data.get("@odata.nextLink")
@@ -265,7 +265,7 @@ def _add_group_owner(token: str, group_id: str, owner_id: str, *, is_new_group: 
     )
     if resp.status_code == 400 and "already exist" in resp.text.lower():
         return
-    resp.raise_for_status()
+    _raise_for_status(resp)
 
 
 def _ensure_app_owns_group(
@@ -335,7 +335,7 @@ def _get_group_members(token: str, group_id: str, *, is_new_group: bool = False)
     url = f"{GRAPH_BASE_URL}/groups/{group_id}/members?$select=id,userPrincipalName"
     while url:
         resp = _request_while_replicating("GET", url, token, is_new_group=is_new_group)
-        resp.raise_for_status()
+        _raise_for_status(resp)
         data = resp.json()
         for member in data.get("value", []):
             upn = member.get("userPrincipalName", "")
@@ -420,7 +420,7 @@ def _resolve_user_with_fallback(
         # fallbacks below may still match, so note it and continue.
         malformed = True
     elif resp.status_code != 404:
-        resp.raise_for_status()
+        _raise_for_status(resp)
 
     # 2. Search by mail property
     search_url = f"{GRAPH_BASE_URL}/users"
@@ -433,7 +433,7 @@ def _resolve_user_with_fallback(
     if resp.status_code == 400:
         malformed = True
     else:
-        resp.raise_for_status()
+        _raise_for_status(resp)
         results = resp.json().get("value", [])
         if results:
             user = results[0]
@@ -452,7 +452,7 @@ def _resolve_user_with_fallback(
     if resp.status_code == 400:
         malformed = True
     else:
-        resp.raise_for_status()
+        _raise_for_status(resp)
         results = resp.json().get("value", [])
         if results:
             user = results[0]
@@ -521,7 +521,7 @@ def _resolve_nestable_group(token: str, group_reference: str) -> dict:
         )
         if resp.status_code == 404:
             raise GroupResolutionError(group_reference, "no group has this object ID")
-        resp.raise_for_status()
+        _raise_for_status(resp)
         group = resp.json()
     else:
         try:
@@ -577,7 +577,7 @@ def _add_group_member(
             )
             time.sleep(delay)
             continue
-        resp.raise_for_status()
+        _raise_for_status(resp)
         return
 
 
@@ -585,7 +585,7 @@ def _remove_group_member(token: str, group_id: str, user_object_id: str) -> None
     """Remove a user from a security group."""
     url = f"{GRAPH_BASE_URL}/groups/{group_id}/members/{user_object_id}/$ref"
     resp = _request_with_retry("DELETE", url, headers=_graph_headers(token))
-    resp.raise_for_status()
+    _raise_for_status(resp)
 
 
 def _empty_group_members(token: str, group_id: str) -> int:

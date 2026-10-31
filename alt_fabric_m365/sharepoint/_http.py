@@ -119,6 +119,62 @@ def _parse_retry_after(value: str | None) -> float | None:
     return min(max(delay, 0.0), RETRY_AFTER_MAX_DELAY)
 
 
+def _service_error(resp: requests.Response) -> tuple[str | None, str | None]:
+    """Return the error code and message from a Graph or SharePoint error response.
+
+    Graph sends ``{"error": {"code", "message"}}``.  SharePoint REST nests the
+    message as ``{"lang", "value"}``, under ``error`` (odata=verbose) or
+    ``odata.error``, and answers a token it won't accept with ``error`` and
+    ``error_description`` at the top level.
+
+    Args:
+        resp: The response.
+
+    Returns:
+        The code and message. Either is None if the body isn't one of those shapes, or the value isn't a non-empty
+        string: the message is written to the action log, so nothing else from the body is.
+    """
+    def text(value: object) -> str | None:
+        return value if isinstance(value, str) and value.strip() else None
+
+    try:
+        body = resp.json()
+    except ValueError:
+        return None, None
+    if not isinstance(body, dict):
+        return None, None
+    error = body.get("error", body.get("odata.error"))
+    if isinstance(error, dict):
+        message = error.get("message")
+        if isinstance(message, dict):
+            message = message.get("value")
+        return text(error.get("code")), text(message)
+    if isinstance(error, str):
+        return text(error), text(body.get("error_description"))
+    return None, None
+
+
+def _raise_for_status(resp: requests.Response) -> None:
+    """Raise requests.HTTPError for a 4xx or 5xx response, with the service's error code and message.
+
+    requests' own message has the reason phrase and the whole URL, which can
+    hold user principal names and filters, but not the service's error,
+    which says what went wrong.  Callers write the message to the action log.
+
+    Args:
+        resp: The response.
+
+    Raises:
+        requests.HTTPError: If the status is 400 or above, with *resp* as its response, so callers can still check
+            the status code.
+    """
+    if resp.status_code < 400:
+        return
+    code, message = _service_error(resp)
+    detail = ": ".join(part for part in (code, message) if part) or resp.reason or "no error details"
+    raise requests.HTTPError(f"Status code: {resp.status_code}, {detail}", response=resp)
+
+
 def _has_ambiguous_host(url: str) -> bool:
     """Return whether requests might send a request for *url* to a host other than urlparse's hostname.
 

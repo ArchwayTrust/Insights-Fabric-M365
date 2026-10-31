@@ -11,7 +11,7 @@ from ._common import (
     METADATA_PROPERTY_KEYS, REPLICATION_BASE_DELAY, REPLICATION_MAX_ATTEMPTS, VALID_ROLES,
     _append_log, _ThreadSafeLog,
 )
-from ._http import _bearer, _request_with_retry
+from ._http import _bearer, _raise_for_status, _request_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +55,7 @@ def _has_unique_permissions(token: str, site_url: str, list_id: str) -> bool:
         f"?$select=HasUniqueRoleAssignments"
     )
     resp = _request_with_retry("GET", url, headers=_sharepoint_headers(token))
-    resp.raise_for_status()
+    _raise_for_status(resp)
     return resp.json()["d"]["HasUniqueRoleAssignments"]
 
 
@@ -74,7 +74,7 @@ def _break_role_inheritance(token: str, site_url: str, list_id: str) -> None:
         f"/breakroleinheritance(copyRoleAssignments=false, clearSubscopes=false)"
     )
     resp = _request_with_retry("POST", url, headers=_sharepoint_post_headers(token), data="")
-    resp.raise_for_status()
+    _raise_for_status(resp)
     logger.info("Broke role inheritance on library '%s'", list_id)
 
 
@@ -104,7 +104,7 @@ def _resolve_role_def_ids(token: str, site_url: str) -> dict[str, int]:
         "GET", f"{rest_url}/web/roledefinitions?$select=Id,Name,RoleTypeKind",
         headers=_sharepoint_headers(token),
     )
-    resp.raise_for_status()
+    _raise_for_status(resp)
     ids_by_type = {rd["RoleTypeKind"]: rd["Id"] for rd in resp.json()["d"]["results"] if rd.get("RoleTypeKind")}
     missing = [role for role in VALID_ROLES if SP_ROLE_TYPES[role] not in ids_by_type]
     if missing:
@@ -141,7 +141,7 @@ def _resolve_group_principal_id(
             )
             time.sleep(delay)
             continue
-        resp.raise_for_status()
+        _raise_for_status(resp)
     raise requests.HTTPError(
         f"ensureuser failed for '{group_name}' after {max_attempts} attempt(s)",
         response=resp,
@@ -162,7 +162,7 @@ def _add_role_assignment(
         f"/roleassignments/addroleassignment(principalid={principal_id}, roledefid={role_def_id})"
     )
     resp = _request_with_retry("POST", url, headers=_sharepoint_post_headers(token), data="")
-    resp.raise_for_status()
+    _raise_for_status(resp)
 
 
 def _get_library_role_assignments(
@@ -178,7 +178,7 @@ def _get_library_role_assignments(
     bindings: dict[int, set[int]] = {}
     while url:
         resp = _request_with_retry("GET", url, headers=_sharepoint_headers(token))
-        resp.raise_for_status()
+        _raise_for_status(resp)
         data = resp.json()["d"]
         for assignment in data["results"]:
             bindings[assignment["PrincipalId"]] = {
@@ -208,7 +208,7 @@ def _remove_library_role_assignment(
     )
     if resp.status_code == 404:
         return False
-    resp.raise_for_status()
+    _raise_for_status(resp)
     return True
 
 
@@ -230,7 +230,7 @@ def _get_library_group_roles(
     roles: dict[str, set[int]] = {}
     while url:
         resp = _request_with_retry("GET", url, headers=_sharepoint_headers(token))
-        resp.raise_for_status()
+        _raise_for_status(resp)
         data = resp.json()["d"]
         for assignment in data["results"]:
             login_name = ((assignment.get("Member") or {}).get("LoginName") or "").lower()
@@ -356,7 +356,7 @@ def _set_library_properties(
     }
 
     resp = _request_with_retry("POST", url, headers=headers, data=csom_xml.encode("utf-8"))
-    resp.raise_for_status()
+    _raise_for_status(resp)
 
     # ProcessQuery returns a JSON array.  Error entries contain an
     # ``ErrorInfo`` dict with ``ErrorMessage``.
@@ -392,7 +392,7 @@ def _get_library_properties(
     # (non-built-in) keys on the SP.PropertyValues endpoint.
     url = f"{rest_url}/web/lists(guid'{list_id}')/rootfolder/properties"
     resp = _request_with_retry("GET", url, headers=_sharepoint_headers(token))
-    resp.raise_for_status()
+    _raise_for_status(resp)
 
     body = resp.json()
     props = body.get("d", {})
@@ -471,7 +471,7 @@ def _get_site_sharing_settings(token: str, site_url: str) -> dict:
         f"?$select=MembersCanShare,RequestAccessEmail,UseAccessRequestDefault"
     )
     resp = _request_with_retry("GET", url, headers=_sharepoint_headers(token))
-    resp.raise_for_status()
+    _raise_for_status(resp)
     web = resp.json()["d"]
 
     url = (
@@ -482,7 +482,7 @@ def _get_site_sharing_settings(token: str, site_url: str) -> dict:
     if resp.status_code == 404:
         member_group = {}
     else:
-        resp.raise_for_status()
+        _raise_for_status(resp)
         member_group = resp.json()["d"]
 
     return {
@@ -515,7 +515,7 @@ def _disable_site_sharing(token: str, site_url: str, member_group_id: int | None
         "RequestAccessEmail": "",
     }
     resp = _request_with_retry("POST", f"{rest_url}/web", headers=headers, json=body)
-    resp.raise_for_status()
+    _raise_for_status(resp)
 
     resp = _request_with_retry(
         "POST",
@@ -523,7 +523,7 @@ def _disable_site_sharing(token: str, site_url: str, member_group_id: int | None
         headers=_sharepoint_post_headers(token),
         data="",
     )
-    resp.raise_for_status()
+    _raise_for_status(resp)
 
     if member_group_id is not None:
         headers = _sharepoint_post_headers(token)
@@ -536,7 +536,7 @@ def _disable_site_sharing(token: str, site_url: str, member_group_id: int | None
             "POST", f"{rest_url}/web/sitegroups/getbyid({member_group_id})",
             headers=headers, json=body,
         )
-        resp.raise_for_status()
+        _raise_for_status(resp)
 
     logger.info(
         "Disabled member sharing, access requests, and member invites on %s", site_url,

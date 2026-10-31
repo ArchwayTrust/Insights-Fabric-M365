@@ -5,7 +5,7 @@ import logging
 from urllib.parse import unquote, urlparse
 
 from ._common import _append_log, _ThreadSafeLog
-from ._http import _request_with_retry
+from ._http import _raise_for_status, _request_with_retry
 from ._sharepoint import _get_sharepoint_rest_url, _sharepoint_headers, _sharepoint_post_headers
 
 logger = logging.getLogger(__name__)
@@ -26,7 +26,7 @@ def _get_quicklaunch_nodes(token: str, site_url: str) -> list[dict]:
     rest_url = _get_sharepoint_rest_url(site_url)
     url = f"{rest_url}/web/navigation/quicklaunch?$expand=Children"
     resp = _request_with_retry("GET", url, headers=_sharepoint_headers(token))
-    resp.raise_for_status()
+    _raise_for_status(resp)
     return resp.json()["d"]["results"]
 
 
@@ -55,7 +55,7 @@ def _create_nav_node(
     resp = _request_with_retry(
         "POST", url, headers=_sharepoint_post_headers(token), json=body, idempotent=False,
     )
-    resp.raise_for_status()
+    _raise_for_status(resp)
     return resp.json()["d"]
 
 
@@ -69,7 +69,7 @@ def _set_nav_node_title(token: str, site_url: str, node_id: int, title: str) -> 
         "POST", f"{rest_url}/web/navigation/GetNodeById({node_id})",
         headers=headers, json=body,
     )
-    resp.raise_for_status()
+    _raise_for_status(resp)
 
 
 def _normalise_nav_url(url_or_path: str) -> str:
@@ -134,7 +134,7 @@ def _delete_nav_node(token: str, site_url: str, node_id: int) -> None:
         "POST", f"{rest_url}/web/navigation/GetNodeById({node_id})",
         headers=headers, data="",
     )
-    resp.raise_for_status()
+    _raise_for_status(resp)
 
 
 def _ensure_library_nav_link(

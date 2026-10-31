@@ -65,6 +65,61 @@ def test_parse_retry_after_date_in_the_past_is_zero():
     assert _parse_retry_after("Wed, 21 Oct 2015 07:28:00 GMT") == 0.0
 
 
+# Error messages
+
+@pytest.mark.parametrize("body, expected", [
+    # Graph
+    ({"error": {"code": "Authorization_RequestDenied", "message": "Insufficient privileges."}},
+     "Status code: 403, Authorization_RequestDenied: Insufficient privileges."),
+    # SharePoint REST, odata=verbose and nometadata
+    ({"error": {"code": "-2147024891, System.UnauthorizedAccessException",
+                "message": {"lang": "en-US", "value": "Access denied."}}},
+     "Status code: 403, -2147024891, System.UnauthorizedAccessException: Access denied."),
+    ({"odata.error": {"code": "-1, Microsoft.SharePoint.Client.InvalidClientQueryException",
+                      "message": {"lang": "en-US", "value": "Invalid request."}}},
+     "Status code: 403, -1, Microsoft.SharePoint.Client.InvalidClientQueryException: Invalid request."),
+    # SharePoint refusing a token
+    ({"error": "invalid_request", "error_description": "Token type is not allowed."},
+     "Status code: 403, invalid_request: Token type is not allowed."),
+    ({"error": {"message": {"value": "The specified user could not be found."}}},
+     "Status code: 403, The specified user could not be found."),
+    # A code without a message, or a message that's empty
+    ({"error": {"code": "Authorization_RequestDenied"}}, "Status code: 403, Authorization_RequestDenied"),
+    ({"error": {"code": "Authorization_RequestDenied", "message": ""}}, "Status code: 403, Authorization_RequestDenied"),
+    ({"error": "invalid_request"}, "Status code: 403, invalid_request"),
+    # Fields that aren't text are left out, not written to the action log
+    ({"error": {"message": {"value": {"unexpected": "payload"}}}}, "Status code: 403, Forbidden"),
+    ({"error": {"code": {"nested": 1}, "message": "Access denied."}}, "Status code: 403, Access denied."),
+    ({"error": "invalid_request", "error_description": ["a", "list"]}, "Status code: 403, invalid_request"),
+    # Not a service error: the reason phrase
+    (["not", "a", "dict"], "Status code: 403, Forbidden"),
+    (None, "Status code: 403, Forbidden"),
+])
+def test_errors_name_the_services_error_code_and_message(body, expected):
+    resp = response(403, body)
+    resp.reason = "Forbidden"
+    resp.url = "https://graph.microsoft.com/v1.0/users/jo%40contoso.com?$filter=x"
+
+    with pytest.raises(requests.HTTPError) as raised:
+        _http._raise_for_status(resp)
+
+    assert str(raised.value) == expected
+    assert raised.value.response is resp  # callers still check the status code
+
+
+def test_html_errors_and_missing_reasons_still_give_the_status():
+    resp = response(503)
+    resp._content = b"<html>Service Unavailable</html>"
+
+    with pytest.raises(requests.HTTPError, match=r"^Status code: 503, no error details$"):
+        _http._raise_for_status(resp)
+
+
+@pytest.mark.parametrize("status", [200, 201, 204, 304])
+def test_success_and_redirect_statuses_are_not_errors(status):
+    _http._raise_for_status(response(status))
+
+
 # Retries
 
 def test_success_returns_immediately_with_default_timeout(sleeps):

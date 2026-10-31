@@ -1260,6 +1260,32 @@ def test_navigation_label_failure_does_not_block_permissions(make_manager, tenan
     assert site.nav == []
 
 
+def test_failure_rows_give_graphs_error_code_and_message(make_manager, tenant, site, library):
+    from sharepoint_fake import graph_error
+    tenant.add_user("jo@contoso.com")
+    tenant.fail("POST", r"/members/\$ref$", graph_error(
+        403, "Authorization_RequestDenied", "Insufficient privileges to complete the operation."))
+
+    results = make_manager().update_memberships(memberships_df(site, [("MATH", "jo@contoso.com", "contribute")]))
+
+    assert list(rows(results, "add_failed")["status"]) == [
+        "Status code: 403, Authorization_RequestDenied: Insufficient privileges to complete the operation."
+    ]
+
+
+def test_error_rows_give_sharepoints_error_message(make_manager, tenant, site):
+    from sharepoint_fake import response
+    tenant.fail("POST", r"/addroleassignment", response(403, {"error": {
+        "code": "-2147024891, System.UnauthorizedAccessException", "message": {"lang": "en-US", "value": "Access denied."},
+    }}))
+
+    results = make_manager().create_libraries(libraries_df(site, "MATH"))
+
+    assert list(rows(results, "error")["status"]) == [
+        "Status code: 403, -2147024891, System.UnauthorizedAccessException: Access denied."
+    ]
+
+
 def test_add_and_remove_failures_are_fatal_rows(make_manager, tenant, site, library):
     from sharepoint_fake import graph_error
     tenant.add_user("jo@contoso.com")

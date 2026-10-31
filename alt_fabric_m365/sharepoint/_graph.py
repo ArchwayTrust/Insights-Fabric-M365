@@ -5,7 +5,7 @@ import logging
 from urllib.parse import unquote, urlparse
 
 from ._common import GRAPH_BASE_URL
-from ._http import _bearer, _request_with_retry
+from ._http import _bearer, _raise_for_status, _request_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ def _get_site_id(token: str, site_url: str) -> str:
 
     url = f"{GRAPH_BASE_URL}/sites/{hostname}:{path}"
     resp = _request_with_retry("GET", url, headers=_graph_headers(token))
-    resp.raise_for_status()
+    _raise_for_status(resp)
     return resp.json()["id"]
 
 
@@ -55,7 +55,7 @@ def _list_existing_lists(token: str, site_id: str) -> dict[str, dict]:
     lists: list[dict] = []
     while url:
         resp = _request_with_retry("GET", url, headers=_graph_headers(token))
-        resp.raise_for_status()
+        _raise_for_status(resp)
         data = resp.json()
         lists.extend(data.get("value", []))
         url = data.get("@odata.nextLink")
@@ -124,7 +124,7 @@ def _create_document_library(token: str, site_id: str, library_name: str) -> dic
         "list": {"template": "documentLibrary"},
     }
     resp = _request_with_retry("POST", url, headers=_graph_headers(token), json=body)
-    resp.raise_for_status()
+    _raise_for_status(resp)
     new_list = resp.json()
     logger.info("Created document library '%s' (id=%s)", library_name, new_list["id"])
     return new_list
@@ -165,7 +165,7 @@ def _set_library_display_name(
     url = f"{GRAPH_BASE_URL}/sites/{site_id}/lists/{list_id}"
     body = {"displayName": display_name}
     resp = _request_with_retry("PATCH", url, headers=_graph_headers(token), json=body)
-    resp.raise_for_status()
+    _raise_for_status(resp)
     logger.info("Set display name to '%s' (id=%s)", display_name, list_id)
 
 
@@ -242,7 +242,7 @@ def _create_onedrive_shortcut(
             "OneDrive shortcut creation failed (HTTP %d): %s",
             resp.status_code, resp.text,
         )
-    resp.raise_for_status()
+    _raise_for_status(resp)
 
 
 def _get_onedrive_root_items(graph_token: str, user_object_id: str) -> list[dict]:
@@ -263,7 +263,7 @@ def _get_onedrive_root_items(graph_token: str, user_object_id: str) -> list[dict
     items: list[dict] = []
     while url:
         resp = _request_with_retry("GET", url, headers=_graph_headers(graph_token), params=params)
-        resp.raise_for_status()
+        _raise_for_status(resp)
         data = resp.json()
         items.extend(data.get("value", []))
         url = data.get("@odata.nextLink")
