@@ -514,6 +514,13 @@ class SharePointLibraryManager:
                         action_log, site_url, library_code, dry_action, dry_status,
                         group=group_display_name, permission=role_key,
                     )
+                    # The lookup read the description, so the dry run shows a rename's update too
+                    if existing_group and app_owned and existing_group.get("description") != group_description:
+                        _append_log(
+                            action_log, site_url, library_code, "group_description_updated (dry run)",
+                            f"would set description to: {group_description}",
+                            group=group_display_name, permission=role_key,
+                        )
                 else:
                     group = _find_group_by_name(self._graph_token, group_display_name)
                     created = None if group else self._created_group(group_display_name)

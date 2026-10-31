@@ -2223,6 +2223,8 @@ def test_create_dry_run_reports_ownership_without_changing_it(make_manager, tena
         ["", "library_created (dry run)"],
         ["BAA-Sharepoint-MATH-Manual-Read", "group_owner_added (dry run)"],
         ["BAA-Sharepoint-MATH-Manual-Read", "ensure_manual_read_group (dry run)"],
+        # Adopting it also gives it the description a live run sets
+        ["BAA-Sharepoint-MATH-Manual-Read", "group_description_updated (dry run)"],
         ["BAA-Sharepoint-MATH-Manual-Contribute", "group_not_owned"],
     ]
 
@@ -2259,6 +2261,24 @@ def test_renaming_a_library_keeps_group_names_and_updates_descriptions(make_mana
     tenant.calls.clear()
     make_manager().create_libraries(libraries_df(site, "MATH", library_display_name="Mathematics", manual_read=True))
     assert created(tenant, "/v1.0/groups/", method="PATCH") == []
+
+
+def test_a_rename_dry_run_reports_the_descriptions_it_would_update(make_manager, tenant, site):
+    make_manager().create_libraries(libraries_df(site, "MATH", library_display_name="Maths", manual_read=True))
+    tenant.calls.clear()
+
+    renamed = make_manager(dry_run=True).create_libraries(
+        libraries_df(site, "MATH", library_display_name="Mathematics", manual_read=True),
+    )
+    unchanged = make_manager(dry_run=True).create_libraries(
+        libraries_df(site, "MATH", library_display_name="Maths", manual_read=True),
+    )
+
+    assert tenant.writes() == []
+    assert sorted(rows(renamed, "group_description_updated (dry run)")["group"]) == [
+        "BAA-Sharepoint-MATH-Auto-Contribute", "BAA-Sharepoint-MATH-Auto-Read", "BAA-Sharepoint-MATH-Manual-Read",
+    ]
+    assert "group_description_updated (dry run)" not in actions(unchanged)
 
 
 def test_descriptions_of_groups_people_own_are_left_alone(make_manager, tenant, site):
