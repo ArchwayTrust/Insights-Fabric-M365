@@ -211,8 +211,9 @@ class Emails:
 
         Only file attachments are returned. Item attachments (attached emails, events or contacts)
         and reference attachments (links to cloud files, such as OneDrive) are skipped, as they
-        can't be downloaded. Inline attachments, such as images in an email signature, are also
-        skipped unless include_inline is True.
+        can't be downloaded. Inline attachments (ones Exchange marks isInline), usually images such as
+        signature logos, are also skipped unless include_inline is True. Some mail clients mark ordinary
+        attachments inline too, so try include_inline=True if a file you can see in Outlook is missing.
 
         Args:
             message_id: The ID of the email message whose attachments are to be retrieved.
@@ -243,7 +244,7 @@ class Emails:
                 if attachment.get('@odata.type') != '#microsoft.graph.fileAttachment':
                     continue
 
-                # Skip inline attachments, such as signature logos, unless asked for
+                # Skip inline attachments, usually signature logos and other images in the body, unless asked for
                 if attachment.get('isInline') and not include_inline:
                     continue
 
