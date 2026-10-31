@@ -167,6 +167,16 @@ def test_per_call_options_of_the_wrong_type_are_refused(make_manager, tenant, si
     assert tenant.calls == []
 
 
+def test_options_changed_after_construction_are_checked(make_manager, tenant, site):
+    manager = make_manager()
+    manager.allow_mass_removal = "False"
+
+    with pytest.raises(TypeError, match="allow_mass_removal"):
+        manager.update_memberships(memberships_df(site, []))
+
+    assert tenant.calls == []
+
+
 def test_numpy_booleans_and_integers_are_accepted(credential):
     manager = SharePointLibraryManager(credential, HOST, dry_run=np.bool_(True), max_workers=np.int64(2))
 

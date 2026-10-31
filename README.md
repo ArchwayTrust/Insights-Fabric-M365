@@ -991,11 +991,11 @@ Keep the desired state in a few lakehouse tables, maintained by whatever feeds t
 | `auto_groups` | boolean | No (True) | Create the synced Auto-Read and Auto-Contribute groups. |
 | `manual_read`, `manual_contribute` | boolean | No (False) | Create hand-curated Manual-Read / Manual-Contribute groups. |
 | `app_owned` | boolean | No (True) | The app owns the groups. False for groups a person owns and curates. |
-
-A blank (null) in `auto_groups`, `manual_read`, `manual_contribute` or `app_owned` takes the default shown. They can also hold 1 and 0, but anything else, such as the text `"False"`, raises `ValueError` before anything is changed.
 | `previous_site_url` | string | Flow only | The site the library was on before a move, or null. |
 | `deleted` | boolean | Flow only | True once the library has been removed at source. Keep the row, so the unlink pass sees it. |
 | `last_changed_ts` | timestamp | Flow only | When the row last changed. Drives the incremental passes. |
+
+A blank (null) in `auto_groups`, `manual_read`, `manual_contribute` or `app_owned` takes the default shown. They can also hold 1 and 0, but anything else, such as the text `"False"`, raises `ValueError` before anything is changed.
 
 **`sharepoint_library_members`**: one row per person per library. The full desired membership, not changes.
 
