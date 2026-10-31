@@ -162,6 +162,15 @@ def test_readme_flow_provisions_from_the_suggested_tables(setting):
     assert spark.query_time_zones and set(spark.query_time_zones) == {"UTC"}
 
 
+def test_readme_flow_treats_a_null_deleted_as_not_deleted(setting):
+    # A nullable boolean column, as Spark gives for a row that never had the flag set
+    setting.spark.tables["sharepoint_libraries"]["deleted"] = pd.array([False, None], dtype=object)
+
+    setting.run(dry_run=False)
+
+    assert sorted(lst["displayName"] for lst in setting.site.lists.values()) == ["English", "Mathematics"]
+
+
 def test_readme_flow_rerun_and_delete(setting):
     tenant, site, spark = setting.tenant, setting.site, setting.spark
     setting.run(dry_run=False)

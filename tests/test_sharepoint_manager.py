@@ -265,6 +265,8 @@ def test_create_library_again_changes_nothing(make_manager, tenant, site):
     assert created(tenant, f"/sites/{site.id}/lists") == []
     assert created(tenant, "breakroleinheritance") == []
     assert len(site.lists) == 1 and len(site.nav[0]["Children"]) == 1
+    # And nothing else: the checks above name the writes a re-run could make, this catches any other
+    assert tenant.writes() == []
 
 
 @pytest.mark.parametrize("operation", ["create_libraries", "set_library_metadata"])
@@ -1015,6 +1017,23 @@ def test_removal_guardrail(make_manager, tenant, site, library):
     assert tenant.member_upns("BAA-Sharepoint-MATH-Auto-Contribute") == ["jo@contoso.com"]
 
 
+def test_removals_up_to_the_guardrail_are_made(make_manager, tenant, site, library):
+    group = tenant.group_named("BAA-Sharepoint-MATH-Auto-Contribute")
+    for i in range(2):
+        user = tenant.add_user(f"old{i}@contoso.com")
+        group["members"][user["id"]] = user
+    tenant.add_user("jo@contoso.com")
+
+    # The limit is how many may be removed, so removing exactly that many isn't blocked
+    results = make_manager(max_removals_per_group=2).update_memberships(
+        memberships_df(site, [("MATH", "jo@contoso.com", "contribute")]),
+    )
+
+    assert "removal_guardrail_triggered" not in actions(results)
+    assert len(rows(results, "removed_from_group")) == 2
+    assert tenant.member_upns("BAA-Sharepoint-MATH-Auto-Contribute") == ["jo@contoso.com"]
+
+
 def add_stale_members(tenant, group_name, count):
     group = tenant.group_named(group_name)
     for i in range(count):
@@ -1182,8 +1201,9 @@ def test_nested_groups_are_added_and_unresolvable_ones_reported(make_manager, te
     reader = tenant.add_user("reader@contoso.com")
     read_group = tenant.group_named("BAA-Sharepoint-MATH-Auto-Read")
     contribute_group = tenant.group_named("BAA-Sharepoint-MATH-Auto-Contribute")
+    stale_contributor = tenant.add_user("left@contoso.com")
     read_group["members"] = {reader["id"]: reader}
-    contribute_group["members"] = {old_nested["id"]: old_nested}
+    contribute_group["members"] = {old_nested["id"]: old_nested, stale_contributor["id"]: stale_contributor}
     nested = pd.DataFrame({
         "site_url": site.url, "library_code": "MATH", "group_prefix": PREFIX,
         "member_group": ["BAA All Staff", "Missing Group"], "permission": ["read", "contribute"],
@@ -1192,7 +1212,8 @@ def test_nested_groups_are_added_and_unresolvable_ones_reported(make_manager, te
     results = make_manager().update_memberships(memberships_df(site, []), nested_groups_df=nested)
 
     assert set(read_group["members"]) == {all_staff["id"]}  # stale user removed, group nested
-    # Contribute's nested-group lookup failed, so its stale nested group is kept
+    # Contribute's nested-group lookup failed, so its stale nested group is kept. Its users all
+    # resolved, so the stale user is still removed: only removals of the kind that failed are skipped.
     assert set(contribute_group["members"]) == {old_nested["id"]}
     assert rows(results, "group_not_found")["user"].tolist() == ["Missing Group"]
     assert "removals_skipped" in actions(results)
@@ -1424,6 +1445,28 @@ def test_grant_group_access_is_additive_and_idempotent(make_manager, tenant, sit
     assert actions(results) == ["already_assigned", "already_assigned"]
 
 
+# SharePoint pages a library's role assignments, so a group's may only be on a later page
+@pytest.mark.parametrize("operation", ["create_libraries", "grant_group_access"])
+def test_role_assignments_on_a_later_page_are_seen(make_manager, tenant, site, library, slt_groups, operation):
+    df = grants_df(site, [
+        ("MATH", "BAA-Sharepoint-SLT-Manual-Contribute", "contribute"),
+        ("MATH", "BAA-Sharepoint-SLT-Manual-Read", "read"),
+    ])
+    make_manager().grant_group_access(df)
+    tenant.role_assignment_page_size = 1
+    tenant.calls.clear()
+
+    if operation == "create_libraries":
+        results = make_manager().create_libraries(libraries_df(site, "MATH"))
+        assert "already_assigned" in actions(results) and "group_assigned" not in actions(results)
+    else:
+        results = make_manager().grant_group_access(df)
+        assert actions(results) == ["already_assigned", "already_assigned"]
+
+    assert created(tenant, "addroleassignment") == []
+    assert any("$skiptoken=" in url for method, url, _ in tenant.calls if url.split("?")[0].endswith("/roleassignments"))
+
+
 def test_grant_reports_missing_groups_libraries_and_duplicate_names(make_manager, tenant, site, library, slt_groups):
     tenant.add_group("Dup")
     tenant.add_group("Dup")
@@ -1569,6 +1612,25 @@ def test_navigation_label_failure_does_not_block_permissions(make_manager, tenan
     assert site.nav == []
 
 
+def test_a_navigation_link_is_not_posted_again_after_a_server_error(make_manager, tenant, site):
+    from sharepoint_fake import response
+    # A 5xx may come after SharePoint created the link, so posting it again could duplicate it
+    tenant.fail("POST", r"/GetNodeById\(\d+\)/Children$", response(503))
+
+    results = make_manager(add_to_navigation=True).create_libraries(libraries_df(site, "MATH"))
+
+    posts = [url for method, url, _ in tenant.calls if method == "POST" and url.endswith("/Children")]
+    assert len(posts) == 1
+    [error] = rows(results, "error").itertuples()
+    assert error.document_library == "MATH" and "Status code: 503" in error.status
+    [label] = site.nav
+    assert label["Children"] == []
+
+    make_manager(add_to_navigation=True).create_libraries(libraries_df(site, "MATH"))
+
+    assert [child["Title"] for child in label["Children"]] == ["MATH Faculty"]
+
+
 def test_failure_rows_give_graphs_error_code_and_message(make_manager, tenant, site, library):
     from sharepoint_fake import graph_error
     tenant.add_user("jo@contoso.com")
@@ -1696,6 +1758,46 @@ def test_an_unhandled_error_is_logged_against_its_site_and_library(
 
     [row] = rows(results, "error").itertuples()
     assert (row.site_url, row.document_library, row.status) == (site.url, library_code, "KeyError: 'Id'")
+
+
+def test_a_user_lookup_graph_fails_fails_the_library_without_removing_anyone(make_manager, tenant, site, library):
+    from sharepoint_fake import graph_error
+    tenant.add_user("jo@contoso.com")
+    stale = tenant.add_user("left@contoso.com")
+    tenant.group_named("BAA-Sharepoint-MATH-Auto-Contribute")["members"][stale["id"]] = stale
+    tenant.calls.clear()
+    # Not a 404: Graph couldn't say whether the user exists, so the "stale" member may be them
+    tenant.fail("GET", r"/users/jo%40contoso\.com$", graph_error(503, "serviceNotAvailable"), times=99)
+
+    results = make_manager().update_memberships(memberships_df(site, [("MATH", "jo@contoso.com", "contribute")]))
+
+    [error] = rows(results, "error").itertuples()
+    assert error.document_library == "MATH"
+    assert "user 'jo@contoso.com': user lookup failed: Status code: 503, serviceNotAvailable" in error.status
+    assert tenant.member_upns("BAA-Sharepoint-MATH-Auto-Contribute") == ["left@contoso.com"]
+    assert tenant.writes() == []
+
+
+def test_a_nested_group_lookup_graph_fails_is_an_error_and_keeps_nested_groups(
+    make_manager, tenant, site, library,
+):
+    from sharepoint_fake import graph_error
+    tenant.add_group("BAA All Staff")
+    old_nested = tenant.add_group("Old Nested")
+    read_group = tenant.group_named("BAA-Sharepoint-MATH-Auto-Read")
+    read_group["members"] = {old_nested["id"]: old_nested}
+    tenant.calls.clear()
+    # The nested group is looked up before the library's own groups
+    tenant.fail("GET", r"/groups$", graph_error(403, "Authorization_RequestDenied", "Insufficient privileges"))
+
+    results = make_manager().update_memberships(
+        memberships_df(site, []), nested_groups_df=nested_df(site.url, "BAA All Staff"),
+    )
+
+    [error] = rows(results, "error").itertuples()
+    assert error.user == "BAA All Staff" and "group lookup failed" in error.status
+    assert set(read_group["members"]) == {old_nested["id"]}
+    assert tenant.writes() == []
 
 
 def test_nested_group_add_failure_is_fatal(make_manager, tenant, site, library):
