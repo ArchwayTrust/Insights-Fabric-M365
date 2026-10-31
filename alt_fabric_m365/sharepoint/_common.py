@@ -345,10 +345,11 @@ def _run_parallel(
 ) -> None:
     r"""Run *func(\*item, action_log=action_log)* over *items* sequentially or in parallel.
 
-    Both paths have identical failure semantics: an unhandled exception in one
-    item is logged as an 'error' row and the remaining items still run.  An
-    interrupt, such as cancelling the notebook cell, stops both: the items
-    already running finish, and the rest are never started.
+    Both paths have identical failure semantics: an unhandled Exception in one
+    item is logged as an 'error' row and the remaining items still run.  Any
+    other BaseException, such as an interrupt from cancelling the notebook cell,
+    stops both: the items already running finish, the rest are never started,
+    and it is raised.
 
     Args:
         func: Processes one item.
@@ -373,6 +374,9 @@ def _run_parallel(
                     futures[future] = item
                 for future in as_completed(futures):
                     exc = future.exception()
+                    # As in the sequential path, only an Exception becomes an error row
+                    if exc is not None and not isinstance(exc, Exception):
+                        raise exc
                     if exc:
                         _log_unhandled_error(futures[future], exc, action_log, locate)
             except BaseException:
