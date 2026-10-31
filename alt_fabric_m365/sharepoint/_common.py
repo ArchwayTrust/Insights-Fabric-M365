@@ -251,10 +251,10 @@ def _run_parallel(
     else:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {}
-            for item in items:
-                future = executor.submit(func, *item, action_log=action_log)
-                futures[future] = item
             try:
+                for item in items:
+                    future = executor.submit(func, *item, action_log=action_log)
+                    futures[future] = item
                 for future in as_completed(futures):
                     exc = future.exception()
                     if exc:

@@ -126,7 +126,8 @@ def test_run_parallel_logs_failures_and_carries_on(max_workers):
     assert [(r["action"], r["status"]) for r in log.to_list()] == [("error", "boom")]
 
 
-def test_cancelling_a_parallel_run_drops_the_queued_items(monkeypatch):
+@pytest.mark.parametrize("cancelled_while", ["waiting", "submitting"])
+def test_cancelling_a_parallel_run_drops_the_queued_items(monkeypatch, cancelled_while):
     started = []
     release = threading.Event()
 
@@ -134,16 +135,23 @@ def test_cancelling_a_parallel_run_drops_the_queued_items(monkeypatch):
         started.append(number)
         release.wait(5)
 
-    def interrupted(futures):
-        # The cell is cancelled while two items run and eight are queued
+    def cancel():
+        # The cell is cancelled while two items run and the rest are queued
         while len(started) < 2:
             time.sleep(0.01)
         threading.Timer(0.2, release.set).start()
         raise KeyboardInterrupt
-    monkeypatch.setattr(_common, "as_completed", interrupted)
+
+    def items():
+        yield from ((number,) for number in range(10))
+        if cancelled_while == "submitting":
+            cancel()
+
+    if cancelled_while == "waiting":
+        monkeypatch.setattr(_common, "as_completed", lambda futures: cancel())
 
     with pytest.raises(KeyboardInterrupt):
-        _common._run_parallel(work, [(number,) for number in range(10)], 2, _common._ThreadSafeLog())
+        _common._run_parallel(work, items(), 2, _common._ThreadSafeLog())
 
     assert sorted(started) == [0, 1]
 
