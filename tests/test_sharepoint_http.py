@@ -25,8 +25,21 @@ def sleeps(monkeypatch):
     return calls
 
 
-def patch_request(**kwargs):
-    return mock.patch.object(_http.requests, "request", **kwargs)
+def patch_request(return_value=None, side_effect=None):
+    """Patches requests.request to give return_value, or each of side_effect in turn (raising exceptions).
+
+    Each response gets the URL it was requested from, with params encoded, as requests gives it.
+    """
+    results = iter(side_effect) if isinstance(side_effect, list) else None
+
+    def request(method, url, **kwargs):
+        result = next(results) if results is not None else side_effect if side_effect is not None else return_value
+        if isinstance(result, BaseException):
+            raise result
+        if isinstance(result, requests.Response):
+            result.url = requests.Request(method, url, params=kwargs.get("params")).prepare().url
+        return result
+    return mock.patch.object(_http.requests, "request", side_effect=request)
 
 
 # Retry-After
@@ -196,6 +209,29 @@ def test_post_redirect_is_followed_with_the_same_method(sleeps):
     assert second.args == ("POST", "https://contoso.sharepoint.com/sites/maths2/_api/web/ensureuser")
     assert second.kwargs["json"] == {"logonName": "x"}
     assert second.kwargs["allow_redirects"] is False
+
+
+def test_a_redirect_is_followed_without_sending_the_query_again(sleeps):
+    location = "https://graph.microsoft.com/v1.0/groups/?%24filter=displayName+eq+%27x%27"
+    responses = [response(301, headers={"Location": location}), response(503), response(200, {})]
+    with patch_request(side_effect=responses) as request:
+        _request_with_retry("GET", "https://graph.microsoft.com/v1.0/groups", params={"$filter": "displayName eq 'x'"})
+
+    first, after_redirect, retry = request.call_args_list
+    assert first.kwargs["params"] == {"$filter": "displayName eq 'x'"}
+    # The redirect, and the retry after it, ask for Location as it is
+    assert [(call.args[1], "params" in call.kwargs) for call in (after_redirect, retry)] == [(location, False)] * 2
+
+
+def test_a_fragment_only_redirect_keeps_the_query(sleeps):
+    responses = [response(302, headers={"Location": "#next"}), response(200, {})]
+    with patch_request(side_effect=responses) as request:
+        _request_with_retry("GET", "https://graph.microsoft.com/v1.0/groups", params={"$filter": "displayName eq 'x'"})
+
+    after_redirect = request.call_args_list[1]
+    # Resolved against the URL that was requested, query and all; requests doesn't send the fragment
+    assert after_redirect.args[1] == "https://graph.microsoft.com/v1.0/groups?%24filter=displayName+eq+%27x%27#next"
+    assert "params" not in after_redirect.kwargs
 
 
 def test_cross_host_redirect_is_refused():

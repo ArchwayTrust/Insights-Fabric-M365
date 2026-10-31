@@ -265,8 +265,9 @@ def _request_with_retry(
                 if not redirect_url:
                     break
                 # Location may be relative (RFC 7231) — resolve it against the
-                # current URL before the cross-host comparison.
-                redirect_url = urljoin(url, redirect_url)
+                # URL requested, which has the query params were encoded
+                # into, before the cross-host comparison.
+                redirect_url = urljoin(resp.url or url, redirect_url)
                 if hops >= MAX_REDIRECT_HOPS:
                     raise requests.HTTPError(
                         f"Too many redirects ({hops}) for {method} {url}",
@@ -287,6 +288,10 @@ def _request_with_retry(
                 )
                 url = redirect_url
                 hops += 1
+                # Location already carries the query, so params would add it
+                # again, and OData refuses a repeated $filter or $select.
+                # Retries after this go to Location too.
+                kwargs.pop("params", None)
                 # Don't count the redirect as a retry — just re-issue
                 resp = requests.request(method, url, **kwargs)
 
