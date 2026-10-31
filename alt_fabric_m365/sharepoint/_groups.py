@@ -581,20 +581,54 @@ def _add_group_member(
         return
 
 
-def _remove_group_member(token: str, group_id: str, user_object_id: str) -> None:
-    """Remove a user from a security group."""
-    url = f"{GRAPH_BASE_URL}/groups/{group_id}/members/{user_object_id}/$ref"
+def _remove_group_member(token: str, group_id: str, member_object_id: str) -> bool:
+    """Remove a member (a user, nested group or other object) from a security group.
+
+    Args:
+        token: A Graph access token.
+        group_id: The group's object ID.
+        member_object_id: The member's object ID.
+
+    Returns:
+        True if it was removed, False if it wasn't a member. A DELETE retried
+        after a server error or timeout gets a 404 when the first attempt
+        removed it, and either way it's no longer a member.
+
+    Raises:
+        requests.HTTPError: If Graph refuses for any other reason.
+    """
+    url = f"{GRAPH_BASE_URL}/groups/{group_id}/members/{member_object_id}/$ref"
     resp = _request_with_retry("DELETE", url, headers=_graph_headers(token))
+    if resp.status_code == 404:
+        logger.info("%s is no longer a member of group %s", member_object_id, group_id)
+        return False
     _raise_for_status(resp)
+    return True
 
 
-def _empty_group_members(token: str, group_id: str) -> int:
-    """Remove all members from a security group. Returns the count removed."""
-    members = _get_group_members(token, group_id)
-    for upn, member_oid in members.items():
-        _remove_group_member(token, group_id, member_oid)
-        logger.info("Removed '%s' from group %s (unlink)", upn, group_id)
-    return len(members)
+def _empty_group_members(token: str, group_id: str) -> tuple[int, dict[str, requests.RequestException]]:
+    """Remove every member from a security group, carrying on past any that fail.
+
+    Args:
+        token: A Graph access token.
+        group_id: The group's object ID.
+
+    Returns:
+        The number of members removed, and the error for each member that
+        couldn't be, keyed as _get_group_members keys them.
+    """
+    removed = 0
+    failures: dict[str, requests.RequestException] = {}
+    for member_key, member_oid in _get_group_members(token, group_id).items():
+        try:
+            if _remove_group_member(token, group_id, member_oid):
+                removed += 1
+                logger.info("Removed '%s' from group %s (unlink)", member_key, group_id)
+        except requests.RequestException as exc:
+            # One member that can't be removed mustn't leave the rest in place
+            logger.error("Failed to remove '%s' from group %s: %s", member_key, group_id, exc)
+            failures[member_key] = exc
+    return removed, failures
 
 
 def _find_group_name_collisions(

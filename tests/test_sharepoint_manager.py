@@ -584,6 +584,24 @@ def test_unlink_empties_auto_groups_keeps_manual_and_removes_the_link(make_manag
     assert site.nav[0]["Title"] == LABEL and site.nav[0]["Children"] == []
 
 
+def test_unlink_empties_the_rest_of_a_group_when_one_member_cant_be_removed(make_manager, tenant, site):
+    from sharepoint_fake import graph_error
+    make_manager().create_libraries(libraries_df(site, "MATH"))
+    group = tenant.group_named("BAA-Sharepoint-MATH-Auto-Contribute")
+    jo, sam, ali = (tenant.add_user(f"{name}@contoso.com") for name in ("jo", "sam", "ali"))
+    group["members"] = {user["id"]: user for user in (jo, sam, ali)}
+    tenant.fail("DELETE", rf"/members/{sam['id']}/\$ref$", graph_error(403, "Authorization_RequestDenied", "Denied."))
+
+    results = make_manager().unlink_libraries(libraries_df(site, "MATH"))
+
+    emptied = rows(results, "group_emptied").set_index("group")["status"]
+    assert emptied["BAA-Sharepoint-MATH-Auto-Contribute"] == "removed 2 member(s); 1 couldn't be removed"
+    [failed] = rows(results, "remove_failed").itertuples()
+    assert (failed.group, failed.user) == ("BAA-Sharepoint-MATH-Auto-Contribute", "sam@contoso.com")
+    assert "remove_failed" in FATAL_ACTIONS
+    assert tenant.member_upns("BAA-Sharepoint-MATH-Auto-Contribute") == ["sam@contoso.com"]
+
+
 def test_unlink_dry_run_makes_no_writes(make_manager, tenant, site):
     make_manager().create_libraries(libraries_df(site, "MATH"))
     tenant.calls.clear()
@@ -1283,6 +1301,20 @@ def test_error_rows_give_sharepoints_error_message(make_manager, tenant, site):
 
     assert list(rows(results, "error")["status"]) == [
         "Status code: 403, -2147024891, System.UnauthorizedAccessException: Access denied."
+    ]
+
+
+def test_a_member_already_removed_by_a_retried_request_is_not_a_failure(make_manager, tenant, site, library):
+    from sharepoint_fake import graph_error
+    left = tenant.add_user("left@contoso.com")
+    tenant.group_named("BAA-Sharepoint-MATH-Auto-Contribute")["members"][left["id"]] = left
+    # The first DELETE removed the member, but its response was lost, so the retry finds them gone
+    tenant.fail("DELETE", r"/members/.+/\$ref$", graph_error(404, "Request_ResourceNotFound", "Does not exist."))
+
+    results = make_manager().update_memberships(memberships_df(site, []), libraries_df=libraries_df(site, "MATH"))
+
+    assert results[["action", "user", "status"]].values.tolist() == [
+        ["removed_from_group", "left@contoso.com", "already removed"],
     ]
 
 

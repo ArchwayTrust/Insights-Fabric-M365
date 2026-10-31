@@ -419,8 +419,40 @@ def test_emptying_a_group_removes_every_kind_of_member(tenant):
     service_principal = tenant.add_service_principal()
     group["members"] = {user["id"]: user, service_principal["id"]: service_principal}
 
-    assert _groups._empty_group_members(TOKEN, group["id"]) == 2
+    assert _groups._empty_group_members(TOKEN, group["id"]) == (2, {})
     assert group["members"] == {}
+
+
+def test_emptying_a_group_carries_on_past_a_member_it_cannot_remove(tenant):
+    group = tenant.add_group("SP-ENG-Auto-Read")
+    jo, sam, ali = (tenant.add_user(f"{name}@contoso.com") for name in ("jo", "sam", "ali"))
+    group["members"] = {user["id"]: user for user in (jo, sam, ali)}
+    tenant.fail("DELETE", rf"/members/{sam['id']}/\$ref$", graph_error(403, "Authorization_RequestDenied", "Denied."))
+
+    removed, failures = _groups._empty_group_members(TOKEN, group["id"])
+
+    assert removed == 2
+    assert list(failures) == ["sam@contoso.com"]
+    assert "Authorization_RequestDenied" in str(failures["sam@contoso.com"])
+    assert list(group["members"]) == [sam["id"]]
+
+
+def test_removing_a_member_already_gone_is_not_an_error(tenant):
+    group = tenant.add_group("SP-ENG-Auto-Read")
+    jo = tenant.add_user("jo@contoso.com")
+    group["members"] = {jo["id"]: jo}
+
+    assert _groups._remove_group_member(TOKEN, group["id"], jo["id"]) is True
+    # As when a DELETE retried after a timeout finds the first attempt removed the member
+    assert _groups._remove_group_member(TOKEN, group["id"], jo["id"]) is False
+
+
+def test_other_member_removal_errors_are_raised(tenant):
+    group = tenant.add_group("SP-ENG-Auto-Read")
+    tenant.fail("DELETE", r"/members/.+/\$ref$", graph_error(403, "Authorization_RequestDenied", "Denied."))
+
+    with pytest.raises(requests.HTTPError, match="Authorization_RequestDenied"):
+        _groups._remove_group_member(TOKEN, group["id"], "member")
 
 
 # Users
