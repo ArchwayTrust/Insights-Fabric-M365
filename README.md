@@ -57,8 +57,8 @@ The package is published on PyPI as [`alt-fabric-m365`](https://pypi.org/project
 **In a Fabric environment** (use this for scheduled notebooks and pipelines):
 
 1. Open the environment your notebooks use.
-2. Under **Public libraries**, select **Add from PyPI**, enter `alt-fabric-m365` and choose a version, for example `1.2.0`.
-3. Select **Publish**. Notebooks pick up the new version when their next session starts.
+2. In the **External repositories** tab, select **Add library** > **Add library from public repository**, choose **PyPI**, enter `alt-fabric-m365` and choose a version, for example `1.2.0`. Choose **Full** publish mode, which Microsoft recommends for pipelines and production notebooks.
+3. Save and publish the environment. Notebooks pick up the new version when their next session starts.
 
 **In a single notebook session** (useful for testing a new version):
 
@@ -1310,8 +1310,8 @@ To upgrade:
    from alt_fabric_m365.exchange import Emails
    ```
 
-2. In each Fabric environment, remove `fabric_python_helper` under **Public libraries** if it's there. Its last release, 0.6.0, requires `alt-fabric-m365` 0.6, so it can't be installed alongside 1.0.0.
-3. Set `alt-fabric-m365` to `1.0.0` and publish the environment.
+2. In each Fabric environment, remove `fabric_python_helper` under **External repositories** if it's there. Its last release, 0.6.0, requires `alt-fabric-m365` 0.6, so it can't be installed alongside 1.0.0.
+3. Set `alt-fabric-m365` to the latest 1.x version (see [Installation](#installation)) and publish the environment.
 
 To upgrade from 0.3.x or earlier, which used delegated (signed-in user) authentication and had a `pbi_admin` module, first follow [Upgrading from 0.3.x](https://github.com/ArchwayTrust/Insights-Fabric-M365/blob/v0.7.2/README.md#upgrading-from-03x) in the 0.7.2 README.
 
@@ -1385,7 +1385,7 @@ From the repository root, in PowerShell:
 python -m pip install --upgrade build twine
 Remove-Item dist -Recurse -Force -ErrorAction SilentlyContinue
 python -m build
-python -m twine check dist/*
+python -m twine check --strict dist/*
 ```
 
 This creates two files in `dist/`:
@@ -1411,7 +1411,7 @@ Upload the `.whl` file to a lakehouse's `Files` folder, then in a notebook attac
 %pip install /lakehouse/default/Files/alt_fabric_m365-1.2.0-py3-none-any.whl
 ```
 
-Or add it to an environment under **Custom libraries** > **Upload**.
+Or add it to an environment: on its **Custom** libraries page, select **Upload**.
 
 ### Publishing to PyPI with a GitHub release
 
@@ -1471,7 +1471,7 @@ python -m twine upload --repository testpypi dist/*
 
 ### After publishing
 
-Update the version in each Fabric environment that uses the package (**Public libraries**), and publish the environment.
+Update the version in each Fabric environment that uses the package (**External repositories**), and publish the environment.
 
 ### Release checklist
 
