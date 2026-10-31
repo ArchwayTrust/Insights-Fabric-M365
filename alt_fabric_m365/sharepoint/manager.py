@@ -1222,6 +1222,9 @@ class SharePointLibraryManager:
                     "library does not exist on the site — nothing to rename; "
                     "its Auto groups are still emptied",
                 )
+                # Its link would otherwise stay, as nothing else removes it.
+                # A library's URL is its code, so the link is found by that.
+                lib_web_url = f"{site_url.rstrip('/')}/{library_code}"
             elif library.get("displayName") == unlinked_display:
                 # Unlinked by an earlier run: a re-run writes nothing
                 lib_web_url = library.get("webUrl", "")
