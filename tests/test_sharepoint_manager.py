@@ -1543,6 +1543,28 @@ def test_a_member_already_removed_by_a_retried_request_is_not_a_failure(make_man
     ]
 
 
+@pytest.mark.parametrize("operation", ["update_memberships", "ensure_onedrive_shortcuts"])
+def test_one_worker_makes_every_request_in_turn_including_user_lookups(
+    make_manager, tenant, site, library, monkeypatch, operation,
+):
+    import threading
+    from alt_fabric_m365.sharepoint import _http
+    for name in ("jo", "sam", "ali"):
+        tenant.add_user(f"{name}@contoso.com")
+    threads = set()
+
+    def request(method, url, **kwargs):
+        threads.add(threading.get_ident())
+        return tenant.request(method, url, **kwargs)
+    monkeypatch.setattr(_http.requests, "request", request)
+
+    getattr(make_manager(max_workers=1), operation)(memberships_df(site, [
+        ("MATH", f"{name}@contoso.com", "read") for name in ("jo", "sam", "ali")
+    ]))
+
+    assert threads == {threading.get_ident()}
+
+
 def test_add_and_remove_failures_are_fatal_rows(make_manager, tenant, site, library):
     from sharepoint_fake import graph_error
     tenant.add_user("jo@contoso.com")
