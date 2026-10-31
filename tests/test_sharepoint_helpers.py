@@ -5,7 +5,9 @@ and navigation URL matching. Requests go to the in-memory FakeTenant.
 import re
 import threading
 import time
+from decimal import Decimal
 
+import numpy as np
 import pandas as pd
 import pytest
 import requests
@@ -92,6 +94,28 @@ def test_required_columns_must_not_be_null():
     df = pd.DataFrame({"site_url": [SITE, None]})
     with pytest.raises(ValueError, match="1 null value"):
         _common._validate_required_columns(df, {"site_url"})
+
+
+@pytest.mark.parametrize("value, expected", [
+    (101, "101"), (101.0, "101"), (np.float32(7), "7"), (101.5, "101.5"), (float("inf"), "inf"),
+    (Decimal("101.00"), "101"), (Decimal("1.50"), "1.50"), (Decimal("NaN"), "NaN"), ("MATH", "MATH"),
+])
+def test_values_are_given_as_text_with_whole_numbers_without_decimals(value, expected):
+    assert _common._as_text(value) == expected
+
+
+@pytest.mark.parametrize("pandas_1_5", [False, True])
+def test_required_columns_of_decimals_become_text_on_every_pandas(monkeypatch, pandas_1_5):
+    if pandas_1_5:
+        # pandas 1.5, which older Fabric runtimes have, counts any object column as strings
+        monkeypatch.setattr(
+            _common.pd.api.types, "is_string_dtype", lambda column: getattr(column, "dtype", None) == object,
+        )
+    df = pd.DataFrame({"library_code": [Decimal("101.00"), "MATH"]})
+
+    validated = _common._validate_required_columns(df, {"library_code"})
+
+    assert list(validated["library_code"]) == ["101", "MATH"]
 
 
 def test_required_columns_are_cast_to_strings_on_a_copy():

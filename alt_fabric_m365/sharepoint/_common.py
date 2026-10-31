@@ -6,6 +6,7 @@ import re
 import threading
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from decimal import Decimal
 from urllib.parse import urlparse
 
 import pandas as pd
@@ -125,6 +126,26 @@ def _append_log(
     })
 
 
+def _as_text(value: object) -> str:
+    """Return a DataFrame value as text, writing a whole number without decimal places.
+
+    pandas stores an integer column that has a null as floats, and Spark
+    gives a DecimalType column as Decimals, so the ID 101 can arrive as 101.0
+    or Decimal('101.00'), and str() would give '101.0' or '101.00'.
+
+    Args:
+        value: A value from a DataFrame, not null.
+
+    Returns:
+        The value as text.
+    """
+    if pd.api.types.is_float(value) and float(value).is_integer():
+        return str(int(value))
+    if isinstance(value, Decimal) and value.is_finite() and value == value.to_integral_value():
+        return str(int(value))
+    return str(value)
+
+
 def _validate_library_codes(codes: Iterable[str]) -> None:
     """Check that SharePoint can use each library code as a library's URL.
 
@@ -159,7 +180,7 @@ def _validate_required_columns(df: pd.DataFrame, required_columns: set[str]) -> 
     A required library_code column is also checked with
     _validate_library_codes.
 
-    Returns a copy of *df* with required columns cast to string dtype.
+    Returns a copy of *df* with required columns as text (see _as_text).
     """
     missing = required_columns - set(df.columns)
     if missing:
@@ -173,8 +194,9 @@ def _validate_required_columns(df: pd.DataFrame, required_columns: set[str]) -> 
                 f"Column '{col}' contains {nan_count} null value(s) — "
                 f"all required columns must be non-null strings"
             )
-        if not pd.api.types.is_string_dtype(df[col]):
-            df[col] = df[col].astype(str)
+        # Every value, whatever the dtype: pandas 1.5 counts any object
+        # column as strings, including one of Decimals from Spark
+        df[col] = df[col].map(_as_text)
     if "library_code" in required_columns:
         _validate_library_codes(df["library_code"])
     return df
