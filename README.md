@@ -57,13 +57,13 @@ The package is published on PyPI as [`alt-fabric-m365`](https://pypi.org/project
 **In a Fabric environment** (use this for scheduled notebooks and pipelines):
 
 1. Open the environment your notebooks use.
-2. Under **Public libraries**, select **Add from PyPI**, enter `alt-fabric-m365` and choose a version, for example `1.1.0`.
+2. Under **Public libraries**, select **Add from PyPI**, enter `alt-fabric-m365` and choose a version, for example `1.2.0`.
 3. Select **Publish**. Notebooks pick up the new version when their next session starts.
 
 **In a single notebook session** (useful for testing a new version):
 
 ```python
-%pip install alt-fabric-m365==1.1.0
+%pip install alt-fabric-m365==1.2.0
 ```
 
 Always pin a version. 1.0.0 removes the old names that 0.x versions kept working with a warning, see [Upgrading to 1.0.0](#upgrading-to-100). 1.0.1 only updates the documentation. 1.0.2 stops `update_memberships` emptying an Auto group the app doesn't own, adopts ownerless Auto groups it has no members to add to, and makes dry runs of `create_libraries` report group ownership. 1.1.0 fixes problems found in a review of 1.0.2:
@@ -75,6 +75,17 @@ Always pin a version. 1.0.0 removes the old names that 0.x versions kept working
 - A membership row with an unknown permission no longer removes anyone, and `skip` is now in `WARNING_ACTIONS`.
 - Options must be of their documented type: a String pipeline parameter such as `"False"` raises `TypeError` rather than counting as true, so give those parameters the type Bool or Int. Blanks in `create_libraries`' flag columns take their defaults.
 - `rename_libraries` no longer accepts `old_library_code`, and raises `ValueError` if given one. It never worked (the library was looked up by its new code), so no notebook could rely on it, and it's removed in a minor version.
+
+1.2.0 adds `ensure_onedrive_shortcuts` and a run-wide removal limit, and fixes more problems from the same review:
+
+- `update_memberships` adds up its removals across the whole call. If they'd remove more than `max_removals_per_run` members (default 100), none are made, and one `removal_guardrail_triggered` row with no library says so. If a normal run can remove more, such as at the start of a school year, raise the limit.
+- `ensure_onedrive_shortcuts` makes OneDrive shortcuts that `update_memberships` couldn't, for example because the user's OneDrive didn't exist yet.
+- A `library_code` SharePoint can't use as a library's URL raises `ValueError` before anything is changed: see the `library_code` row under [Input tables](#input-tables). Such codes never worked after the first run. Trim padded codes in the query that reads them.
+- `retire_moved_libraries` only retires a library once its replacement works on the new site (`retire_deferred` until then).
+- `create_libraries` logs `library_created` and `library_renamed`, and its dry run reports them and a new navigation label. Dry runs of `rename_libraries`, `set_library_metadata` and `grant_group_access` read what a live run reads, so they report missing libraries and groups, and grants already held.
+- A 503 with `Retry-After` is waited out like a 429, and each attempt of a request gets a current token, so a long throttle doesn't end in a 401.
+- A group created moments ago isn't created again while Graph's name lookups still miss it, and Graph's 400 for a new group is waited out like its 404.
+- Cancelling a cell stops a parallel run starting queued libraries.
 
 From 1.0.0, only a new major version (2.0.0) can break existing notebooks, see [Versioning](#versioning). The history of the 0.x versions is in the [0.7.2 README](https://github.com/ArchwayTrust/Insights-Fabric-M365/blob/v0.7.2/README.md#installation).
 
@@ -1340,7 +1351,7 @@ The tests can't show that the real services accept the requests, so test a new v
 
 ### Versioning
 
-The version number is only set in `alt_fabric_m365/__init__.py`, as `__version__="1.1.0"`. `setup.py` reads it from there, so there's nothing else to keep in sync. Check it with `python setup.py --version`.
+The version number is only set in `alt_fabric_m365/__init__.py`, as `__version__="1.2.0"`. `setup.py` reads it from there, so there's nothing else to keep in sync. Check it with `python setup.py --version`.
 
 Versions follow [semantic versioning](https://semver.org/):
 
@@ -1365,8 +1376,8 @@ python -m twine check dist/*
 
 This creates two files in `dist/`:
 
-- `alt_fabric_m365-1.1.0-py3-none-any.whl`, the wheel
-- `alt_fabric_m365-1.1.0.tar.gz`, the source distribution
+- `alt_fabric_m365-1.2.0-py3-none-any.whl`, the wheel
+- `alt_fabric_m365-1.2.0.tar.gz`, the source distribution
 
 `twine check` confirms the package metadata and this README will render on PyPI. Clearing `dist/` first stops old versions being uploaded by mistake.
 
@@ -1383,7 +1394,7 @@ trusted-host = files.pythonhosted.org
 Upload the `.whl` file to a lakehouse's `Files` folder, then in a notebook attached to that lakehouse:
 
 ```python
-%pip install /lakehouse/default/Files/alt_fabric_m365-1.1.0-py3-none-any.whl
+%pip install /lakehouse/default/Files/alt_fabric_m365-1.2.0-py3-none-any.whl
 ```
 
 Or add it to an environment under **Custom libraries** > **Upload**.
@@ -1393,7 +1404,7 @@ Or add it to an environment under **Custom libraries** > **Upload**.
 This is the normal route. Merging to `main` never publishes anything; only publishing a GitHub release does. The [Release workflow](.github/workflows/release.yml) then:
 
 1. Runs the tests.
-2. Checks the release tag matches `__version__` (tag `v1.1.0` for `__version__="1.1.0"`), and stops if it doesn't.
+2. Checks the release tag matches `__version__` (tag `v1.2.0` for `__version__="1.2.0"`), and stops if it doesn't.
 3. Builds the package and runs `twine check`.
 4. Publishes it to PyPI.
 5. Attaches the wheel and source distribution to the GitHub release.
@@ -1402,7 +1413,7 @@ To release:
 
 1. Update `__version__` in `alt_fabric_m365/__init__.py`, merge it into `main` through a pull request.
 2. On GitHub, go to **Releases** > **Draft a new release**.
-3. Create a tag matching the version, for example `v1.1.0`, targeting `main`.
+3. Create a tag matching the version, for example `v1.2.0`, targeting `main`.
 4. Add release notes, then select **Publish release**.
 5. Check the workflow run under **Actions**, and that the new version appears on [PyPI](https://pypi.org/project/alt-fabric-m365/).
 
@@ -1440,7 +1451,7 @@ python -m twine upload --repository testpypi dist/*
 ```
 
 ```python
-%pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ alt-fabric-m365==1.1.0
+%pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ alt-fabric-m365==1.2.0
 ```
 
 ### After publishing
