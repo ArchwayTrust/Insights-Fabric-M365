@@ -196,6 +196,16 @@ def test_requests_go_to_the_expected_urls(azure):
     assert azure.token_calls[0][0] == f"https://login.microsoftonline.com/{TENANT}/oauth2/v2.0/token"
 
 
+def test_names_are_quoted_in_url_paths(azure):
+    credential = KeyVaultCertificateCredential("a/b?c", CLIENT, AKV, "cert/x?y#z", certificate_version="v/2")
+
+    credential.get_token("a")
+
+    # Unquoted, a / or ? would quietly select a different certificate or endpoint
+    assert azure.certificate_calls[0][0] == "https://myvault.vault.azure.net/certificates/cert%2Fx%3Fy%23z/v%2F2"
+    assert azure.token_calls[0][0] == "https://login.microsoftonline.com/a%2Fb%3Fc/oauth2/v2.0/token"
+
+
 def test_client_assertion_is_well_formed(azure):
     before = int(time.time())
     make_credential().get_token("a")
