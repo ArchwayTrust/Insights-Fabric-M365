@@ -949,7 +949,7 @@ if not failures.empty:
 
 ### Safety features
 
-- **Dry run.** With `dry_run=True` nothing is changed; the log shows what would be, with actions ending `(dry run)`. A dry run of `update_memberships` reads each group's current members, so it lists the members a live run would add and remove, and shows `removals_skipped` and `removal_guardrail_triggered` where a live run would.
+- **Dry run.** With `dry_run=True` nothing is changed; the log shows what would be, with actions ending `(dry run)`. A dry run of `update_memberships` reads each group's current members, so it lists the members a live run would add and remove, and shows `removals_skipped` and `removal_guardrail_triggered` where a live run would. A dry run of `grant_group_access` reads the groups and the libraries' role assignments, so it reports missing groups and libraries, and grants already held, as a live run would.
 - **Removal guardrail.** If syncing a group would remove more than `max_removals_per_group` members, its removals are skipped and logged as `removal_guardrail_triggered` (additions still happen). Re-run with `allow_mass_removal=True` once you've checked the data.
 - **Incomplete data never drives removals.** If any user (or nested group) for a role can't be resolved, removals of that kind from that role's group are skipped (`removals_skipped`), as the "stale" member may be the one that failed to resolve. A row whose `permission` isn't `read`, `contribute` or `owner` is logged as `skip`, and as it could be meant for any role, removals of that kind are skipped from all of the library's groups.
 - **Manual groups are never synced or emptied,** and service principals and devices in Auto groups are left in place.
