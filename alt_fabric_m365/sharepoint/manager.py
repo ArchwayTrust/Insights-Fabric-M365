@@ -365,6 +365,7 @@ class SharePointLibraryManager:
         role_definitions: bool = False,
         navigation_label: str | None = None,
         gone: tuple[str, str] | None = None,
+        max_workers: int = 1,
     ) -> dict[str, dict]:
         """Read each site's state once, before the per-library work.
 
@@ -379,17 +380,20 @@ class SharePointLibraryManager:
         *gone* is an (action, status) row logged instead when a site doesn't
         exist (HTTP 404).  A 403 isn't one: the site exists, but the app
         can't read it, as when its Sites.Selected grant has been removed.
+
+        With *max_workers* above 1, up to that many sites are read at once,
+        as each takes several requests; rows are still logged in the order
+        the sites were given.
         """
-        sites: dict[str, dict] = {}
-        for site_url in dict.fromkeys(site_urls):
+        def read(site_url: str) -> tuple[dict | None, tuple | None]:
+            """Return the site's state, or None and the row to log instead."""
             try:
                 try:
                     site_id = _get_site_id(self._graph_token, site_url)
                 except requests.HTTPError as exc:
                     status = exc.response.status_code if exc.response is not None else None
                     if gone is not None and status == 404:
-                        _append_log(action_log, site_url, "", *gone)
-                        continue
+                        return None, (site_url, "", *gone)
                     raise
                 site = {"site_id": site_id, "lists": _list_existing_lists(self._graph_token, site_id)}
                 if role_definitions:
@@ -398,9 +402,26 @@ class SharePointLibraryManager:
                     site["nav_label"] = _find_nav_label(self._sp_token, site_url, navigation_label)
             except (requests.RequestException, ValueError, KeyError) as exc:
                 logger.error("Error reading site state for '%s': %s", site_url, exc)
-                _append_log(action_log, site_url, "", "error", str(exc))
-                continue
-            sites[site_url] = site
+                return None, (site_url, "", "error", str(exc))
+            return site, None
+
+        urls = list(dict.fromkeys(site_urls))
+        if max_workers <= 1 or len(urls) <= 1:
+            results = [read(site_url) for site_url in urls]
+        else:
+            with ThreadPoolExecutor(max_workers=min(max_workers, len(urls))) as executor:
+                try:
+                    results = list(executor.map(read, urls))
+                except BaseException:
+                    # A cancelled cell shouldn't wait for every site still queued
+                    executor.shutdown(wait=True, cancel_futures=True)
+                    raise
+        sites: dict[str, dict] = {}
+        for site_url, (site, row) in zip(urls, results):
+            if row is not None:
+                _append_log(action_log, *row)
+            else:
+                sites[site_url] = site
         return sites
 
     def _resolve_users(self, user_principal_names: Iterable[str], max_workers: int) -> dict[str, tuple]:
@@ -849,7 +870,9 @@ class SharePointLibraryManager:
         action_log = _ThreadSafeLog()
 
         # Read each site once: its lists and role definition IDs.
-        sites = self._prefetch_sites(df["site_url"].unique(), action_log, role_definitions=True)
+        sites = self._prefetch_sites(
+            df["site_url"].unique(), action_log, role_definitions=True, max_workers=max_workers_,
+        )
 
         # Pre-ensure the navigation label once per site — doing it here rather
         # than in the per-library workers stops concurrent workers racing to
@@ -1027,7 +1050,7 @@ class SharePointLibraryManager:
             df["source_id"] = None
 
         action_log = _ThreadSafeLog()
-        sites = self._prefetch_sites(df["site_url"].unique(), action_log)
+        sites = self._prefetch_sites(df["site_url"].unique(), action_log, max_workers=max_workers_)
 
         deduped = df.drop_duplicates(subset=["site_url", "library_code"], keep="first")
 
@@ -1279,7 +1302,7 @@ class SharePointLibraryManager:
         # navigation, one quick-launch read per site.
         sites = self._prefetch_sites(
             df["site_url"].unique(), action_log,
-            navigation_label=navigation_label_ if add_to_navigation_ else None,
+            navigation_label=navigation_label_ if add_to_navigation_ else None, max_workers=max_workers_,
         )
 
         items = []
@@ -1539,7 +1562,7 @@ class SharePointLibraryManager:
         # navigation, one quick-launch read per site.
         sites = self._prefetch_sites(
             df["site_url"].unique(), action_log,
-            navigation_label=navigation_label_ if add_to_navigation_ else None,
+            navigation_label=navigation_label_ if add_to_navigation_ else None, max_workers=max_workers_,
         )
 
         # Groups are found by name, so a code whose group names are another
@@ -1846,7 +1869,9 @@ class SharePointLibraryManager:
         # the run isn't clean while the reason is hidden.
         new_site_log = _ThreadSafeLog()
         new_sites = (
-            self._prefetch_sites(new_site_urls, new_site_log, role_definitions=True, gone=("missing", ""))
+            self._prefetch_sites(
+                new_site_urls, new_site_log, role_definitions=True, gone=("missing", ""), max_workers=max_workers_,
+            )
             if new_site_urls else {}
         )
         unreadable_new_sites = {
@@ -1858,7 +1883,7 @@ class SharePointLibraryManager:
         sites = self._prefetch_sites(
             df["site_url"].unique(), action_log,
             navigation_label=navigation_label_ if add_to_navigation_ else None,
-            gone=("retire_skipped", "old site no longer exists — nothing to retire"),
+            gone=("retire_skipped", "old site no longer exists — nothing to retire"), max_workers=max_workers_,
         )
 
         items = []
@@ -2646,7 +2671,7 @@ class SharePointLibraryManager:
         # Read each site once: its lists and role definition IDs.  A site
         # that can't be read skips only its own libraries.
         unique_urls = sorted({site_url for site_url, _ in prefix_by_library})
-        sites = self._prefetch_sites(unique_urls, action_log, role_definitions=True)
+        sites = self._prefetch_sites(unique_urls, action_log, role_definitions=True, max_workers=max_workers_)
         prefix_by_library = {pair: prefix for pair, prefix in prefix_by_library.items() if pair[0] in sites}
 
         # Collisions within this call, and with libraries already on the
@@ -2839,7 +2864,7 @@ class SharePointLibraryManager:
         _validate_site_urls(df["site_url"].unique(), self.sharepoint_hostname)
 
         action_log = _ThreadSafeLog()
-        sites = self._prefetch_sites(df["site_url"].unique(), action_log)
+        sites = self._prefetch_sites(df["site_url"].unique(), action_log, max_workers=max_workers_)
         df = df[df["site_url"].isin(list(sites))]
         user_refs = self._resolve_users(df["user_principal_name"], max_workers_)
 
@@ -3032,7 +3057,9 @@ class SharePointLibraryManager:
                 continue
             group_ids[group_name] = group["id"]
 
-        sites = self._prefetch_sites(df["site_url"].unique(), action_log, role_definitions=True)
+        sites = self._prefetch_sites(
+            df["site_url"].unique(), action_log, role_definitions=True, max_workers=max_workers_,
+        )
         principal_ids: dict[tuple[str, str], int] = {}
         if not dry_run_:
             for site_url_key in sites:
