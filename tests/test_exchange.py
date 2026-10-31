@@ -70,6 +70,27 @@ def test_mailbox_is_optional_when_each_call_passes_one(credential):
     assert get.call_args.args[1] == f"{GRAPH}/users/other%40contoso.com/messages/m/attachments"
 
 
+def test_requests_name_the_organisation_given(credential):
+    emails = Emails(credential, "mailbox@contoso.com", organisation="Contoso Academy Trust")
+
+    with patch_request(return_value=make_response(200, {"value": []})) as get:
+        emails.get_attachment_ids_and_names("m")
+
+    assert get.call_args.kwargs["headers"]["User-Agent"].startswith("NONISV|Contoso Academy Trust|alt-fabric-m365/")
+
+
+def test_requests_name_archway_trust_by_default(emails):
+    with patch_request(return_value=make_response(200, {"value": []})) as get:
+        emails.get_attachment_ids_and_names("m")
+
+    assert get.call_args.kwargs["headers"]["User-Agent"].startswith("NONISV|ArchwayTrust|alt-fabric-m365/")
+
+
+def test_an_organisation_a_user_agent_cant_hold_is_refused(credential):
+    with pytest.raises(ValueError, match="organisation"):
+        Emails(credential, organisation="Contoso|Evil")
+
+
 @pytest.mark.parametrize("call", [
     lambda e: e.search_message_by_subject_and_sender("subject", "sender@contoso.com"),
     lambda e: e.get_attachment_ids_and_names("m"),

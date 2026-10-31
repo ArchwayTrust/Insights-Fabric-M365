@@ -139,6 +139,16 @@ def test_readme_action_reference_gives_each_fatal_and_warning_actions_class():
     assert {name for name, cls in classed if cls == "Warning"} == set(WARNING_ACTIONS)
 
 
+def test_readme_dry_run_table_lists_every_dry_run_action():
+    section = README.split("#### Dry-run actions", 1)[1].split("\n### ", 1)[0]
+    listed = set(re.findall(r"^\| `([a-z_]+ \(dry run\))` \|", section, re.M))
+    source = "".join(path.read_text(encoding="utf-8") for path in (ROOT / "alt_fabric_m365").rglob("*.py"))
+    # Names built from a group's suffix, such as ensure_manual_read_group (dry run), aren't literals, so aren't checked
+    used = set(re.findall(r'"([a-z_]+ \(dry run\))"', source))
+
+    assert used and used - listed == set()
+
+
 def test_graph_api_was_removed_in_1_0():
     with pytest.raises(ModuleNotFoundError):
         importlib.import_module("alt_fabric_m365.graph_api")

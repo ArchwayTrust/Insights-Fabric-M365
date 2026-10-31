@@ -577,6 +577,26 @@ HIGH_WATERMARK = (
 )
 HIGH_WATERMARK_LITERAL = HIGH_WATERMARK.strftime("%Y-%m-%d %H:%M:%S.%f")
 
+# A faculty with no last_changed_ts is never between the two, so no pass
+# would create, unlink or retire it. Log it as a warning rather than leave it
+# out silently.
+pdf_undated = spark.sql(f"""
+    SELECT
+        f.sharepoint_hub_url AS site_url
+        ,f.static_faculty_code AS document_library
+    FROM
+        {curated_faculty_list} AS f
+    WHERE
+        f.last_changed_ts IS NULL
+        AND {eligible('f')}
+""").toPandas().assign(
+    group="", user="", action="skip", permission="",
+    status="no last_changed_ts, so no run will create, unlink or retire it: stamp it when the row is written",
+)[ACTION_LOG_COLUMNS]
+if not pdf_undated.empty:
+    persist_action_log(pdf_undated, "faculty_list_checks")
+    display(pdf_undated)
+
 print(
     f"Run {RUN_ID}: processing changes newer than {WATERMARK_LITERAL}, "
     f"up to {HIGH_WATERMARK_LITERAL} (DRY_RUN={DRY_RUN})."

@@ -558,6 +558,7 @@ mailbox = Emails(credential, "reports@contoso.com")
 | --- | --- |
 | `credential` | A `KeyVaultCertificateCredential`, a `ClientSecretCredential`, or any other credential with a `get_token` method. |
 | `mailbox` | Optional. Email address of the default mailbox to use. |
+| `organisation` | Optional, and keyword only. The organisation named in each request's User-Agent, `NONISV\|<organisation>\|alt-fabric-m365/<version>`. Defaults to `ArchwayTrust`. |
 
 A token is requested from the credential for each call, and the credential caches it, so one instance can be used for the whole notebook.
 
@@ -913,7 +914,7 @@ mgr = SharePointLibraryManager(
 )
 ```
 
-Create the credential without a scope: the manager asks it for a Graph token and a SharePoint token (`https://<sharepoint_hostname>/.default`), and the credential caches each until shortly before it expires. The constructor gets both tokens straight away, so a wrong client ID, certificate or Key Vault access fails here rather than part way through. Missing API permissions or site grants don't, as Entra ID issues a token without them: they show up in the results of the first operation that needs them, as fatal actions in its action log (`error`, `add_failed` or `remove_failed`, see [The action log](#the-action-log)) or, for `get_library_metadata`, in its `status` column. `dry_run`, `max_workers`, `include_site_name`, `add_to_navigation`, `navigation_label`, `create_onedrive_shortcuts`, `max_removals_per_group`, `max_removals_per_run` and `allow_mass_removal` are defaults that each operation can override, for example `mgr.create_libraries(df, dry_run=False)`. Each must be of its documented type: a notebook or pipeline parameter of type String, such as `"False"`, raises `TypeError` rather than counting as true, so give those parameters the type Bool or Int.
+Create the credential without a scope: the manager asks it for a Graph token and a SharePoint token (`https://<sharepoint_hostname>/.default`), and the credential caches each until shortly before it expires. The constructor gets both tokens straight away, so a wrong client ID, certificate or Key Vault access fails here rather than part way through. Missing API permissions or site grants don't, as Entra ID issues a token without them: they show up in the results of the first operation that needs them, as fatal actions in its action log (`error`, `add_failed` or `remove_failed`, see [The action log](#the-action-log)) or, for `get_library_metadata`, in its `status` column. `dry_run`, `max_workers`, `include_site_name`, `add_to_navigation`, `navigation_label`, `create_onedrive_shortcuts`, `max_removals_per_group`, `max_removals_per_run` and `allow_mass_removal` are defaults that each operation can override, for example `mgr.create_libraries(df, dry_run=False)`. `organisation` names who the requests are from in their User-Agent, `ArchwayTrust` unless you give another (see [Safety features](#safety-features)). Each must be of its documented type: a notebook or pipeline parameter of type String, such as `"False"`, raises `TypeError` rather than counting as true, so give those parameters the type Bool or Int.
 
 **Choosing `max_workers`.** It's how many libraries are processed at once, and how many sites are read at once before them. 4 suits most runs; 1 runs everything in turn, which is easiest to follow in the logs. Above 1, user lookups also run in a pool of up to 8, whatever `max_workers` is. More workers don't make Graph or SharePoint go faster once they start throttling: requests are then retried after the wait they ask for, so a first sync that adds many members, or a run over many sites, can take as long with 8 workers as with 4. Raise it only if runs are slow and the log has no "Rate limited (429)" or "Server error 503" retries.
 
@@ -1024,7 +1025,7 @@ Every action an operation can write to its log. Class is the set the action is i
 | `retire_skipped` | `retire_moved_libraries` | Nothing was retired: the old site or library no longer exists, or the new site is the same site. | |
 | `site_sharing_check` | `enforce_site_sharing_lockdown` | Member sharing, access requests and member invites were already off, so nothing changed. | |
 | `site_sharing_disabled` | `enforce_site_sharing_lockdown` | Member sharing, access requests or member invites were turned off. The status lists which. | |
-| `skip` | `update_memberships` | A row's permission isn't read, contribute or owner, so it wasn't synced and that kind of removal was skipped. | Warning |
+| `skip` | `update_memberships`, and the recommended flow | A row's permission isn't read, contribute or owner, so it wasn't synced and that kind of removal was skipped. The recommended flow also logs a libraries row with no `last_changed_ts` as `skip`, as no run would create, unlink or retire it. | Warning |
 | `skipped` | `set_library_metadata` | The row had neither a `source_system` nor a `source_id` value, so nothing was done. | |
 | `user_not_found` | `update_memberships`, `ensure_onedrive_shortcuts` | The user couldn't be found in Entra ID, by sign-in name, mail or proxy address, or was blank. | Warning |
 
@@ -1042,6 +1043,7 @@ A dry run logs these in place of the changes it would make. Anything it finds by
 | `ensure_navigation_link (dry run)` | `navigation_link_added`, or `navigation_link_renamed` if the link has another title, or nothing if it's already right |
 | `grant_group_access (dry run)` | `group_access_granted` |
 | `group_assigned (dry run)` | `group_assigned` |
+| `group_description_updated (dry run)` | `group_description_updated` |
 | `group_owner_added (dry run)` | `group_owner_added` |
 | `inheritance_broken (dry run)` | `inheritance_broken` |
 | `library_created (dry run)` | `library_created` |
@@ -1071,7 +1073,7 @@ A dry run logs these in place of the changes it would make. Anything it finds by
 - **A moved library keeps working until its replacement works.** Given `new_site_url`, `retire_moved_libraries` leaves the old library alone (`retire_deferred`) until the library is working on the new site: it exists, has its own permissions, and gives at least one of its groups access. If `new_site_url` is the same site as `site_url`, spelt differently (such as in case, or with a trailing slash), the library hasn't moved, so it's left alone (`retire_skipped`).
 - **Permission levels are found by type**, not by name, so sites in another language, or with renamed levels, work too.
 - **Tokens only go to your tenant.** Every `site_url` must be `https://` on `sharepoint_hostname`, with no user name and no backslash before its path (which some URL parsers read as part of the host and others don't), and redirects to another host or to plain http are refused. A redirect that can't be followed is an error, never a success.
-- **Throttling and transient errors are retried,** honouring `Retry-After`, with exponential backoff. Each attempt gets a current token from the credential, so a request retried for several minutes doesn't fail because its token expired while it waited. Every request's User-Agent starts `NONISV|ArchwayTrust|alt-fabric-m365/<version>`, in the form Microsoft's SharePoint throttling guidance asks for, as SharePoint serves traffic that says where it's from ahead of traffic that doesn't.
+- **Throttling and transient errors are retried,** honouring `Retry-After`, with exponential backoff. Each attempt gets a current token from the credential, so a request retried for several minutes doesn't fail because its token expired while it waited. Every request's User-Agent starts `NONISV|ArchwayTrust|alt-fabric-m365/<version>`, in the form Microsoft's SharePoint throttling guidance asks for, as SharePoint serves traffic that says where it's from ahead of traffic that doesn't. To name your own organisation instead, pass `organisation`, for example `SharePointLibraryManager(credential, hostname, organisation="Contoso")`, or the same to `Emails`. It can contain letters, digits, spaces, `.`, `-` and `_`.
 
 ### Adopting groups created by earlier versions
 
@@ -1168,7 +1170,7 @@ Optionally, also write the `user_not_found` rows to a table of their own (`run_i
 
 Run the operations in this order, from a pipeline, with a dry run first whenever the inputs or the package version change:
 
-1. **Read the libraries table, apply any scope, then read the watermark**, and the newest `last_changed_ts` as an upper bound. Only rows between the two are "changed" in this run. Rows that land while it runs are left for the next one.
+1. **Read the libraries table, apply any scope, then read the watermark**, and the newest `last_changed_ts` as an upper bound. Only rows between the two are "changed" in this run. Rows that land while it runs are left for the next one. A row with no `last_changed_ts` would never be changed, so it's logged as a `skip` warning.
 2. **Lock down site sharing** on every live site (full pass). It's independent of the rest, and corrects settings changed by hand.
 3. **Create** changed, not-deleted libraries (incremental). This also applies renames and new metadata. It runs before the grant and membership passes, which need the libraries to exist.
 4. **Unlink** changed, deleted libraries (incremental).
@@ -1201,7 +1203,7 @@ from datetime import datetime, timezone
 import pandas as pd
 
 from alt_fabric_m365.auth import KeyVaultCertificateCredential
-from alt_fabric_m365.sharepoint import FATAL_ACTIONS, WARNING_ACTIONS, SharePointLibraryManager
+from alt_fabric_m365.sharepoint import ACTION_LOG_COLUMNS, FATAL_ACTIONS, WARNING_ACTIONS, SharePointLibraryManager
 
 credential = KeyVaultCertificateCredential(TENANT_ID, CLIENT_ID, KEY_VAULT, CERTIFICATE_NAME)
 mgr = SharePointLibraryManager(
@@ -1238,6 +1240,13 @@ since = state["last_processed_ts"].iloc[0] if not state.empty else datetime(1900
 until = libraries["last_changed_ts"].max() if not libraries.empty else since
 changed = libraries[(libraries["last_changed_ts"] > since) & (libraries["last_changed_ts"] <= until)]
 live = libraries[~libraries["deleted"]].assign(source_id=lambda df: df["library_id"])
+
+# A row without a last_changed_ts is never "changed", so log it as a warning rather than leave it out silently
+undated = libraries[libraries["last_changed_ts"].isna()]
+save("check_libraries", undated.rename(columns={"library_code": "document_library"}).assign(
+    group="", user="", action="skip", permission="",
+    status="no last_changed_ts, so no run will create, unlink or retire it: stamp it when the row is written",
+).reindex(columns=ACTION_LOG_COLUMNS))
 
 save("site_sharing_lockdown", mgr.enforce_site_sharing_lockdown(live["site_url"]))                          # step 2
 save("create_libraries", mgr.create_libraries(live[live["library_id"].isin(changed["library_id"])]))        # step 3

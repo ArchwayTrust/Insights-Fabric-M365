@@ -6,6 +6,7 @@ import functools
 import logging
 import math
 import random
+import re
 import time
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -32,23 +33,42 @@ DEFAULT_TIMEOUT = (10, 30)
 MAX_REDIRECT_HOPS = 5
 
 # Who the requests come from, in the form SharePoint's throttling guidance
-# asks for: it serves traffic that says so ahead of traffic that doesn't.
-# NONISV is an organisation's own app, as opposed to one sold to others.
-USER_AGENT_APP = "NONISV|ArchwayTrust|alt-fabric-m365"
+# asks for, NONISV|CompanyName|AppName/Version: it serves traffic that says
+# so ahead of traffic that doesn't.  NONISV is an organisation's own app, as
+# opposed to one sold to others.  The organisation is the package's
+# publisher unless SharePointLibraryManager or Emails is given another.
+DEFAULT_ORGANISATION = "ArchwayTrust"
+USER_AGENT_APP = "alt-fabric-m365"
 
 logger = logging.getLogger(__name__)
 
 
 @functools.cache
-def _user_agent() -> str:
-    """Return the User-Agent requests are sent with: USER_AGENT_APP and the package version, then requests' own.
+def _user_agent(organisation: str = DEFAULT_ORGANISATION) -> str:
+    """Return the User-Agent requests are sent with: the organisation, the package and its version, then requests'.
+
+    Args:
+        organisation: Optional. The organisation the requests are from. Defaults to DEFAULT_ORGANISATION.
 
     Returns:
         A User-Agent such as ``NONISV|ArchwayTrust|alt-fabric-m365/1.3.0 python-requests/2.32.3``.
+
+    Raises:
+        TypeError: If organisation isn't a string.
+        ValueError: If organisation doesn't start and end with a letter or digit, or has a character other than
+            those, spaces, '.', '-' and '_': '|' separates the User-Agent's fields, and a header can't hold a
+            line break.
     """
+    if not isinstance(organisation, str):
+        raise TypeError(f"organisation must be a string, not {organisation!r}")
+    if not re.fullmatch(r"[A-Za-z0-9]([A-Za-z0-9 ._-]*[A-Za-z0-9])?", organisation):
+        raise ValueError(
+            f"organisation {organisation!r} can only contain letters, digits, spaces, '.', '-' and '_', "
+            "and must start and end with a letter or digit"
+        )
     # The package sets __version__ after importing its subpackages, so it's read on first use
     from .. import __version__
-    return f"{USER_AGENT_APP}/{__version__} {requests.utils.default_user_agent()}"
+    return f"NONISV|{organisation}|{USER_AGENT_APP}/{__version__} {requests.utils.default_user_agent()}"
 
 # ---------------------------------------------------------------------------
 # Resilient HTTP wrapper
@@ -65,19 +85,30 @@ class _RenewableToken(str):
     credential only promises a token will last a few minutes when it hands
     it out, so _request_with_retry renews the header before every attempt.
 
+    It also says whose requests it's used for: helpers build their headers
+    from the token they're given, so a manager's or Emails' organisation
+    reaches _request_with_retry with it.
+
     Attributes:
         renew (Callable[[], str]): Returns the current value, such as from a credential's get_token.
+        user_agent (str | None): The User-Agent requests made with it are sent with (see _user_agent), or None for
+            the default organisation's.
     """
 
-    def __new__(cls, renew: Callable[[], str], value: str | None = None) -> "_RenewableToken":
+    def __new__(
+        cls, renew: Callable[[], str], value: str | None = None, *, user_agent: str | None = None,
+    ) -> "_RenewableToken":
         """Creates the token.
 
         Args:
             renew: Returns the current value. Credentials cache their tokens, so it's cheap to call.
             value: Optional. The current value, if the caller already has it. Defaults to calling renew.
+            user_agent: Optional. The User-Agent requests made with it are sent with. Defaults to None, for the
+                default organisation's.
         """
         token = super().__new__(cls, renew() if value is None else value)
         token.renew = renew
+        token.user_agent = user_agent
         return token
 
 
@@ -86,13 +117,13 @@ def _bearer(token: str) -> str:
 
     Args:
         token: An access token. A _RenewableToken gives a header value _request_with_retry renews before each
-            attempt.
+            attempt, with the token's User-Agent.
 
     Returns:
         ``Bearer <token>``.
     """
     if isinstance(token, _RenewableToken):
-        return _RenewableToken(lambda: f"Bearer {token.renew()}", f"Bearer {token}")
+        return _RenewableToken(lambda: f"Bearer {token.renew()}", f"Bearer {token}", user_agent=token.user_agent)
     return f"Bearer {token}"
 
 
@@ -238,8 +269,10 @@ def _request_with_retry(
 
     An Authorization header built with _bearer from a _RenewableToken is
     renewed before every attempt, so a long wait doesn't leave a retry with
-    an expired token.  Requests are sent with the package's User-Agent (see
-    _user_agent) unless the caller's headers set one.
+    an expired token.  Requests are sent with that header's User-Agent, the
+    organisation it was made for (see _user_agent), or the default
+    organisation's for any other request, unless the caller's headers set
+    one.
 
     With *idempotent* False (a request that must not run twice, such as
     creating a group), only failures where the server certainly did not act
@@ -274,7 +307,7 @@ def _request_with_retry(
     # Copied, as the caller may reuse its headers
     headers = dict(kwargs.get("headers") or {})
     if not any(name.lower() == "user-agent" for name in headers):
-        headers["User-Agent"] = _user_agent()
+        headers["User-Agent"] = getattr(headers.get("Authorization"), "user_agent", None) or _user_agent()
     kwargs["headers"] = headers
 
     # Disable automatic redirects so we can follow them ourselves: every hop

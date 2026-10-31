@@ -9,7 +9,7 @@ import base64
 from ..auth import Scopes
 # The retry wrapper the SharePoint code uses: throttling, server errors and dropped connections are retried, and the
 # token is renewed before each attempt
-from ..sharepoint._http import _bearer, _RenewableToken, _request_with_retry
+from ..sharepoint._http import DEFAULT_ORGANISATION, _bearer, _RenewableToken, _request_with_retry, _user_agent
 
 
 class MessageNotFoundError(Exception):
@@ -92,6 +92,7 @@ class Emails:
         credential (TokenCredential): Credential used to get Microsoft Graph access tokens.
         mailbox (str | None): Email address of the default mailbox, used unless a method is given a different one.
                                Optional if every call passes shared_mailbox_email.
+        organisation (str): The organisation named in every request's User-Agent.
     """
 
     GRAPH_URL = "https://graph.microsoft.com/v1.0"
@@ -99,16 +100,25 @@ class Emails:
     # Seconds to wait for Microsoft Graph to connect or send data before giving up, so a stalled request doesn't hang the notebook
     REQUEST_TIMEOUT_SECONDS = 30
 
-    def __init__(self, credential, mailbox: str | None = None) -> None:
+    def __init__(self, credential, mailbox: str | None = None, *, organisation: str = DEFAULT_ORGANISATION) -> None:
         """Initialises the Emails class, optionally with a default mailbox.
 
         Args:
             credential: Credential used to get Microsoft Graph access tokens, with a get_token method.
             mailbox: Optional. Email address of the default mailbox, used unless a method is given a different one.
                 Can be left out if every call passes shared_mailbox_email.
+            organisation: Optional. The organisation named in every request's User-Agent,
+                NONISV|<organisation>|alt-fabric-m365/<version>, as SharePointLibraryManager's are. Letters, digits,
+                spaces, '.', '-' and '_'. Defaults to "ArchwayTrust", the package's publisher.
+
+        Raises:
+            TypeError: If organisation isn't a string.
+            ValueError: If organisation has a character a User-Agent can't hold.
         """
+        _user_agent(organisation)  # checked before any request
         self.credential = credential
         self.mailbox = mailbox
+        self.organisation = organisation
 
     def _headers(self) -> dict:
         """Returns headers for calling Microsoft Graph with a current access token.
@@ -116,7 +126,9 @@ class Emails:
         The credential caches tokens, so the token is fetched for each request, and again before each retry of it,
         rather than stored where it would expire during long runs or a long wait while throttled.
         """
-        access_token = _RenewableToken(lambda: self.credential.get_token(Scopes.GRAPH).token)
+        access_token = _RenewableToken(
+            lambda: self.credential.get_token(Scopes.GRAPH).token, user_agent=_user_agent(self.organisation),
+        )
 
         return {
             'Authorization': _bearer(access_token),
