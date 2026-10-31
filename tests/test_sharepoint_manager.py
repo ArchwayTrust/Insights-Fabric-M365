@@ -5,6 +5,7 @@ Each test checks the action log the operation returns and what it actually chang
 running it again changes nothing and that a dry run makes no writes.
 """
 import time
+from decimal import Decimal
 
 import numpy as np
 import pandas as pd
@@ -458,6 +459,31 @@ def test_create_in_parallel(make_manager, site):
     assert sorted(lst["slug"] for lst in site.lists.values()) == codes
     assert len(rows(results, "group_assigned")) == 16
     assert rows(results, "error").empty
+
+
+# pandas makes an integer column with a null a float column, and Spark gives a DecimalType column as Decimals
+@pytest.mark.parametrize("code", [101.0, np.float32(101), Decimal("101.00")])
+def test_a_whole_number_code_from_a_float_or_decimal_column_is_used_without_decimals(make_manager, tenant, site, code):
+    df = libraries_df(site, "101").assign(library_code=[code])
+
+    results = make_manager().create_libraries(df)
+
+    assert set(results["document_library"]) == {"101"}
+    assert site.list_by_slug("101") is not None
+    assert tenant.group_named("BAA-Sharepoint-101-Auto-Read") is not None
+
+
+@pytest.mark.parametrize("operation", ["create_libraries", "set_library_metadata"])
+def test_a_whole_number_source_id_from_a_column_with_nulls_is_stored_without_decimals(
+    make_manager, site, library, operation,
+):
+    df = libraries_df(site, "MATH", "ENG").assign(source_id=[42, None])
+    assert df["source_id"].dtype == float
+
+    results = getattr(make_manager(), operation)(df)
+
+    assert site.list_by_slug("MATH")["properties"] == {"SourceId": "42"}
+    assert list(rows(results, "metadata_set")["status"]) == ["SourceId=42"]
 
 
 # Metadata

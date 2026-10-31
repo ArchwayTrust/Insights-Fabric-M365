@@ -5,7 +5,9 @@ and navigation URL matching. Requests go to the in-memory FakeTenant.
 import re
 import threading
 import time
+from decimal import Decimal
 
+import numpy as np
 import pandas as pd
 import pytest
 import requests
@@ -92,6 +94,14 @@ def test_required_columns_must_not_be_null():
     df = pd.DataFrame({"site_url": [SITE, None]})
     with pytest.raises(ValueError, match="1 null value"):
         _common._validate_required_columns(df, {"site_url"})
+
+
+@pytest.mark.parametrize("value, expected", [
+    (101, "101"), (101.0, "101"), (np.float32(7), "7"), (101.5, "101.5"), (float("inf"), "inf"),
+    (Decimal("101.00"), "101"), (Decimal("1.50"), "1.50"), (Decimal("NaN"), "NaN"), ("MATH", "MATH"),
+])
+def test_values_are_given_as_text_with_whole_numbers_without_decimals(value, expected):
+    assert _common._as_text(value) == expected
 
 
 def test_required_columns_are_cast_to_strings_on_a_copy():

@@ -727,7 +727,7 @@ For each library (a row with a `site_url`, a `library_code` and a `group_prefix`
   - Group names use the library **code**, so they stay the same when the library's display name changes. `create_libraries` updates the groups' descriptions, which name the library, to match. A library's code never changes, as it's also the library's URL, so neither do its group names.
   - The app registration is made **owner** of every group it creates, and an existing group is only granted access or synced if the app owns it (see [Safety features](#safety-features)). Pass `app_owned=False` for groups people own, such as a leadership team's groups owned by the headteacher.
 - **Navigation** (optional). A link to the library in the site's quick launch, under a heading such as "Document Libraries".
-- **Provenance** (optional). `source_system` and `source_id` stored in the library's property bag, invisible to users, so a library can be traced back to the record that created it.
+- **Provenance** (optional). `source_system` and `source_id` stored in the library's property bag, invisible to users, so a library can be traced back to the record that created it. A whole number is stored without decimal places, even from a column pandas made float because it has a null (`42`, not `42.0`).
 - **Site sharing** (optional). Turns off "Allow members to share", "Allow access requests" and "Allow members to invite others" on each site, so access only comes from the groups.
 
 ### Giving the app access

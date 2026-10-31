@@ -9,7 +9,7 @@ import requests
 
 from ._common import (
     METADATA_PROPERTY_KEYS, REPLICATION_BASE_DELAY, REPLICATION_MAX_ATTEMPTS, VALID_ROLES,
-    _append_log, _ThreadSafeLog,
+    _append_log, _as_text, _ThreadSafeLog,
 )
 from ._http import _bearer, _request_with_retry
 
@@ -420,7 +420,7 @@ def _ensure_library_metadata(
     for df_col, prop_key in METADATA_PROPERTY_KEYS.items():
         value = {"source_system": source_system, "source_id": source_id}.get(df_col)
         if value is not None:
-            props[prop_key] = str(value)
+            props[prop_key] = _as_text(value)
 
     if not props:
         return
