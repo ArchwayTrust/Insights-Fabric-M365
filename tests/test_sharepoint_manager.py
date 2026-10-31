@@ -568,7 +568,35 @@ def test_unknown_permission_is_skipped(make_manager, tenant, site, library):
 
     results = make_manager().update_memberships(memberships_df(site, [("MATH", "jo@contoso.com", "edit")]))
 
-    assert rows(results, "skip")["status"].tolist() == ["unknown permission 'edit'"]
+    assert rows(results, "skip")["status"].str.startswith("unknown permission 'edit'").tolist() == [True]
+    assert "skip" in WARNING_ACTIONS
+
+
+def test_unknown_permission_never_removes_anyone(make_manager, tenant, site, library):
+    # The row's role is unknown, so the library's desired members are incomplete
+    jo, sam = tenant.add_user("jo@contoso.com"), tenant.add_user("sam@contoso.com")
+    tenant.group_named("BAA-Sharepoint-MATH-Auto-Contribute")["members"].update({jo["id"]: jo, sam["id"]: sam})
+    df = memberships_df(site, [("MATH", "jo@contoso.com", "Edit"), ("MATH", "sam@contoso.com", "contribute")])
+
+    results = make_manager().update_memberships(df)
+
+    assert tenant.member_upns("BAA-Sharepoint-MATH-Auto-Contribute") == ["jo@contoso.com", "sam@contoso.com"]
+    assert "removals_skipped" in actions(results)
+
+
+def test_unknown_permission_for_a_nested_group_never_removes_nested_groups(make_manager, tenant, site, library):
+    staff = tenant.add_group("BAA All Staff")
+    tenant.group_named("BAA-Sharepoint-MATH-Auto-Read")["members"][staff["id"]] = staff
+
+    nested = pd.DataFrame({
+        "site_url": [site.url], "library_code": ["MATH"], "group_prefix": [PREFIX],
+        "member_group": ["BAA All Staff"], "permission": ["edit"],
+    })
+
+    results = make_manager().update_memberships(memberships_df(site, []), nested_groups_df=nested)
+
+    assert staff["id"] in tenant.group_named("BAA-Sharepoint-MATH-Auto-Read")["members"]
+    assert actions(results) == ["removals_skipped", "skip"]
 
 
 def test_nested_groups_are_added_and_unresolvable_ones_reported(make_manager, tenant, site, library):
