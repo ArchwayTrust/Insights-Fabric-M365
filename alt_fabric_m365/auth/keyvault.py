@@ -149,6 +149,9 @@ class KeyVaultCertificateCredential:
             scope: Optional. Default scope for get_access_token(), in the form {resource}/.default. See Scopes.
                 Not needed when the credential is passed to semantic link or an Azure SDK client.
             certificate_version: Optional. Version of the certificate to sign with. Defaults to the latest version.
+
+        Raises:
+            ValueError: If akv_url isn't an https URL on a Key Vault host in the Azure public cloud.
         """
         self.tenant_id = tenant_id
         self.client_id = client_id
@@ -237,6 +240,13 @@ class KeyVaultCertificateCredential:
 
         Returns:
             An access token.
+
+        Raises:
+            ValueError: If no scope is given here or when creating the credential.
+            Exception: If Key Vault or Entra ID refuses a request for the token, with its status code and error,
+                or Key Vault returns a key identifier outside akv_url's key vault.
+            requests.RequestException: If Key Vault or Entra ID can't be reached, after retries.
+            ImportError: Outside a Fabric notebook, as notebookutils is needed to call Key Vault.
         """
         scope = scope or self.scope
         if scope is None:
@@ -270,6 +280,13 @@ class KeyVaultCertificateCredential:
 
         Returns:
             The access token and its expiry time (seconds since epoch).
+
+        Raises:
+            ValueError: If no scopes are given, or tenant_id isn't the credential's tenant.
+            Exception: If Key Vault or Entra ID refuses a request for the token, with its status code and error,
+                or Key Vault returns a key identifier outside akv_url's key vault.
+            requests.RequestException: If Key Vault or Entra ID can't be reached, after retries.
+            ImportError: Outside a Fabric notebook, as notebookutils is needed to call Key Vault.
         """
         if not scopes:
             raise ValueError("At least one scope is required, see Scopes.")

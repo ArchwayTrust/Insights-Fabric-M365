@@ -113,6 +113,12 @@ class SharePointLibraryManager:
             Object ID of the app's service principal, which is made owner of
             the groups the manager creates.  Read from the Graph token's
             ``oid`` claim when not given.
+
+    Raises:
+        TypeError: If an option isn't of its type, such as the string 'False'
+            for dry_run.
+        Exception: Whatever the credential raises if it can't get a Graph or
+            SharePoint token, as both are requested straight away.
     """
 
     def __init__(
@@ -165,7 +171,12 @@ class SharePointLibraryManager:
 
     @property
     def service_principal_id(self) -> str:
-        """Object ID of the app's service principal (see the constructor)."""
+        """Object ID of the app's service principal (see the constructor).
+
+        Raises:
+            ValueError: If it wasn't given and the Graph token has no object ID
+                (oid) claim to read it from.
+        """
         if self._service_principal_id is None:
             self._service_principal_id = _token_object_id(self._graph_token)
         return self._service_principal_id
@@ -723,6 +734,16 @@ class SharePointLibraryManager:
         Returns:
             Action-log DataFrame with columns: site_url, document_library,
             group, user, action, permission, status.
+
+        Raises:
+            ValueError: If *df* is missing a required column or has a null in
+                one, a site_url isn't an https URL on sharepoint_hostname, a
+                library_code isn't one SharePoint keeps as a library's URL, or
+                a True/False column (auto_groups, manual_read,
+                manual_contribute, app_owned) holds anything but True, False,
+                1, 0 or a blank.
+            TypeError: If an option, given here or to the constructor, isn't
+                of its type, such as the string 'False' for dry_run.
         """
         (dry_run_, max_workers_, include_site_name_,
          add_to_navigation_, navigation_label_) = self._resolve_config(
@@ -897,6 +918,14 @@ class SharePointLibraryManager:
 
         Returns:
             Action-log DataFrame.
+
+        Raises:
+            ValueError: If *df* has neither a source_system nor a source_id
+                column, is missing a required column or has a null in one, a
+                site_url isn't an https URL on sharepoint_hostname, or a
+                library_code isn't one SharePoint keeps as a library's URL.
+            TypeError: If an option, given here or to the constructor, isn't
+                of its type, such as the string 'False' for dry_run.
         """
         dry_run_, max_workers_ = self._resolve_config(dry_run=dry_run, max_workers=max_workers)
 
@@ -960,6 +989,11 @@ class SharePointLibraryManager:
             and ``error: <reason>`` where the site or library couldn't be
             read.  Values are ``None`` where a property has not been set or
             the status isn't ``ok``.
+
+        Raises:
+            ValueError: If *df* is missing a required column or has a null in
+                one, a site_url isn't an https URL on sharepoint_hostname, or a
+                library_code isn't one SharePoint keeps as a library's URL.
         """
         required = {"site_url", "library_code"}
         df = _validate_required_columns(df, required)
@@ -1130,10 +1164,14 @@ class SharePointLibraryManager:
             Action-log DataFrame.
 
         Raises:
-            ValueError: If *df* has values in an ``old_library_code`` column.
-                Earlier versions accepted it to rename the groups after a code
-                change, but looked the library up by the new code, so it never
-                worked.
+            ValueError: If *df* is missing a required column or has a null in
+                one, a site_url isn't an https URL on sharepoint_hostname, a
+                library_code isn't one SharePoint keeps as a library's URL, or
+                it has values in an ``old_library_code`` column. Earlier
+                versions accepted that to rename the groups after a code change,
+                but looked the library up by the new code, so it never worked.
+            TypeError: If an option, given here or to the constructor, isn't
+                of its type, such as the string 'False' for dry_run.
         """
         dry_run_, max_workers_, add_to_navigation_, navigation_label_ = self._resolve_config(
             dry_run=dry_run, max_workers=max_workers,
@@ -1390,6 +1428,13 @@ class SharePointLibraryManager:
 
         Returns:
             Action-log DataFrame.
+
+        Raises:
+            ValueError: If *df* is missing a required column or has a null in
+                one, a site_url isn't an https URL on sharepoint_hostname, or a
+                library_code isn't one SharePoint keeps as a library's URL.
+            TypeError: If an option, given here or to the constructor, isn't
+                of its type, such as the string 'False' for dry_run.
         """
         (dry_run_, max_workers_, include_site_name_,
          add_to_navigation_, navigation_label_) = self._resolve_config(
@@ -1684,6 +1729,14 @@ class SharePointLibraryManager:
 
         Returns:
             Action-log DataFrame.
+
+        Raises:
+            ValueError: If *df* is missing a required column or has a null in
+                one, a site_url or new_site_url isn't an https URL on
+                sharepoint_hostname, or a library_code isn't one SharePoint
+                keeps as a library's URL.
+            TypeError: If an option, given here or to the constructor, isn't
+                of its type, such as the string 'False' for dry_run.
         """
         (dry_run_, max_workers_, include_site_name_,
          add_to_navigation_, navigation_label_) = self._resolve_config(
@@ -2424,6 +2477,16 @@ class SharePointLibraryManager:
             proxyAddresses.  To extract them::
 
                 not_found = results[results["action"] == "user_not_found"]
+
+        Raises:
+            ValueError: If *df*, *libraries_df* or *nested_groups_df* is missing
+                a required column or has a null in one (other than
+                user_principal_name, member_group and permission, whose nulls
+                are logged as rows), a site_url isn't an https URL on
+                sharepoint_hostname, or a library_code isn't one SharePoint
+                keeps as a library's URL.
+            TypeError: If an option, given here or to the constructor, isn't
+                of its type, such as the string 'False' for dry_run.
         """
         (dry_run_, max_workers_, include_site_name_, create_onedrive_shortcuts_,
          max_removals_, max_removals_per_run_, allow_mass_removal_) = self._resolve_config(
@@ -2682,6 +2745,13 @@ class SharePointLibraryManager:
             for each user and library, and ``onedrive_shortcut_failed`` where
             one couldn't be made, for example because the user's OneDrive
             doesn't exist yet.
+
+        Raises:
+            ValueError: If *df* is missing a required column or has a null in
+                one, a site_url isn't an https URL on sharepoint_hostname, or a
+                library_code isn't one SharePoint keeps as a library's URL.
+            TypeError: If an option, given here or to the constructor, isn't
+                of its type, such as the string 'False' for dry_run.
         """
         dry_run_, max_workers_ = self._resolve_config(dry_run=dry_run, max_workers=max_workers)
 
@@ -2832,6 +2902,14 @@ class SharePointLibraryManager:
 
         Returns:
             Action-log DataFrame.
+
+        Raises:
+            ValueError: If *df* is missing a required column or has a null in
+                one, a site_url isn't an https URL on sharepoint_hostname, a
+                library_code isn't one SharePoint keeps as a library's URL, or
+                a permission isn't read, contribute or owner.
+            TypeError: If an option, given here or to the constructor, isn't
+                of its type, such as the string 'False' for dry_run.
         """
         dry_run_, max_workers_ = self._resolve_config(dry_run=dry_run, max_workers=max_workers)
 
@@ -3022,7 +3100,10 @@ class SharePointLibraryManager:
             site-level rows).
 
         Raises:
-            TypeError: If site_urls is a single URL rather than a list of them.
+            TypeError: If site_urls is a single URL rather than a list of them,
+                or an option, given here or to the constructor, isn't of its
+                type, such as the string 'False' for dry_run.
+            ValueError: If a site URL isn't an https URL on sharepoint_hostname.
         """
         dry_run_, max_workers_ = self._resolve_config(dry_run=dry_run, max_workers=max_workers)
 
@@ -3072,6 +3153,10 @@ class SharePointLibraryManager:
             library_code:      Library code (URL slug).
             suffix:            Role suffix, e.g. 'Auto-Read' or 'Manual-Contribute'.
             include_site_name: Override instance default.
+
+        Raises:
+            TypeError: If include_site_name, given here or to the constructor,
+                isn't True or False.
         """
         (include_site_name_,) = self._resolve_config(include_site_name=include_site_name)
         return build_group_name(
@@ -3086,6 +3171,11 @@ class SharePointLibraryManager:
             Dict with ``members_can_share``, ``access_requests_enabled`` and
             ``members_can_invite`` (True means the setting is on) and
             ``member_group_id``.
+
+        Raises:
+            ValueError: If the site URL isn't an https URL on sharepoint_hostname.
+            requests.RequestException: If SharePoint refuses either read
+                (requests.HTTPError), or can't be reached after retries.
         """
         _validate_site_urls([site_url], self.sharepoint_hostname)
         return _get_site_sharing_settings(self._sp_token, site_url)
@@ -3116,6 +3206,11 @@ class SharePointLibraryManager:
                 code isn't one SharePoint keeps as a library's URL (see
                 _validate_library_codes): the link is found by the library's
                 URL, which is the site URL and the code.
+            TypeError: If navigation_label, given here or to the constructor,
+                isn't a string.
+            requests.RequestException: If SharePoint refuses the read of the
+                quick launch (requests.HTTPError), or can't be reached after
+                retries.
         """
         (navigation_label_,) = self._resolve_config(navigation_label=navigation_label)
         _validate_site_urls([site_url], self.sharepoint_hostname)
