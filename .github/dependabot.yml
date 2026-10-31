@@ -1,5 +1,6 @@
 # Opens a pull request when an action the workflows use has a new version, such as a major version that moves to
-# a newer Node.js runtime. Grouped, so one pull request covers every action.
+# a newer Node.js runtime. Grouped, so one pull request covers every action. The workflows pin each action to a commit
+# SHA with its version in a comment, and Dependabot updates both.
 version: 2
 updates:
   - package-ecosystem: github-actions

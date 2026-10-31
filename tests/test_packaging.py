@@ -1,6 +1,7 @@
 """
 Checks on the package itself: the version is set in one place, the public names, what the source distribution ships
-and its licence metadata, and that the README's examples are valid Python.
+and its licence metadata, that the README's examples are valid Python, and that the workflows pin each action to a
+commit.
 """
 import ast
 import email.parser
@@ -184,3 +185,24 @@ def test_code_indented_further_than_its_fence_is_kept_so_it_fails_to_parse(markd
 @pytest.mark.parametrize("block", [b for b in PYTHON_BLOCKS if not b.lstrip().startswith("%")])
 def test_readme_examples_are_valid_python(block):
     ast.parse(block)
+
+
+# Workflows
+
+# A tag can be moved to other code, so each action is pinned to a commit, with its version in a comment for Dependabot
+WORKFLOW_USES = [
+    (path.name, match.group(1))
+    for path in sorted((ROOT / ".github" / "workflows").glob("*.yml"))
+    for match in re.finditer(r"^\s*(?:-\s*)?uses:\s*(.+?)\s*$", path.read_text(encoding="utf-8"), re.MULTILINE)
+]
+
+
+def test_workflows_use_actions():
+    assert len(WORKFLOW_USES) >= 5
+
+
+@pytest.mark.parametrize("workflow, uses", WORKFLOW_USES)
+def test_workflow_actions_are_pinned_to_a_commit(workflow, uses):
+    if uses.startswith("./"):
+        return  # A workflow in this repository runs as it is at the same commit
+    assert re.fullmatch(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}  # v\d+(\.\d+)*", uses), f"{workflow}: {uses}"
