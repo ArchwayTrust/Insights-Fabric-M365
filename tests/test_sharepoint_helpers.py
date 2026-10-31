@@ -104,6 +104,20 @@ def test_values_are_given_as_text_with_whole_numbers_without_decimals(value, exp
     assert _common._as_text(value) == expected
 
 
+@pytest.mark.parametrize("pandas_1_5", [False, True])
+def test_required_columns_of_decimals_become_text_on_every_pandas(monkeypatch, pandas_1_5):
+    if pandas_1_5:
+        # pandas 1.5, which older Fabric runtimes have, counts any object column as strings
+        monkeypatch.setattr(
+            _common.pd.api.types, "is_string_dtype", lambda column: getattr(column, "dtype", None) == object,
+        )
+    df = pd.DataFrame({"library_code": [Decimal("101.00"), "MATH"]})
+
+    validated = _common._validate_required_columns(df, {"library_code"})
+
+    assert list(validated["library_code"]) == ["101", "MATH"]
+
+
 def test_required_columns_are_cast_to_strings_on_a_copy():
     df = pd.DataFrame({"library_code": [101, 102]})
 

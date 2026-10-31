@@ -194,8 +194,9 @@ def _validate_required_columns(df: pd.DataFrame, required_columns: set[str]) -> 
                 f"Column '{col}' contains {nan_count} null value(s) — "
                 f"all required columns must be non-null strings"
             )
-        if not pd.api.types.is_string_dtype(df[col]):
-            df[col] = df[col].map(_as_text)
+        # Every value, whatever the dtype: pandas 1.5 counts any object
+        # column as strings, including one of Decimals from Spark
+        df[col] = df[col].map(_as_text)
     if "library_code" in required_columns:
         _validate_library_codes(df["library_code"])
     return df
