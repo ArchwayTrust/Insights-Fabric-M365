@@ -363,12 +363,33 @@ def test_notebook_only_uses_the_public_package_api():
     assert "def _request_with_retry" not in source
 
 
-def test_quoted_scope_values_reach_the_watermark_safely(tenant, run_notebook, spark):
+# Spark SQL reads 'O''X' as 'OX', and a backslash escapes the next character, so neither can be put in a literal
+@pytest.mark.parametrize("parameters", [
+    {"ACADEMY_FILTER": "BAA,O'X"},
+    {"ACADEMY_FILTER": "BAA\\"},
+    {"FACULTY_CODE_FILTER": "MATH'%"},
+    {"FACULTY_CODE_FILTER": "MATH\\%"},
+])
+def test_scope_values_spark_sql_would_misread_are_refused_before_any_sql_runs(
+    tenant, run_notebook, spark, parameters,
+):
+    seed_existing_libraries(tenant)
+    queries = []
+    run_sql = spark.sql
+    spark.sql = lambda query: queries.append(query) or run_sql(query)
+
+    with pytest.raises(ValueError, match=next(iter(parameters))):
+        run_notebook(spark, **parameters)
+
+    assert queries == [] and tenant.writes() == []
+
+
+def test_scope_values_with_spaces_hyphens_and_dots_are_used(tenant, run_notebook, spark):
     seed_existing_libraries(tenant)
 
-    run_notebook(spark, ACADEMY_FILTER="BAA,O'X")
+    run_notebook(spark, ACADEMY_FILTER="BAA, N-C.A", FACULTY_CODE_FILTER="MATH_%")
 
-    assert spark.watermark() == {"faculty_sharepoint_sync|BAA,O'X|MATH%": "2026-10-01 09:00:00.000000"}
+    assert spark.watermark() == {"faculty_sharepoint_sync|BAA,N-C.A|MATH_%": "2026-10-01 09:00:00.000000"}
 
 
 def test_rows_landing_mid_run_are_left_for_the_next_run(tenant, run_notebook, spark):

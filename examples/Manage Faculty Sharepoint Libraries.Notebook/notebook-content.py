@@ -163,6 +163,7 @@ print(unresolved_users_table)
 # CELL ********************
 
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 
@@ -271,16 +272,30 @@ ACADEMY_CODES = sorted({
     code.strip() for code in ACADEMY_FILTER.split(",") if code.strip()
 })
 
+# The filters go into Spark SQL as string literals. Spark doesn't read '' as an
+# escaped quote, and a backslash escapes the next character, so rather than
+# escape them, only the characters codes use are allowed (and % and _, the
+# LIKE wildcards, in FACULTY_CODE_FILTER). Checked before any SQL runs.
+for code in ACADEMY_CODES:
+    if not re.fullmatch(r"[A-Za-z0-9 _.-]+", code):
+        raise ValueError(
+            f"ACADEMY_FILTER code {code!r} can only contain letters, digits, spaces, '-', '_' and '.'"
+        )
+if not re.fullmatch(r"[A-Za-z0-9 _.%-]*", FACULTY_CODE_FILTER):
+    raise ValueError(
+        f"FACULTY_CODE_FILTER {FACULTY_CODE_FILTER!r} can only contain letters, digits, spaces, "
+        "'-', '_', '.' and '%'"
+    )
+
 
 def scoped(alias: str) -> str:
     """Rollout-scope predicate fragment for the faculty list aliased as *alias*."""
     clause = ""
     if ACADEMY_CODES:
-        quoted = ", ".join("'" + code.replace("'", "''") + "'" for code in ACADEMY_CODES)
+        quoted = ", ".join(f"'{code}'" for code in ACADEMY_CODES)
         clause += f" AND {alias}.academy_code IN ({quoted})"
     if FACULTY_CODE_FILTER:
-        pattern = FACULTY_CODE_FILTER.replace("'", "''")
-        clause += f" AND {alias}.static_faculty_code LIKE '{pattern}'"
+        clause += f" AND {alias}.static_faculty_code LIKE '{FACULTY_CODE_FILTER}'"
     return clause
 
 
@@ -516,12 +531,9 @@ SYNC_PROCESS_NAME = (
     f"faculty_sharepoint_sync|{','.join(ACADEMY_CODES) or '*'}|{FACULTY_CODE_FILTER or '*'}"
 )
 
-# The filters are free text, so quote-escape the key wherever it is a SQL literal.
-SYNC_PROCESS_LITERAL = SYNC_PROCESS_NAME.replace("'", "''")
-
 wm_rows = spark.sql(f"""
     SELECT last_processed_ts FROM {sync_state_table}
-    WHERE process = '{SYNC_PROCESS_LITERAL}'
+    WHERE process = '{SYNC_PROCESS_NAME}'
 """).collect()
 
 WATERMARK = (
@@ -1171,7 +1183,7 @@ else:
             MERGE INTO {sync_state_table} AS t
             USING (
                 SELECT
-                    '{SYNC_PROCESS_LITERAL}' AS process,
+                    '{SYNC_PROCESS_NAME}' AS process,
                     TIMESTAMP'{new_watermark}' AS last_processed_ts
             ) AS s
             ON t.process = s.process
