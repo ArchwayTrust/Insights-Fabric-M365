@@ -1245,7 +1245,7 @@ Outside Fabric, `KeyVaultCertificateCredential` isn't available (it needs `noteb
 
 ### Example notebook
 
-[`examples/Manage Faculty Sharepoint Libraries.Notebook`](examples/Manage%20Faculty%20Sharepoint%20Libraries.Notebook/notebook-content.py) is a complete notebook, run from a pipeline, that drives every operation from curated lakehouse tables: incremental create, unlink and retire using a watermark, full membership and access passes, an audit table and a run outcome gate. [docs/faculty-sharepoint-notebook.md](docs/faculty-sharepoint-notebook.md) describes it cell by cell, and how it was moved onto this package.
+[`examples/Manage Faculty Sharepoint Libraries.Notebook`](https://github.com/ArchwayTrust/Insights-Fabric-M365/blob/main/examples/Manage%20Faculty%20Sharepoint%20Libraries.Notebook/notebook-content.py) is a complete notebook, run from a pipeline, that drives every operation from curated lakehouse tables: incremental create, unlink and retire using a watermark, full membership and access passes, an audit table and a run outcome gate. [docs/faculty-sharepoint-notebook.md](https://github.com/ArchwayTrust/Insights-Fabric-M365/blob/main/docs/faculty-sharepoint-notebook.md) describes it cell by cell, and how it was moved onto this package.
 
 ## Troubleshooting
 
@@ -1319,7 +1319,7 @@ python -m pytest
 python -m pyflakes alt_fabric_m365 tests setup.py
 ```
 
-The [Tests workflow](.github/workflows/tests.yml) runs the same checks on Python 3.10, 3.11 and 3.12, and builds the package, for every pull request into `main` and every push to `main`. It doesn't publish anything.
+The [Tests workflow](https://github.com/ArchwayTrust/Insights-Fabric-M365/blob/main/.github/workflows/tests.yml) runs the same checks on Python 3.10, 3.11 and 3.12, and builds the package, for every pull request into `main` and every push to `main`. It doesn't publish anything.
 
 #### Requiring the tests to pass before merging
 
@@ -1328,7 +1328,7 @@ On its own, the Tests workflow only reports a result: GitHub still lets a pull r
 1. On GitHub, go to **Settings** > **Rules** > **Rulesets** > **New ruleset** > **New branch ruleset**.
 2. Name it, for example `Protect main`, and set **Enforcement status** to **Active**.
 3. Under **Target branches**, select **Add target** > **Include default branch**.
-4. Turn on **Require a pull request before merging**. Under it, turn on **Require review from Code Owners**, so changes need a review from the teams in [`.github/CODEOWNERS`](.github/CODEOWNERS): Insights for the package, and IT Approvers for the SharePoint library manager, as it changes the tenant's libraries, permissions and groups.
+4. Turn on **Require a pull request before merging**. Under it, turn on **Require review from Code Owners**, so changes need a review from the teams in [`.github/CODEOWNERS`](https://github.com/ArchwayTrust/Insights-Fabric-M365/blob/main/.github/CODEOWNERS): Insights for the package, and IT Approvers for the SharePoint library manager, as it changes the tenant's libraries, permissions and groups.
 5. Turn on **Require status checks to pass**, select **Add checks**, and add `test (3.10)`, `test (3.11)` and `test (3.12)`.
 6. Turn on **Block force pushes**, then select **Create**.
 
@@ -1349,7 +1349,7 @@ What they cover:
 
 The SharePoint tests run against `tests/sharepoint_fake.py`, an in-memory fake of the Graph and SharePoint endpoints the manager calls, which keeps state so a test can check what an operation changed. Add `--cov=alt_fabric_m365` to see coverage.
 
-Code style, when to use a function rather than a method, and what a change's tests should check are in [CLAUDE.md](CLAUDE.md).
+Code style, when to use a function rather than a method, and what a change's tests should check are in [CLAUDE.md](https://github.com/ArchwayTrust/Insights-Fabric-M365/blob/main/CLAUDE.md).
 
 The tests can't show that the real services accept the requests, so test a new version in Fabric before releasing it (see [Testing a wheel in Fabric](#testing-a-wheel-in-fabric-before-publishing)). Get a token, find a known email and list its attachments. For the SharePoint manager, run the example notebook with `RUN_SMOKE_TEST = True`, first with `DRY_RUN = True`.
 
@@ -1405,7 +1405,7 @@ Or add it to an environment under **Custom libraries** > **Upload**.
 
 ### Publishing to PyPI with a GitHub release
 
-This is the normal route. Merging to `main` never publishes anything; only publishing a GitHub release does. The [Release workflow](.github/workflows/release.yml) then:
+This is the normal route. Merging to `main` never publishes anything; only publishing a GitHub release does. The [Release workflow](https://github.com/ArchwayTrust/Insights-Fabric-M365/blob/main/.github/workflows/release.yml) then:
 
 1. Runs the tests.
 2. Checks the release tag matches `__version__` (tag `v1.2.0` for `__version__="1.2.0"`), and stops if it doesn't.
@@ -1474,4 +1474,4 @@ Update the version in each Fabric environment that uses the package (**Public li
 
 ## Licence
 
-BSD 3-Clause, copyright Archway Learning Trust. See [LICENSE](LICENSE). The software is provided "as is", without warranty, and the licence excludes liability for any damage arising from its use.
+BSD 3-Clause, copyright Archway Learning Trust. See [LICENSE](https://github.com/ArchwayTrust/Insights-Fabric-M365/blob/main/LICENSE). The software is provided "as is", without warranty, and the licence excludes liability for any damage arising from its use.

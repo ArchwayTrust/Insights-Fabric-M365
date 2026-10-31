@@ -35,6 +35,11 @@ def test_graph_api_was_removed_in_1_0():
     assert not hasattr(alt_fabric_m365, "graph_api")
 
 
+def test_readme_links_work_on_pypi():
+    # The README is the PyPI description, and PyPI doesn't serve the repository's files
+    assert re.findall(r"\]\((?!https?://|#|mailto:)([^)\s]+)\)", README) == []
+
+
 def test_readme_has_python_examples():
     assert len(PYTHON_BLOCKS) > 10
 
