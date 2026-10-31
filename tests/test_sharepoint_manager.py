@@ -702,6 +702,48 @@ def test_retire_skips_a_site_or_library_that_is_gone(make_manager, tenant, site)
     assert tenant.writes() == []
 
 
+# Under Sites.Selected, a site whose grant has been removed gives 403; only a deleted site gives 404
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_retire_reports_an_old_site_it_cant_read_as_an_error(make_manager, tenant, site, dry_run):
+    from sharepoint_fake import graph_error
+    make_manager().create_libraries(libraries_df(site, "MATH"))
+    tenant.calls.clear()
+    tenant.fail("GET", r":/sites/BAA$", graph_error(403, "accessDenied", "Access denied"))
+
+    results = make_manager(dry_run=dry_run).retire_moved_libraries(libraries_df(site, "MATH"))
+
+    [row] = results.itertuples()
+    assert (row.site_url, row.action) == (site.url, "error")
+    assert "Status code: 403, accessDenied" in row.status
+    assert tenant.writes() == []
+
+
+@pytest.mark.parametrize("failure, action", [
+    ("403", "error"),            # exists, but the app can't read it: the reason is reported
+    ("404", "retire_deferred"),  # doesn't exist yet: retired once the library works there
+])
+def test_retire_keeps_a_library_whose_new_site_it_cant_read(make_manager, tenant, site, failure, action):
+    from sharepoint_fake import graph_error
+    make_manager().create_libraries(libraries_df(site, "MATH"))
+    new_site = tenant.add_site("/sites/BAA2")
+    tenant.calls.clear()
+    if failure == "403":
+        new_site_url = new_site.url
+        tenant.fail("GET", r":/sites/BAA2$", graph_error(403, "accessDenied", "Access denied"))
+    else:
+        new_site_url = "https://contoso.sharepoint.com/sites/NotMadeYet"
+
+    results = make_manager().retire_moved_libraries(libraries_df(site, "MATH").assign(new_site_url=new_site_url))
+
+    [row] = results.itertuples()
+    assert (row.site_url, row.document_library, row.action) == (site.url, "MATH", action)
+    if action == "error":
+        assert row.status.startswith(f"its new site ({new_site_url}) couldn't be read, so it wasn't retired: ")
+        assert "accessDenied" in row.status
+    assert tenant.writes() == []
+    assert site.list_by_slug("MATH")["displayName"] == "MATH Faculty"
+
+
 @pytest.mark.parametrize("dry_run", [False, True])
 @pytest.mark.parametrize("spelling", ["lower case", "trailing slash"])
 def test_retire_leaves_a_library_whose_new_site_is_the_same_site(make_manager, tenant, site, spelling, dry_run):
