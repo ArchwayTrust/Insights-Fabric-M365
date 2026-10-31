@@ -646,6 +646,21 @@ def test_a_run_that_lost_its_lease_changes_nothing_when_its_cell_is_run_again(te
     assert spark.lease() == ("other-run", FAR_FUTURE)
 
 
+# Running the parameters cell again resets DRY_RUN to True, but the manager created from it still writes
+def test_a_live_run_whose_dry_run_flag_was_reset_changes_nothing(tenant, run_notebook, spark):
+    create = "results = mgr.create_libraries(pdf_library_changes)"
+    ns = run_notebook(spark, stop_before=create)
+    [cell] = [code for code, _ in cells(NOTEBOOK) if create in code]
+    ns["DRY_RUN"] = True
+    writes = len(tenant.writes())
+
+    with pytest.raises(RuntimeError, match="the manager was created with dry_run=False"):
+        exec(compile(cell, str(NOTEBOOK), "exec"), ns)
+
+    assert len(tenant.writes()) == writes
+    assert tenant.sites[HUB.lower()].list_by_slug("MATH") is None
+
+
 @pytest.mark.parametrize("minutes", ["120", 0, True, 1.5])
 def test_a_lease_length_that_isnt_a_whole_number_of_minutes_stops_the_run_before_anything_runs(
     tenant, run_notebook, spark, minutes,

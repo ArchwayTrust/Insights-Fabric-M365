@@ -472,7 +472,14 @@ def renew_lease() -> None:
     hand after it was refused or lost the lease, stops too.
     """
     global holds_lease
-    if DRY_RUN:
+    # Running the parameters cell again resets DRY_RUN without changing the
+    # manager, which then still writes, so the check follows the manager
+    if DRY_RUN != mgr.dry_run:
+        raise RuntimeError(
+            f"DRY_RUN is {DRY_RUN} but the manager was created with dry_run={mgr.dry_run}, so this cell changes "
+            "nothing. Run the whole notebook again."
+        )
+    if mgr.dry_run:
         return
     if not holds_lease:
         raise RuntimeError(
