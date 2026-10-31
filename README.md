@@ -118,7 +118,7 @@ attachment_id, file_name = csv_files[0]
 csv_text = mailbox.download_attachment(message_id, attachment_id)
 
 lakehouse = "abfss://<workspace>@onelake.dfs.fabric.microsoft.com/<lakehouse>.Lakehouse"
-notebookutils.fs.put(f"{lakehouse}/Files/Reports/{file_name}", csv_text, overwrite=True)
+notebookutils.fs.put(f"{lakehouse}/Files/Reports/daily_sales.csv", csv_text, overwrite=True)
 
 mailbox.delete_email(message_id)
 ```
@@ -615,16 +615,22 @@ attachments = mailbox.get_attachment_ids_and_names(message_id)
 # [('AAMkAD...', 'sales.csv'), ('AAMkAD...', 'summary.xlsx')]
 ```
 
-Inline images, such as logos in an email signature, are left out unless you pass `include_inline=True`. Attached emails and links to cloud files are always left out, as they can't be downloaded. An empty list means the email has nothing to download, so check for it rather than taking the first item.
+Inline attachments, ones Exchange marks `isInline`, are left out unless you pass `include_inline=True`. These are usually images in the body, such as logos in an email signature, but some mail clients mark ordinary attachments such as PDFs or CSV files inline too, so if a file you can see in Outlook is missing, try `include_inline=True`. Attached emails and links to cloud files are always left out, as they can't be downloaded. An empty list means the email has nothing to download, so check for it rather than taking the first item.
 
 `download_attachment` returns the attachment's content. By default it's decoded as UTF-8 text, which suits CSV and text files:
 
 ```python
+import os
+
 for attachment_id, file_name in attachments:
-    if file_name.endswith(".csv"):
+    if file_name.lower().endswith(".csv"):
         csv_text = mailbox.download_attachment(message_id, attachment_id)
-        notebookutils.fs.put(f"{lakehouse}/Files/Sales/{file_name}", csv_text, overwrite=True)
+        # The sender chooses the name, so keep only its last part
+        safe_name = os.path.basename(file_name.replace("\\", "/"))
+        notebookutils.fs.put(f"{lakehouse}/Files/Sales/{safe_name}", csv_text, overwrite=True)
 ```
+
+An attachment's name is chosen by whoever sent the email, and could contain `/` or `..` that point somewhere else, so don't put it into a path as it is. Keep only its last part, as above, or, when you keep one attachment, save it to a fixed name, as the other examples do. Neither stops two attachments with the same name overwriting each other in the loop, so if you keep several, make each name unique, for example by adding its position in the list.
 
 Use `encoding` for text in another encoding, for example `encoding="cp1252"` for some Windows exports.
 
@@ -640,7 +646,7 @@ content = mailbox.download_attachment(message_id, attachment_id, is_binary=True)
 df = pd.read_excel(io.BytesIO(content))
 
 # Or save it to the notebook's default lakehouse
-with open(f"/lakehouse/default/Files/Sales/{file_name}", "wb") as f:
+with open("/lakehouse/default/Files/Sales/sales.xlsx", "wb") as f:
     f.write(content)
 ```
 
@@ -725,7 +731,7 @@ For each library (a row with a `site_url`, a `library_code` and a `group_prefix`
 
 - **The library.** Created with the code as its URL slug (`/sites/<site>/<code>`), then given its display name. The slug never changes, so renaming a library only changes its display name. It is given its own permissions, not inherited from the site.
   - A document library that already has the code as its URL slug is taken over rather than created again. If it still inherits the site's permissions, it stops doing so, and the action log has an `inheritance_broken` row: site members then only have access through its groups. Folders and files in it that have their own permissions keep them.
-- **Security groups**, named `{group_prefix}-{library_code}-{suffix}` (or `{group_prefix}-{site}-{library_code}-{suffix}` with `include_site_name=True`). Names are how the manager finds existing groups, so don't change the naming after rollout.
+- **Security groups**, named `{group_prefix}-{library_code}-{suffix}` (or `{group_prefix}-{site}-{library_code}-{suffix}` with `include_site_name=True`, where `{site}` is the last segment of the site URL with only its letters and digits kept). Names are how the manager finds existing groups, so don't change the naming after rollout, and make sure two sites can't give the same names (see [Group naming](#adding-setting-specific-steps)).
   - `Auto-Read`, `Auto-Contribute` and `Auto-Owner` are owned by the automation. Their membership is synced from your data and they are emptied when the library is unlinked.
   - `Manual-Read` and `Manual-Contribute` are optional, hand-curated groups. They are granted access like the Auto groups, but their membership is never changed.
   - Group names use the library **code**, so they stay the same when the library's display name changes. `create_libraries` updates the groups' descriptions, which name the library, to match. A library's code never changes, as it's also the library's URL, so neither do its group names.
@@ -919,7 +925,7 @@ Create the credential without a scope: the manager asks it for a Graph token and
 | `rename_libraries(df)` | Sets new display names, and the navigation links' titles. A library that already has its name is left alone (`already_named`). Groups keep their names, as the code can't change. Up to 1.0.x it accepted `old_library_code` to rename the groups to a new code, but that never worked, so a row with one now raises `ValueError`. | `site_url`, `library_code`, `library_display_name` |
 | `grant_group_access(df)` | Grants existing groups a permission level on existing libraries, for example a leadership group on every library. Additive: never removes access. | `site_url`, `library_code`, `group_name`, `permission` |
 | `enforce_site_sharing_lockdown(site_urls)` | Turns off member sharing, access requests and member invites on each site, and checks the change stuck. A site listed more than once, even spelt differently, is checked once. | A list of site URLs (for one site, `[site_url]`) |
-| `set_library_metadata(df)` / `get_library_metadata(df)` | Writes or reads `source_system` and `source_id` in each library's property bag. | `site_url`, `library_code`, and for set `source_system` and/or `source_id` |
+| `set_library_metadata(df)` / `get_library_metadata(df)` | Writes or reads `source_system` and `source_id` in each library's property bag. `get_library_metadata` returns one row per library, not an action log, with a `status` column: `ok` where it was read, `library_not_found`, or `error: <reason>` where the site or library couldn't be read. A value is `None` where it isn't set, or where the status isn't `ok`. | `site_url`, `library_code`, and for set `source_system` and/or `source_id` |
 | `ensure_onedrive_shortcuts(df)` | Not part of the usual flow. Creates any missing OneDrive shortcuts to libraries, such as ones that failed because the user's OneDrive didn't exist yet (`onedrive_shortcut_failed`), which `update_memberships` never retries. A shortcut to the library already there, even renamed, is left alone (`onedrive_shortcut_exists`). A shortcut to a folder in the library doesn't count. | `site_url`, `library_code`, `user_principal_name`: the members table works as it is |
 
 Read-only helpers: `mgr.group_name(group_prefix, site_url, library_code, suffix)` returns a group name exactly as the operations build it, and `mgr.get_navigation_link(site_url, library_code)` and `mgr.get_site_sharing_settings(site_url)` read back what is on the site.
@@ -971,7 +977,7 @@ if not failures.empty:
 - **Run-wide removal limit.** Each group's limit alone wouldn't stop an empty or truncated members table, which would empty every small group. So `update_memberships` adds up the removals for the whole call before making any: if they'd remove more than `max_removals_per_run` members in total (default 100), none are made, and one `removal_guardrail_triggered` row, with no library, says how many there would have been. `allow_mass_removal=True` lifts this limit too.
 - **Incomplete data never drives removals.** If any user (or nested group) for a role can't be resolved, removals of that kind from that role's group are skipped (`removals_skipped`), as the "stale" member may be the one that failed to resolve. A row whose `permission` isn't `read`, `contribute` or `owner` is logged as `skip`, and as it could be meant for any role, removals of that kind are skipped from all of the library's groups.
 - **Manual groups are never synced or emptied,** and service principals and devices in Auto groups are left in place.
-- **No guessing between duplicates.** If two Entra groups share a name the manager would use, it stops for that library rather than pick one. Library codes that would produce the same group names (such as `PE-KS3` and `PEKS3`, or codes differing only in case) are skipped with `group_name_collision`, including when the other library was created by an earlier run. A library is only ever found by its URL, so a code is never matched to another library that merely has that title (`library_name_conflict`). A library is given its own permissions and groups before its display name, so if another list already has that name, it keeps its code as its title (also `library_name_conflict`) rather than being left open to the whole site.
+- **No guessing between duplicates.** If two Entra groups share a name the manager would use, it stops for that library rather than pick one. Library codes that would produce the same group names (such as `PE-KS3` and `PEKS3`, or codes differing only in case) are skipped with `group_name_collision`, including when the other library was created on the same site by an earlier run. Libraries on different sites are only compared within one call, so keep two sites' group names apart (see [Group naming](#adding-setting-specific-steps)). A library is only ever found by its URL, so a code is never matched to another library that merely has that title (`library_name_conflict`). A library is given its own permissions and groups before its display name, so if another list already has that name, it keeps its code as its title (also `library_name_conflict`) rather than being left open to the whole site.
 - **Groups must be the app's.** Group names are predictable, so a group someone else creates with the name a library would use could otherwise be handed that library's access. The app is made owner of the groups it creates, and before it grants or syncs an existing group it checks the app is an owner: a group with no owner (as earlier versions created them) has the app added and is logged as `group_owner_added`; a group owned only by others is skipped with `group_not_owned`. This includes an Auto group that `update_memberships` would empty, so a group the app doesn't own is never emptied. Dry runs of `create_libraries` and `update_memberships` read the owners and log what a live run would do. Groups are only checked when an operation uses them, so to adopt them all at once see [Adopting groups created by earlier versions](#adopting-groups-created-by-earlier-versions). The app's object ID is read from its Graph token, or can be passed as `service_principal_id`. Groups created with `app_owned=False` aren't owned or checked, and `grant_group_access` grants the groups it's given by name.
 - **Creating a group, navigation link or OneDrive shortcut is never repeated** after a failure that may have succeeded (a 5xx or timeout), so a retry can't make a duplicate. The next run finds what was created. Graph's name lookups can miss a group for a short while after it's created, so a manager also remembers the groups it creates. Until the lookup finds one, later operations in the same run reuse it rather than create it again, and check its owner and read its members as they would any group's.
 - **Only document libraries count as libraries.** An ordinary list whose URL ends in the code (`/Lists/ENG`) is never adopted, though its title still counts for `library_name_conflict`.
@@ -1238,7 +1244,7 @@ The leadership library isn't in `sharepoint_libraries`, so the membership sync n
 
 Things to decide once, before the first live run, as changing them later orphans what was created:
 
-- **Group naming.** `group_prefix` and `include_site_name` make up every group name, and names are how the manager finds its groups. Use one prefix per site, so two sites never share a library's groups.
+- **Group naming.** `group_prefix` and `include_site_name` make up every group name, and names are how the manager finds its groups. Use one prefix per site, so two sites never share a library's groups. `include_site_name=True` doesn't keep them apart on its own: the site part of a name is only the last segment of the site URL, with only its letters and digits kept, so `/sites/hr` and `/teams/hr`, or `/sites/finance-team` and `/sites/financeteam`, give the same group names. If both sites are in one call, their libraries with the same code are skipped with `group_name_collision`. But if one site's library is created in a later run, it's given the other site's groups, as groups are found by name and the app owns them, so each library's members can open the other library.
 - **Library codes.** A library's code is its URL and part of its group names. Treat it as permanent, and use `library_display_name` for renames. Codes can only contain letters, digits, spaces, `-`, `_` and `.`, with no space or `.` at either end and no `_vti_` (which SharePoint reserves), so trim padded codes (such as from a `CHAR` column) in the query that reads them. Codes that differ only in punctuation or case (`PE-KS3`, `peks3`) would share groups, so they're skipped with `group_name_collision`.
 - **Who owns the groups.** Leave `app_owned` on for groups the automation manages. Turn it off for groups a person owns and curates, and give those to `grant_group_access` rather than the membership sync.
 - **Scope.** If you roll out a few sites at a time, filter the input DataFrames and include the filter in the watermark's `process` key. Widening the scope then starts a fresh watermark, so the newly included rows are processed.
@@ -1266,7 +1272,7 @@ Outside Fabric, `KeyVaultCertificateCredential` isn't available (it needs `noteb
 | Graph `404` for the mailbox | The mailbox address is wrong, or the mailbox doesn't exist. |
 | `ValueError` from an `Emails` method | No mailbox was given: pass one to `Emails(credential, mailbox)` or `shared_mailbox_email` to the call. |
 | `MessageNotFoundError: No matching messages found.` | No email in the Inbox matches the exact subject and sender. Check both, or try `only_search_inbox=False`. |
-| `get_attachment_ids_and_names` returns an empty list | The email has no file attachments. Inline images are left out unless you pass `include_inline=True`, and attached emails and cloud links are always left out. |
+| `get_attachment_ids_and_names` returns an empty list, or misses a file | Either the email has no file attachments, or they were left out. Inline attachments are left out unless you pass `include_inline=True`, and some mail clients mark ordinary files inline, so try it if a file you can see in Outlook is missing. Attached emails and cloud links are always left out. |
 | `Attachment ... is a #microsoft.graph.itemAttachment` | `download_attachment` was given the ID of an attached email, not a file. |
 | `ImportError: notebookutils is not available. KeyVaultCertificateCredential must be used in a Fabric notebook.` | The code is running outside Fabric. `KeyVaultCertificateCredential` only works in Fabric (or Synapse) notebooks. |
 | SharePoint `401` with `Unsupported app only token` | The token came from a client secret. SharePoint needs a certificate, see [Giving the app access](#giving-the-app-access). |
@@ -1281,7 +1287,7 @@ Outside Fabric, `KeyVaultCertificateCredential` isn't available (it needs `noteb
 | `removal_guardrail_triggered` row with no library | The whole call would remove more members than `max_removals_per_run`, so none were removed. Check the input data, for example that the members table loaded in full, then re-run with `allow_mass_removal=True`. |
 | `removal_guardrail_triggered` row | A sync would remove more members than `max_removals_per_group`. Check the input data, then re-run with `allow_mass_removal=True`. |
 | `onedrive_shortcut_failed` row | The user was added to the group, but the shortcut to the library couldn't be made in their OneDrive. Usually their OneDrive doesn't exist yet: it's created the first time they open it, and an app can't create it for them. Later runs don't try again, as the user is already a member. Once their OneDrive exists, run `ensure_onedrive_shortcuts` with the members table to create the missing shortcuts, or the user can add one themselves: open the library and select **Add shortcut to My files**. To avoid it for new starters, have a SharePoint administrator create their OneDrive in advance with [`Request-SPOPersonalSite`](https://learn.microsoft.com/en-us/powershell/module/sharepoint-online/request-spopersonalsite). |
-| `library_not_found` row | The library doesn't exist on the site, for example it was deleted by hand. Recreate it with `create_libraries` or remove it from the input. When unlinking, its Auto groups are still emptied. |
+| `library_not_found` row | The library doesn't exist on the site, for example it was deleted by hand. Recreate it with `create_libraries` or remove it from the input. When unlinking, its Auto groups are still emptied, and with `add_to_navigation` its navigation link is removed (`navigation_link_removed`). |
 | `group_not_owned` row | A group with the name the manager uses is owned by someone, but not by the app registration, so it wasn't used. Check who created it: if it's legitimate, add the app's service principal as an owner; otherwise delete it. |
 | `retire_deferred` row | The library isn't working on its new site yet (for example its create failed, or the copy there is the `_MOVED` leftover of an earlier move back), so the old one was left working. The status says what's missing. It's retired on a later run once the new one exists. |
 | `library_name_conflict` row | Another list on the site already has the library's code, or its display name, as its title. With the code, the library can't be created; with the display name, the library keeps its code as its title. Rename the other list's title. |

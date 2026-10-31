@@ -171,7 +171,10 @@ class Emails:
 
         query_parameters = {
             '$filter': f"subject eq '{subject_literal}' and from/emailAddress/address eq '{sender_literal}'",
-            '$select': 'id,subject,from,receivedDateTime,parentFolderId,hasAttachments'
+            '$select': 'id,subject,from,receivedDateTime,parentFolderId,hasAttachments',
+            # Graph's largest page for messages. Its default of 10 would take a request for every 10 matches,
+            # which add up in a mailbox whose reports are never deleted.
+            '$top': 1000,
         }
 
         messages = []
@@ -211,8 +214,9 @@ class Emails:
 
         Only file attachments are returned. Item attachments (attached emails, events or contacts)
         and reference attachments (links to cloud files, such as OneDrive) are skipped, as they
-        can't be downloaded. Inline attachments, such as images in an email signature, are also
-        skipped unless include_inline is True.
+        can't be downloaded. Inline attachments (ones Exchange marks isInline), usually images such as
+        signature logos, are also skipped unless include_inline is True. Some mail clients mark ordinary
+        attachments inline too, so try include_inline=True if a file you can see in Outlook is missing.
 
         Args:
             message_id: The ID of the email message whose attachments are to be retrieved.
@@ -229,11 +233,17 @@ class Emails:
         # Constructing the URL for the Microsoft Graph API attachments endpoint
         endpoint = f'{self._mailbox_url(shared_mailbox_email)}/messages/{_path(message_id)}/attachments'
 
+        # Without $select, Graph returns each file attachment's content, which download_attachment fetches again.
+        # @odata.type is still returned, as the attachments are of types derived from the one listed.
+        query_parameters = {'$select': 'id,name,isInline'}
+
         # Initialising an empty list to store attachment information
         attachments_info = []
         while endpoint:
             # Performing a GET request to retrieve a page of attachments, raising if unsuccessful
-            response = _request_with_retry("GET", endpoint, headers=self._headers(), timeout=self.REQUEST_TIMEOUT_SECONDS)
+            response = _request_with_retry(
+                "GET", endpoint, headers=self._headers(), params=query_parameters, timeout=self.REQUEST_TIMEOUT_SECONDS,
+            )
             if not response.ok:
                 raise requests.HTTPError(_error_message("Failed to list attachments", response), response=response)
 
@@ -243,14 +253,15 @@ class Emails:
                 if attachment.get('@odata.type') != '#microsoft.graph.fileAttachment':
                     continue
 
-                # Skip inline attachments, such as signature logos, unless asked for
+                # Skip inline attachments, usually signature logos and other images in the body, unless asked for
                 if attachment.get('isInline') and not include_inline:
                     continue
 
                 attachments_info.append((attachment['id'], attachment['name']))
 
-            # Update the endpoint for the next page, if any
+            # Update the endpoint for the next page, if any. It carries the query, so it isn't sent again.
             endpoint = data.get('@odata.nextLink')
+            query_parameters = None
 
         return attachments_info
 
