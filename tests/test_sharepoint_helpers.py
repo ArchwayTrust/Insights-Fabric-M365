@@ -164,13 +164,26 @@ def test_missing_library_raises(tenant):
         _graph._get_list_id(TOKEN, site.id, "ENG")
 
 
-def test_ensure_library_creates_with_code_then_sets_display_name(tenant):
+def test_ensure_library_creates_it_titled_with_its_code_once(tenant):
     site = tenant.add_site("/sites/maths")
 
-    lib = _graph._ensure_document_library(TOKEN, site.id, "ENG", "English")
+    lib = _graph._ensure_document_library(TOKEN, site.id, "ENG")
+    again = _graph._ensure_document_library(TOKEN, site.id, "ENG")
 
     created = site.lists[lib["id"]]
-    assert (created["slug"], created["displayName"]) == ("ENG", "English")
+    assert (created["slug"], created["displayName"]) == ("ENG", "ENG")
+    assert again["id"] == lib["id"] and len(site.lists) == 1
+
+
+def test_title_conflict_with_a_display_name(tenant):
+    site = tenant.add_site("/sites/maths")
+    english = site.add_list("English", slug="EnglishOld")
+    site.add_list("Maths", slug="MATH")
+
+    lists = _graph._list_existing_lists(TOKEN, site.id)
+
+    assert _graph._find_title_conflict(lists, "ENG", title="english")["id"] == english["id"]
+    assert _graph._find_title_conflict(lists, "MATH", title="Maths") is None  # its own title
 
 
 # Groups and members

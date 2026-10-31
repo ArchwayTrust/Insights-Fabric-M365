@@ -214,6 +214,39 @@ def test_create_library_renames_display_name_and_navigation_link(make_manager, s
     assert "navigation_link_renamed" in actions(results)
 
 
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_a_display_name_another_list_has_is_a_warning(make_manager, tenant, site, dry_run):
+    site.add_list("English", slug="EnglishOld")  # made by hand, titled with the new library's display name
+
+    results = make_manager(dry_run=dry_run).create_libraries(libraries_df(site, "ENG", library_display_name="English"))
+
+    assert list(rows(results, "library_name_conflict")["status"].str.contains("'English'")) == [True]
+    assert rows(results, "error").empty
+    if not dry_run:
+        # The library still has its own permissions and groups, under its code as its title
+        library = site.list_by_slug("ENG")
+        assert (library["displayName"], library["unique"], len(library["role_assignments"])) == ("ENG", True, 2)
+
+
+def test_a_failed_rename_leaves_the_library_with_its_own_permissions(make_manager, site):
+    # Both want the same title, so the second rename fails: the first took it during this run
+    results = make_manager().create_libraries(libraries_df(site, "SCI1", "SCI2", library_display_name="Science"))
+
+    second = site.list_by_slug("SCI2")
+    assert (second["displayName"], second["unique"], len(second["role_assignments"])) == ("SCI2", True, 2)
+    assert list(rows(results, "error")["document_library"]) == ["SCI2"]
+
+
+def test_renaming_onto_another_lists_title_is_a_warning(make_manager, site):
+    make_manager().create_libraries(libraries_df(site, "ENG"))
+    site.add_list("English", slug="EnglishOld")
+
+    results = make_manager().create_libraries(libraries_df(site, "ENG", library_display_name="English"))
+
+    assert site.list_by_slug("ENG")["displayName"] == "ENG Faculty"
+    assert "library_name_conflict" in actions(results) and rows(results, "error").empty
+
+
 def test_taking_over_a_library_keeps_permissions_set_inside_it(make_manager, tenant, site):
     library = site.add_list("MATH")  # made by hand, still inheriting the site's permissions
     library["unique_items"]["Exam papers"] = {7: {FULL_CONTROL}}
