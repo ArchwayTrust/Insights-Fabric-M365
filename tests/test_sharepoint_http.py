@@ -396,3 +396,24 @@ def test_a_user_agent_the_caller_sets_is_kept(sleeps):
         _request_with_retry("GET", URL, headers={"user-agent": "mine"})
 
     assert request.call_args.kwargs["headers"] == {"user-agent": "mine"}
+
+
+def test_a_tokens_organisation_is_sent_on_every_attempt(sleeps):
+    token = _http._RenewableToken(lambda: "token", user_agent=_http._user_agent("Contoso"))
+    with patch_request(side_effect=[response(503), response(200, {})]) as request:
+        _request_with_retry("GET", URL, headers={"Authorization": _http._bearer(token)})
+
+    sent = [call.kwargs["headers"]["User-Agent"] for call in request.call_args_list]
+    assert len(sent) == 2 and all(agent.startswith("NONISV|Contoso|alt-fabric-m365/") for agent in sent)
+
+
+@pytest.mark.parametrize("organisation", ["Acme Academy Trust", "Acme.Trust", "Acme-Trust_2", "A"])
+def test_organisations_with_letters_digits_spaces_and_dots_are_used(organisation):
+    assert _http._user_agent(organisation).startswith(f"NONISV|{organisation}|alt-fabric-m365/")
+
+
+# '|' separates the User-Agent's fields, and a line break would start another header
+@pytest.mark.parametrize("organisation", ["", "A|B", "Acme\r\nX-Injected: 1", " Acme", "Acme ", "Acmé"])
+def test_organisations_a_user_agent_cant_hold_are_refused(organisation):
+    with pytest.raises(ValueError, match="organisation"):
+        _http._user_agent(organisation)
