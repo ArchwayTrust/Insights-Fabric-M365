@@ -1466,7 +1466,11 @@ class SharePointLibraryManager:
                             ``retire_deferred`` (a warning).  Leave it null
                             for a library deleted at source, whose leftover
                             should be retired anyway.  Not checked in a dry
-                            run, where the create pass makes nothing.
+                            run, where the create pass makes nothing.  A row
+                            whose new site is the same site as site_url,
+                            spelt differently (in case, or with a trailing
+                            slash), is logged as ``retire_skipped``, dry run
+                            or not, as the library hasn't moved.
 
         Args:
             df:               DataFrame with the required columns.
@@ -1498,11 +1502,10 @@ class SharePointLibraryManager:
 
         action_log = _ThreadSafeLog()
 
-        # Libraries on the new sites, to check the move's replacement exists
-        new_sites = (
-            self._prefetch_sites(new_site_urls, _ThreadSafeLog())
-            if new_site_urls and not dry_run_ else {}
-        )
+        # The new sites: to check the move's replacement exists, and that the
+        # new site isn't the old one spelt differently.  Reads only, so dry
+        # runs read them too.
+        new_sites = self._prefetch_sites(new_site_urls, _ThreadSafeLog()) if new_site_urls else {}
 
         # Old hubs may have been deleted since the move — those are skipped
         # (nothing to retire), not errors.
@@ -1518,6 +1521,19 @@ class SharePointLibraryManager:
             if site_url not in sites:
                 continue  # site gone or couldn't be read — already logged
             new_site_url = row["new_site_url"]
+            new_site = new_sites.get(new_site_url) if pd.notna(new_site_url) else None
+            if new_site is not None and new_site["site_id"] == sites[site_url]["site_id"]:
+                # Graph finds a site ignoring case and a trailing slash, so
+                # both URLs are this site: retiring would retire the live library.
+                logger.warning(
+                    "Not retiring '%s' on '%s': its new site %s is the same site",
+                    row["library_code"], site_url, new_site_url,
+                )
+                _append_log(
+                    action_log, site_url, row["library_code"], "retire_skipped",
+                    f"its new site ({new_site_url}) is the same site, so it hasn't moved — left as it is",
+                )
+                continue
             if (
                 not dry_run_ and pd.notna(new_site_url)
                 and row["library_code"].lower() not in new_sites.get(new_site_url, {}).get("lists", {})
