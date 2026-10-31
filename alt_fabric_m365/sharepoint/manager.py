@@ -1188,7 +1188,8 @@ class SharePointLibraryManager:
         try:
             # Step 1: Set the display name to {code}_UNLINKED
             lib_web_url = None
-            if library_code.lower() not in existing_lists:
+            library = existing_lists.get(library_code.lower())
+            if library is None:
                 # Never created (created and deleted between runs) or deleted
                 # by hand: nothing to rename.  A data problem, not a fault —
                 # an error here would fail every run on the same event.  The
@@ -1198,6 +1199,13 @@ class SharePointLibraryManager:
                     action_log, site_url, library_code, "library_not_found",
                     "library does not exist on the site — nothing to rename; "
                     "its Auto groups are still emptied",
+                )
+            elif library.get("displayName") == unlinked_display:
+                # Unlinked by an earlier run: a re-run writes nothing
+                lib_web_url = library.get("webUrl", "")
+                _append_log(
+                    action_log, site_url, library_code,
+                    "already_unlinked", f"display name is already '{unlinked_display}'",
                 )
             elif dry_run:
                 logger.info("[DRY RUN] Would set display name to '%s'", unlinked_display)
@@ -1448,8 +1456,16 @@ class SharePointLibraryManager:
                 return
 
             # Step 1: Rename so the leftover is clearly not the live library
-            lib_web_url = None
-            if dry_run:
+            list_id = _get_list_id(self._graph_token, site_id, library_code, existing=existing_lists)
+            library = existing_lists[library_code.lower()]
+            lib_web_url = library.get("webUrl", "")
+            if library.get("displayName") == retired_display:
+                # Retired by an earlier run: a re-run writes nothing
+                _append_log(
+                    action_log, site_url, library_code,
+                    "already_retired", f"display name is already '{retired_display}'",
+                )
+            elif dry_run:
                 logger.info("[DRY RUN] Would set display name to '%s'", retired_display)
                 _append_log(
                     action_log, site_url, library_code,
@@ -1458,10 +1474,6 @@ class SharePointLibraryManager:
                     f"automation group access",
                 )
             else:
-                list_id = _get_list_id(
-                    self._graph_token, site_id, library_code, existing=existing_lists,
-                )
-                lib_web_url = existing_lists[library_code.lower()].get("webUrl", "")
                 _set_library_display_name(self._graph_token, site_id, list_id, retired_display)
                 _append_log(
                     action_log, site_url, library_code,
@@ -1472,6 +1484,10 @@ class SharePointLibraryManager:
             # Step 2: Remove the automation groups' role assignments from the
             # old library.  Without this, the groups — reused for the new
             # site's library — would keep granting live access to the leftover.
+            # Only groups that still hold a role are touched, so a re-run
+            # doesn't register each group on the old site again to find it
+            # has nothing to remove.
+            library_roles = _get_library_group_roles(self._sp_token, site_url, list_id)
             groups_by_name = _find_groups_by_name_prefix(
                 self._graph_token,
                 build_group_name(
@@ -1485,7 +1501,7 @@ class SharePointLibraryManager:
                     include_site_name=include_site_name,
                 )
                 existing_group = _get_unique_group(groups_by_name, group_name)
-                if not existing_group:
+                if not existing_group or not library_roles.get(_group_claims(existing_group["id"]).lower()):
                     continue
                 if dry_run:
                     _append_log(

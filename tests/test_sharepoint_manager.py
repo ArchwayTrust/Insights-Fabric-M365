@@ -724,6 +724,29 @@ def test_retire_renames_and_removes_group_access_but_keeps_membership(make_manag
     assert tenant.member_upns("BAA-Sharepoint-MATH-Auto-Contribute") == ["jo@contoso.com"]
 
 
+@pytest.mark.parametrize("operation, done", [
+    ("unlink_libraries", "already_unlinked"),
+    ("retire_moved_libraries", "already_retired"),
+])
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_unlinking_or_retiring_again_writes_nothing(make_manager, tenant, site, operation, done, dry_run):
+    manager = make_manager(add_to_navigation=True)
+    manager.create_libraries(libraries_df(site, "MATH", manual_read=True))
+    getattr(manager, operation)(libraries_df(site, "MATH"))
+    tenant.calls.clear()
+
+    results = getattr(make_manager(add_to_navigation=True, dry_run=dry_run), operation)(libraries_df(site, "MATH"))
+
+    assert done in actions(results)
+    assert not {
+        "library_unlinked", "library_retired", "group_access_removed",
+        "unlink_library (dry run)", "retire_library (dry run)", "remove_group_access (dry run)",
+    } & set(actions(results))
+    assert tenant.writes() == []
+    # Retire no longer registers each group on the old site to find it has no access to remove
+    assert created(tenant, "/ensureuser") == []
+
+
 def test_retire_skips_a_site_or_library_that_is_gone(make_manager, tenant, site):
     gone_site = "https://contoso.sharepoint.com/sites/Deleted"
     df = pd.DataFrame({
