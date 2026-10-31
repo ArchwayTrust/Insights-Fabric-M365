@@ -1031,7 +1031,7 @@ Keep the desired state in a few lakehouse tables, maintained by whatever feeds t
 | `app_owned` | boolean | No (True) | The app owns the groups. False for groups a person owns and curates. |
 | `previous_site_url` | string | Flow only | The site the library was on before a move, or null. |
 | `deleted` | boolean | Flow only | True once the library has been removed at source. Keep the row, so the unlink pass sees it. A null counts as false. |
-| `last_changed_ts` | timestamp | Flow only | When the row last changed. Drives the incremental passes. |
+| `last_changed_ts` | timestamp | Flow only | When the row last changed, in UTC. Drives the incremental passes, so stamp it when the row is written (`current_timestamp()` in the `MERGE` that writes it, with one write to the table at a time, as it's the time the `MERGE` started) and never copy the source system's modified time: a time earlier than the watermark is never processed. Never null. |
 
 A blank (null) in `auto_groups`, `manual_read`, `manual_contribute` or `app_owned` takes the default shown. They can also hold 1 and 0, but anything else, such as the text `"False"`, raises `ValueError` before anything is changed.
 
@@ -1125,6 +1125,10 @@ mgr = SharePointLibraryManager(
     dry_run=DRY_RUN, max_workers=4, include_site_name=False, add_to_navigation=True,
 )
 
+# Timestamps are read with toPandas() and written as TIMESTAMP literals, which both use Spark's session time zone
+# (collect() would use the Python process's instead). UTC has no daylight-saving hour that happens twice
+spark.conf.set("spark.sql.session.timeZone", "UTC")
+
 RUN_ID = str(uuid.uuid4())
 PROCESS = "sharepoint_libraries"
 logs = []
@@ -1145,8 +1149,8 @@ libraries["deleted"] = libraries["deleted"].astype("boolean").fillna(False).asty
 # Setting-specific: filter the rows in scope here (see "Adding setting-specific steps")
 
 # The watermark is read after any scope is applied, as the scope is part of its key
-state = spark.sql(f"SELECT last_processed_ts FROM {SCHEMA}.sharepoint_sync_state WHERE process = '{PROCESS}'").collect()
-since = state[0]["last_processed_ts"] if state else datetime(1900, 1, 1)
+state = spark.sql(f"SELECT last_processed_ts FROM {SCHEMA}.sharepoint_sync_state WHERE process = '{PROCESS}'").toPandas()
+since = state["last_processed_ts"].iloc[0] if not state.empty else datetime(1900, 1, 1)
 until = libraries["last_changed_ts"].max() if not libraries.empty else since
 changed = libraries[(libraries["last_changed_ts"] > since) & (libraries["last_changed_ts"] <= until)]
 live = libraries[~libraries["deleted"]].assign(source_id=lambda df: df["library_id"])
