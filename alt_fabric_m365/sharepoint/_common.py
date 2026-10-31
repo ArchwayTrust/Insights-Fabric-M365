@@ -25,6 +25,12 @@ VALID_ROLES = ("read", "contribute", "owner")
 REPLICATION_MAX_ATTEMPTS = 6
 REPLICATION_BASE_DELAY = 5.0  # seconds
 
+# Group lookups read each group's owners with $expand, saving a request per
+# group when its ownership is checked.  Graph expands at most
+# GRAPH_EXPAND_LIMIT objects of a directory relationship such as owners.
+GROUP_OWNERS_EXPAND = "owners($select=id)"
+GRAPH_EXPAND_LIMIT = 20
+
 # Group role suffixes.  Auto-* groups are owned by this automation (membership
 # synced and emptied on unlink).  Manual-* groups are hand-curated: renamed
 # alongside the library but NEVER emptied or synced by automation.
