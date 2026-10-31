@@ -271,8 +271,29 @@ def _action_log_to_dataframe(action_log: _ThreadSafeLog) -> pd.DataFrame:
     )
 
 
+def _log_unhandled_error(
+    item: tuple, exc: BaseException, action_log: _ThreadSafeLog, locate: Callable[[tuple], tuple[str, str]],
+) -> None:
+    """Log an error that escaped a work item's own handling, against its site and library.
+
+    Only the site and library are logged: an item can hold the run's whole
+    user directory (every resolved user principal name and object ID).
+
+    Args:
+        item: The work item.
+        exc: The error.
+        action_log: The operation's action log.
+        locate: Returns the item's site URL and library code.
+    """
+    site_url, library_code = locate(item)
+    logger.error("Unhandled error for '%s' on %s: %s", library_code, site_url, exc, exc_info=exc)
+    # The type, as some errors say little alone: a KeyError's message is just the key
+    _append_log(action_log, site_url, library_code, "error", f"{type(exc).__name__}: {exc}")
+
+
 def _run_parallel(
     func: Callable[..., None], items: Iterable[tuple], max_workers: int, action_log: _ThreadSafeLog,
+    *, locate: Callable[[tuple], tuple[str, str]] = lambda item: ("", ""),
 ) -> None:
     r"""Run *func(\*item, action_log=action_log)* over *items* sequentially or in parallel.
 
@@ -280,14 +301,21 @@ def _run_parallel(
     item is logged as an 'error' row and the remaining items still run.  An
     interrupt, such as cancelling the notebook cell, stops both: the items
     already running finish, and the rest are never started.
+
+    Args:
+        func: Processes one item.
+        items: The work items, each a tuple of func's positional arguments.
+        max_workers: Items run at once; 1 or less runs them in order.
+        action_log: The operation's action log.
+        locate: Optional. Returns an item's site URL and library code, for the row of an error that escapes func.
+            Defaults to neither.
     """
     if max_workers <= 1:
         for item in items:
             try:
                 func(*item, action_log=action_log)
             except Exception as exc:
-                logger.error("Unhandled error: %s — %s", item, exc)
-                _append_log(action_log, "", "", "error", str(exc))
+                _log_unhandled_error(item, exc, action_log, locate)
     else:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {}
@@ -298,9 +326,7 @@ def _run_parallel(
                 for future in as_completed(futures):
                     exc = future.exception()
                     if exc:
-                        item = futures[future]
-                        logger.error("Unhandled error: %s — %s", item, exc)
-                        _append_log(action_log, "", "", "error", str(exc))
+                        _log_unhandled_error(futures[future], exc, action_log, locate)
             except BaseException:
                 # Leaving the with block would wait for every queued item, so a
                 # cancelled cell would carry on changing the tenant

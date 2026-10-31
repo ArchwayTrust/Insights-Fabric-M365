@@ -1299,6 +1299,34 @@ def test_a_removal_that_cannot_reach_graph_is_logged_against_its_group_and_membe
     assert "Connection reset by peer" in row.status
 
 
+# An error a worker doesn't handle, such as a KeyError on an unexpected response, for each kind of work item
+@pytest.mark.parametrize("worker, run, library_code", [
+    ("_process_create_library", lambda m, site: m.create_libraries(libraries_df(site, "MATH")), "MATH"),
+    ("_process_update_memberships", lambda m, site: m.update_memberships(
+        memberships_df(site, [("MATH", "jo@contoso.com", "read")])), "MATH"),
+    ("_process_removals", lambda m, site: m.update_memberships(
+        memberships_df(site, []), libraries_df=libraries_df(site, "MATH")), "MATH"),
+    ("_process_grant_group_access", lambda m, site: m.grant_group_access(
+        grants_df(site, [("MATH", "BAA-Sharepoint-MATH-Auto-Read", "read")])), "MATH"),
+    ("_process_enforce_site_sharing", lambda m, site: m.enforce_site_sharing_lockdown([site.url]), ""),
+])
+def test_an_unhandled_error_is_logged_against_its_site_and_library(
+    make_manager, tenant, site, library, monkeypatch, worker, run, library_code,
+):
+    tenant.add_user("jo@contoso.com")
+    left = tenant.add_user("left@contoso.com")
+    tenant.group_named("BAA-Sharepoint-MATH-Auto-Contribute")["members"][left["id"]] = left
+
+    def fail(*args, **kwargs):
+        raise KeyError("Id")
+    monkeypatch.setattr(SharePointLibraryManager, worker, fail)
+
+    results = run(make_manager(), site)
+
+    [row] = rows(results, "error").itertuples()
+    assert (row.site_url, row.document_library, row.status) == (site.url, library_code, "KeyError: 'Id'")
+
+
 def test_nested_group_add_failure_is_fatal(make_manager, tenant, site, library):
     from sharepoint_fake import graph_error
     tenant.add_group("BAA All Staff")

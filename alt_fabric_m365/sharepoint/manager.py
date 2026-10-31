@@ -43,6 +43,19 @@ from ._sharepoint import (
 logger = logging.getLogger(__name__)
 
 
+def _site_and_code(item: tuple) -> tuple[str, str]:
+    """Return a per-library work item's site URL and library code, for _run_parallel.
+
+    Args:
+        item: The positional arguments of a per-library _process_* method, which start (site_url, site_id,
+            library_code).
+
+    Returns:
+        The site URL and library code.
+    """
+    return item[0], item[2]
+
+
 class SharePointLibraryManager:
     """Manage SharePoint document library permissions via Entra ID security groups.
 
@@ -780,7 +793,7 @@ class SharePointLibraryManager:
                 nav_by_site.get(site_url),
             ))
 
-        _run_parallel(self._process_create_library, items, max_workers_, action_log)
+        _run_parallel(self._process_create_library, items, max_workers_, action_log, locate=_site_and_code)
         return _action_log_to_dataframe(action_log)
 
     # -------------------------------------------------------------------
@@ -894,7 +907,7 @@ class SharePointLibraryManager:
                 sites[site_url]["lists"],
             ))
 
-        _run_parallel(self._process_set_metadata, items, max_workers_, action_log)
+        _run_parallel(self._process_set_metadata, items, max_workers_, action_log, locate=_site_and_code)
         return _action_log_to_dataframe(action_log)
 
     def get_library_metadata(
@@ -1127,7 +1140,7 @@ class SharePointLibraryManager:
                 sites[site_url].get("nav_label"),
             ))
 
-        _run_parallel(self._process_rename_library, items, max_workers_, action_log)
+        _run_parallel(self._process_rename_library, items, max_workers_, action_log, locate=_site_and_code)
         return _action_log_to_dataframe(action_log)
 
     # -------------------------------------------------------------------
@@ -1373,7 +1386,7 @@ class SharePointLibraryManager:
                 sites[site_url].get("nav_label"),
             ))
 
-        _run_parallel(self._process_unlink_library, items, max_workers_, action_log)
+        _run_parallel(self._process_unlink_library, items, max_workers_, action_log, locate=_site_and_code)
         return _action_log_to_dataframe(action_log)
 
     # -------------------------------------------------------------------
@@ -1683,7 +1696,7 @@ class SharePointLibraryManager:
                 sites[site_url].get("nav_label"),
             ))
 
-        _run_parallel(self._process_retire_library, items, max_workers_, action_log)
+        _run_parallel(self._process_retire_library, items, max_workers_, action_log, locate=_site_and_code)
         return _action_log_to_dataframe(action_log)
 
     # -------------------------------------------------------------------
@@ -2452,7 +2465,7 @@ class SharePointLibraryManager:
                 planned_removals,
             ))
 
-        _run_parallel(self._process_update_memberships, items, max_workers_, action_log)
+        _run_parallel(self._process_update_memberships, items, max_workers_, action_log, locate=_site_and_code)
 
         # Each group's removals were within max_removals_per_group, but an
         # empty or truncated members table would empty every small group, so
@@ -2473,6 +2486,7 @@ class SharePointLibraryManager:
         else:
             _run_parallel(
                 self._process_removals, [(removal, dry_run_) for removal in removals], max_workers_, action_log,
+                locate=lambda item: (item[0]["site_url"], item[0]["library_code"]),
             )
         return _action_log_to_dataframe(action_log)
 
@@ -2609,7 +2623,7 @@ class SharePointLibraryManager:
             )
         items = [(*libraries[key], sorted(library_upns[key]), user_refs, dry_run_) for key in libraries]
 
-        _run_parallel(self._process_ensure_shortcuts, items, max_workers_, action_log)
+        _run_parallel(self._process_ensure_shortcuts, items, max_workers_, action_log, locate=_site_and_code)
         return _action_log_to_dataframe(action_log)
 
     # -------------------------------------------------------------------
@@ -2815,7 +2829,10 @@ class SharePointLibraryManager:
             )
             for (site_url, library_code), grants in grants_by_library.items()
         ]
-        _run_parallel(self._process_grant_group_access, items, max_workers_, action_log)
+        _run_parallel(
+            self._process_grant_group_access, items, max_workers_, action_log,
+            locate=lambda item: (item[0], item[1]),
+        )
         return _action_log_to_dataframe(action_log)
 
     # -------------------------------------------------------------------
@@ -2923,7 +2940,10 @@ class SharePointLibraryManager:
 
         action_log = _ThreadSafeLog()
         items = [(site_url, dry_run_) for site_url in unique_urls]
-        _run_parallel(self._process_enforce_site_sharing, items, max_workers_, action_log)
+        _run_parallel(
+            self._process_enforce_site_sharing, items, max_workers_, action_log,
+            locate=lambda item: (item[0], ""),
+        )
         return _action_log_to_dataframe(action_log)
 
     # -------------------------------------------------------------------
