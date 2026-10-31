@@ -12,7 +12,7 @@ The package has a module for each Microsoft 365 service, plus `auth`, which they
 
 Use a Fabric [workspace identity](#use-a-workspace-identity-where-you-can) wherever Fabric supports one. This package is for Microsoft 365 work it can't do, such as Exchange mailboxes and SharePoint, see [Why Exchange and SharePoint need an app registration](#why-exchange-and-sharepoint-need-an-app-registration).
 
-The package is built for Fabric notebooks. `KeyVaultCertificateCredential` uses `notebookutils` to call Key Vault as the identity running the notebook, so it only works in Fabric (or Synapse) notebooks. The package itself can be imported anywhere.
+The package is built for Fabric notebooks. `KeyVaultCertificateCredential` uses `notebookutils` to call Key Vault as the identity running the notebook, so it only works in Fabric notebooks. It doesn't work in Synapse notebooks, where Key Vault's token audience has another name. The package itself can be imported anywhere.
 
 ## Contents
 
@@ -1272,7 +1272,7 @@ Outside Fabric, `KeyVaultCertificateCredential` isn't available (it needs `noteb
 | `MessageNotFoundError: No matching messages found.` | No email in the Inbox matches the exact subject and sender. Check both, or try `only_search_inbox=False`. |
 | `get_attachment_ids_and_names` returns an empty list, or misses a file | Either the email has no file attachments, or they were left out. Inline attachments are left out unless you pass `include_inline=True`, and some mail clients mark ordinary files inline, so try it if a file you can see in Outlook is missing. Attached emails and cloud links are always left out. |
 | `Attachment ... is a #microsoft.graph.itemAttachment` | `download_attachment` was given the ID of an attached email, not a file. |
-| `ImportError: notebookutils is not available. KeyVaultCertificateCredential must be used in a Fabric notebook.` | The code is running outside Fabric. `KeyVaultCertificateCredential` only works in Fabric (or Synapse) notebooks. |
+| `ImportError: notebookutils is not available. KeyVaultCertificateCredential must be used in a Fabric notebook.` | The code is running outside Fabric. `KeyVaultCertificateCredential` only works in Fabric notebooks, not Synapse ones. |
 | SharePoint `401` with `Unsupported app only token` | The token came from a client secret. SharePoint needs a certificate, see [Giving the app access](#giving-the-app-access). |
 | Graph or SharePoint `403` (`accessDenied`) for some sites but not others | The app has `Sites.Selected` but hasn't been granted those sites, see [Grant the app each site](#2-grant-the-app-each-site). |
 | Graph or SharePoint `403` for every site | `Sites.Selected` (or another `Sites.*` permission) is missing from that API on the app registration, or lacks admin consent. Graph and SharePoint each need their own. Check the token's `roles` claim, see [Checking what a token contains](#checking-what-a-token-contains). |
