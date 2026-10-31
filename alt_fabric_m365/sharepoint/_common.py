@@ -46,7 +46,7 @@ METADATA_PROPERTY_KEYS = {
 OPTION_TYPES = {
     "dry_run": bool, "max_workers": int, "include_site_name": bool,
     "create_onedrive_shortcuts": bool, "max_removals_per_group": int,
-    "allow_mass_removal": bool, "add_to_navigation": bool, "navigation_label": str,
+    "max_removals_per_run": int, "allow_mass_removal": bool, "add_to_navigation": bool, "navigation_label": str,
 }
 
 # Columns of every action-log DataFrame the operations return.

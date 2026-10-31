@@ -57,8 +57,10 @@ INCLUDE_SITE_NAME = False
 CREATE_ONEDRIVE_SHORTCUTS = False
 
 # Guardrails for membership sync: a group's removals are skipped when they
-# exceed the cap, unless mass removal is explicitly allowed for the run.
+# exceed its cap, and every removal is skipped when the run's total would
+# exceed the run cap, unless mass removal is explicitly allowed for the run.
 MAX_REMOVALS_PER_GROUP = 10
+MAX_REMOVALS_PER_RUN = 100
 ALLOW_MASS_REMOVAL = False
 
 # Site-level hardening: once per site per run, turn off "Allow members to
@@ -219,7 +221,8 @@ mgr = SharePointLibraryManager(
     max_workers=MAX_WORKERS,                                        # default parallelism — override per call
     include_site_name=INCLUDE_SITE_NAME,                            # controls whether security groups include the site name
     create_onedrive_shortcuts=CREATE_ONEDRIVE_SHORTCUTS,            # controls whether links are created in user one drive
-    max_removals_per_group=MAX_REMOVALS_PER_GROUP,                  # membership-sync removal guardrail
+    max_removals_per_group=MAX_REMOVALS_PER_GROUP,                  # membership-sync removal guardrails
+    max_removals_per_run=MAX_REMOVALS_PER_RUN,
     allow_mass_removal=ALLOW_MASS_REMOVAL,
     add_to_navigation=ADD_TO_SITE_NAVIGATION,                       # link libraries into quick-launch navigation
     navigation_label=NAVIGATION_LABEL,                              # heading the links are nested under

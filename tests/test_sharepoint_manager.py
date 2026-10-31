@@ -761,6 +761,54 @@ def test_removal_guardrail(make_manager, tenant, site, library):
     assert tenant.member_upns("BAA-Sharepoint-MATH-Auto-Contribute") == ["jo@contoso.com"]
 
 
+def add_stale_members(tenant, group_name, count):
+    group = tenant.group_named(group_name)
+    for i in range(count):
+        user = tenant.add_user(f"{group_name}-{i}@contoso.com")
+        group["members"][user["id"]] = user
+    return group
+
+
+@pytest.fixture
+def two_libraries_with_stale_members(make_manager, tenant, site):
+    """MATH and ENG, each with three members their source data no longer lists."""
+    make_manager().create_libraries(libraries_df(site, "MATH", "ENG"))
+    groups = [add_stale_members(tenant, f"BAA-Sharepoint-{code}-Auto-Contribute", 3) for code in ("MATH", "ENG")]
+    tenant.calls.clear()
+    return groups
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_removals_across_the_run_above_the_limit_are_all_skipped(
+    make_manager, tenant, site, two_libraries_with_stale_members, dry_run,
+):
+    # Each group is under max_removals_per_group, as when a members table comes back empty
+    results = make_manager(dry_run=dry_run, max_removals_per_run=5).update_memberships(
+        memberships_df(site, []), libraries_df=libraries_df(site, "MATH", "ENG"),
+    )
+
+    [row] = rows(results, "removal_guardrail_triggered").itertuples()
+    assert "6 member(s) from 2 group(s)" in row.status
+    assert not {"removed_from_group", "remove_from_group (dry run)"} & set(actions(results))
+    assert tenant.writes() == []
+    assert [len(group["members"]) for group in two_libraries_with_stale_members] == [3, 3]
+
+
+@pytest.mark.parametrize("options", [
+    {"max_removals_per_run": 6},
+    {"max_removals_per_run": 5, "allow_mass_removal": True},
+])
+def test_removals_within_the_run_limit_or_allowed_go_ahead(
+    make_manager, tenant, site, two_libraries_with_stale_members, options,
+):
+    results = make_manager(**options).update_memberships(
+        memberships_df(site, []), libraries_df=libraries_df(site, "MATH", "ENG"),
+    )
+
+    assert actions(results) == ["removed_from_group"] * 6
+    assert [len(group["members"]) for group in two_libraries_with_stale_members] == [0, 0]
+
+
 def test_libraries_df_reconciles_libraries_with_no_members(make_manager, tenant, site, library):
     left = tenant.add_user("left@contoso.com")
     tenant.group_named("BAA-Sharepoint-MATH-Auto-Contribute")["members"][left["id"]] = left
@@ -1115,6 +1163,31 @@ def test_add_and_remove_failures_are_fatal_rows(make_manager, tenant, site, libr
 
     failed = results[results["action"].isin(FATAL_ACTIONS)]
     assert sorted(failed["action"]) == ["add_failed", "remove_failed"]
+
+
+def test_a_removal_that_cannot_reach_graph_is_logged_against_its_group_and_member(
+    make_manager, tenant, site, library, monkeypatch,
+):
+    import requests
+    from alt_fabric_m365.sharepoint import _http
+    stale = tenant.add_user("left@contoso.com")
+    tenant.group_named("BAA-Sharepoint-MATH-Auto-Contribute")["members"][stale["id"]] = stale
+
+    def request(method, url, **kwargs):
+        if method == "DELETE":
+            raise requests.ConnectionError("Connection reset by peer")
+        return tenant.request(method, url, **kwargs)
+    monkeypatch.setattr(_http.requests, "request", request)
+
+    results = make_manager().update_memberships(
+        memberships_df(site, []), libraries_df=libraries_df(site, "MATH"),
+    )
+
+    [row] = results[results["action"].isin(FATAL_ACTIONS)].itertuples()
+    assert (row.action, row.document_library, row.group, row.user) == (
+        "remove_failed", "MATH", "BAA-Sharepoint-MATH-Auto-Contribute", "left@contoso.com",
+    )
+    assert "Connection reset by peer" in row.status
 
 
 def test_nested_group_add_failure_is_fatal(make_manager, tenant, site, library):
