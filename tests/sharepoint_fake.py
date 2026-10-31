@@ -122,6 +122,8 @@ class FakeTenant:
         self.groups = {}  # id -> group dict with a "members" dict of member id -> directory object
         self.users = {}  # id -> user dict
         self.shortcuts = []  # (user id, body)
+        # Ids of users whose OneDrive hasn't been created yet: it's made the first time they open it
+        self.without_onedrive = set()
         self.failures = []  # [method, url regex, response, remaining times]
         self.list_page_size = None  # set to page Graph list results
         # Ids of groups that $filter queries don't return yet, as Graph's replicas lag behind writes
@@ -218,6 +220,22 @@ class FakeTenant:
 
     # Microsoft Graph
 
+    def _listed_shortcut(self, index, body):
+        """A shortcut as a OneDrive's root lists it: its target in remoteItem, with the target's URL.
+
+        A shortcut made to a library's root (listItemUniqueId "root") lists the library's URL and no list item, as
+        the root folder isn't one. Other shortcuts, such as to a folder, are listed as stored.
+        """
+        remote = dict(body["remoteItem"])
+        ids = dict(remote.get("sharepointIds") or {})
+        if ids.get("listItemUniqueId") == "root":
+            del ids["listItemUniqueId"]
+            for site in self.sites.values():
+                if ids["listId"] in site.lists:
+                    remote["webUrl"] = site.web_url(site.lists[ids["listId"]])
+        remote["sharepointIds"] = ids
+        return {"id": f"shortcut-{index}", "name": body["name"], "remoteItem": remote}
+
     def _graph(self, method, path, query, body, url):
         m = re.fullmatch(r"/sites/([^:/]+):(/.*)", path)
         if m and method == "GET":
@@ -312,9 +330,16 @@ class FakeTenant:
             return response(204)
 
         m = re.fullmatch(r"/users/([^/]+)/drive/root/children", path)
+        if m and m.group(1) in self.without_onedrive:
+            return graph_error(404, "itemNotFound", "The resource could not be found.")
         if m and method == "POST":
             self.shortcuts.append((m.group(1), body))
             return response(201, {"id": "shortcut"})
+        if m and method == "GET":
+            return response(200, {"value": [
+                self._listed_shortcut(i, body) for i, (user_id, body) in enumerate(self.shortcuts)
+                if user_id == m.group(1)
+            ]})
 
         m = re.fullmatch(r"/users/(.+)", path)
         if m and method == "GET":

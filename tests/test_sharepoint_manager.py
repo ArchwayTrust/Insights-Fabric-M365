@@ -998,6 +998,94 @@ def test_memberships_in_parallel(make_manager, tenant, site):
     assert rows(results, "error").empty
 
 
+# ensure_onedrive_shortcuts
+
+def test_ensure_onedrive_shortcuts_makes_the_missing_ones_once(make_manager, tenant, site, library):
+    jo, sam, ali = (tenant.add_user(f"{name}@contoso.com") for name in ("jo", "sam", "ali"))
+    make_manager(create_onedrive_shortcuts=True).update_memberships(
+        memberships_df(site, [("MATH", "jo@contoso.com", "read")]),
+    )
+    tenant.shortcuts[0][1]["name"] = "My maths"  # renamed by jo, and still a shortcut to the library
+    tenant.without_onedrive.add(ali["id"])  # a new starter who hasn't opened OneDrive yet
+    df = memberships_df(site, [
+        ("MATH", "jo@contoso.com", "read"), ("MATH", "jo@contoso.com", "contribute"),
+        ("MATH", "sam@contoso.com", "read"), ("MATH", "ali@contoso.com", "read"),
+    ])
+
+    results = make_manager().ensure_onedrive_shortcuts(df)
+
+    assert results[["user", "action"]].values.tolist() == [
+        ["ali@contoso.com", "onedrive_shortcut_failed"],
+        ["jo@contoso.com", "onedrive_shortcut_exists"],
+        ["sam@contoso.com", "onedrive_shortcut_created"],
+    ]
+    assert "doesn't exist yet" in rows(results, "onedrive_shortcut_failed")["status"].iloc[0]
+    assert [(user_id, body["name"]) for user_id, body in tenant.shortcuts] == [
+        (jo["id"], "My maths"), (sam["id"], "MATH Faculty"),
+    ]
+
+    tenant.without_onedrive.clear()  # ali has now opened OneDrive
+
+    results = make_manager().ensure_onedrive_shortcuts(df)
+
+    assert actions(results) == ["onedrive_shortcut_created", "onedrive_shortcut_exists", "onedrive_shortcut_exists"]
+    assert len(tenant.shortcuts) == 3
+
+
+def test_ensure_onedrive_shortcuts_dry_run_makes_no_writes(make_manager, tenant, site, library):
+    tenant.add_user("jo@contoso.com")
+    tenant.calls.clear()
+
+    results = make_manager(dry_run=True).ensure_onedrive_shortcuts(
+        memberships_df(site, [("MATH", "jo@contoso.com", "read")]),
+    )
+
+    assert actions(results) == ["onedrive_shortcut (dry run)"]
+    assert tenant.writes() == []
+
+
+def test_ensure_onedrive_shortcuts_reports_missing_libraries_and_users(make_manager, tenant, site, library):
+    tenant.add_user("jo@contoso.com")
+
+    results = make_manager().ensure_onedrive_shortcuts(memberships_df(site, [
+        ("ART", "jo@contoso.com", "read"), ("MATH", "nobody@contoso.com", "read"),
+    ]))
+
+    assert actions(results) == ["library_not_found", "user_not_found"]
+    assert tenant.shortcuts == []
+
+
+def test_ensure_onedrive_shortcuts_does_not_count_a_shortcut_to_a_folder_in_the_library(
+    make_manager, tenant, site, library,
+):
+    jo = tenant.add_user("jo@contoso.com")
+    tenant.shortcuts.append((jo["id"], {"name": "Homework", "remoteItem": {
+        "sharepointIds": {"listId": library["id"], "listItemId": "3"}, "webUrl": f"{site.web_url(library)}/Homework",
+    }}))
+    df = memberships_df(site, [("MATH", "jo@contoso.com", "read")])
+
+    results = make_manager().ensure_onedrive_shortcuts(df)
+    again = make_manager().ensure_onedrive_shortcuts(df)
+
+    assert (actions(results), actions(again)) == (["onedrive_shortcut_created"], ["onedrive_shortcut_exists"])
+    assert [body["name"] for _, body in tenant.shortcuts] == ["Homework", "MATH Faculty"]
+
+
+def test_ensure_onedrive_shortcuts_handles_each_library_once_however_the_rows_name_it(
+    make_manager, tenant, site, library,
+):
+    tenant.add_user("jo@contoso.com")
+    df = pd.DataFrame(
+        [(site.url, "MATH", "jo@contoso.com"), (f"{site.url}/", "math", "Jo@contoso.com")],
+        columns=["site_url", "library_code", "user_principal_name"],
+    )
+
+    results = make_manager(max_workers=4).ensure_onedrive_shortcuts(df)
+
+    assert actions(results) == ["onedrive_shortcut_created"]
+    assert len(tenant.shortcuts) == 1
+
+
 # grant_group_access
 
 @pytest.fixture

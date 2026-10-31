@@ -243,3 +243,63 @@ def _create_onedrive_shortcut(
             resp.status_code, resp.text,
         )
     resp.raise_for_status()
+
+
+def _get_onedrive_root_items(graph_token: str, user_object_id: str) -> list[dict]:
+    """Return the items in the root of a user's OneDrive, with each shortcut's ``remoteItem``.
+
+    Args:
+        graph_token: Microsoft Graph bearer token.
+        user_object_id: Entra ID object ID of the user.
+
+    Returns:
+        The drive items.
+
+    Raises:
+        requests.HTTPError: If the drive can't be read. A 404 means the user's OneDrive doesn't exist yet.
+    """
+    url: str | None = f"{GRAPH_BASE_URL}/users/{user_object_id}/drive/root/children"
+    params: dict | None = {"$select": "id,name,remoteItem"}
+    items: list[dict] = []
+    while url:
+        resp = _request_with_retry("GET", url, headers=_graph_headers(graph_token), params=params)
+        resp.raise_for_status()
+        data = resp.json()
+        items.extend(data.get("value", []))
+        url = data.get("@odata.nextLink")
+        params = None
+    return items
+
+
+def _find_library_shortcut(items: list[dict], library: dict) -> dict | None:
+    """Return the shortcut among a OneDrive's root items that points to *library*, if any.
+
+    Matched on the library's URL or list ID rather than the shortcut's name,
+    as people can rename a shortcut.  A shortcut to a folder in the library
+    has the library's list ID too, so it only counts if it isn't a list item
+    (the root folder isn't one) and its URL isn't below the library's.
+
+    Args:
+        items: Drive items, from _get_onedrive_root_items.
+        library: The library's Graph list resource (``id``, ``webUrl``).
+
+    Returns:
+        The shortcut's drive item, or None.
+    """
+    def normalise(url: str) -> str:
+        return unquote(url).rstrip("/").lower()
+
+    list_id = library["id"].lower()
+    web_url = normalise(library.get("webUrl") or "")
+    for item in items:
+        remote = item.get("remoteItem") or {}
+        remote_url = normalise(remote.get("webUrl") or "")
+        if web_url and remote_url == web_url:
+            return item
+        ids = remote.get("sharepointIds") or {}
+        if (
+            (ids.get("listId") or "").lower() == list_id and not ids.get("listItemId")
+            and not (web_url and remote_url.startswith(f"{web_url}/"))
+        ):
+            return item
+    return None

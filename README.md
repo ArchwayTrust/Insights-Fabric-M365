@@ -728,7 +728,7 @@ The app registration needs these application permissions, with admin consent:
 | Microsoft Graph | `Sites.Selected` with full control on each site (recommended), or `Sites.FullControl.All` | Finding sites, creating and renaming libraries |
 | Microsoft Graph | `Group.ReadWrite.All` and `GroupMember.ReadWrite.All` | Creating and renaming groups, syncing membership |
 | Microsoft Graph | `User.Read.All` | Resolving users by UPN, mail or proxy address |
-| Microsoft Graph | `Files.ReadWrite.All` | Only for OneDrive shortcuts (`create_onedrive_shortcuts=True`) |
+| Microsoft Graph | `Files.ReadWrite.All` | Only for OneDrive shortcuts (`create_onedrive_shortcuts=True`, or `ensure_onedrive_shortcuts`) |
 | SharePoint | `Sites.Selected` with full control on each site (recommended), or `Sites.FullControl.All` | Permissions, property bag, navigation and sharing settings |
 
 `Sites.FullControl.All` gives the app full control of every site in the tenant, including every user's OneDrive. Use `Sites.Selected` instead, so the app can only touch the sites it manages, see [Limiting the app to chosen sites with Sites.Selected](#limiting-the-app-to-chosen-sites-with-sitesselected). The group and user permissions have no per-site equivalent and always apply to the whole tenant. So does `Files.ReadWrite.All`, which reaches files on every site as well as every OneDrive, so turning on OneDrive shortcuts gives up per-site isolation for files.
@@ -905,6 +905,7 @@ Create the credential without a scope: the manager asks it for a Graph token and
 | `grant_group_access(df)` | Grants existing groups a permission level on existing libraries, for example a leadership group on every library. Additive: never removes access. | `site_url`, `library_code`, `group_name`, `permission` |
 | `enforce_site_sharing_lockdown(site_urls)` | Turns off member sharing, access requests and member invites on each site, and checks the change stuck. | A list of site URLs |
 | `set_library_metadata(df)` / `get_library_metadata(df)` | Writes or reads `source_system` and `source_id` in each library's property bag. | `site_url`, `library_code`, and for set `source_system` and/or `source_id` |
+| `ensure_onedrive_shortcuts(df)` | Not part of the usual flow. Creates any missing OneDrive shortcuts to libraries, such as ones that failed because the user's OneDrive didn't exist yet (`onedrive_shortcut_failed`), which `update_memberships` never retries. A shortcut to the library already there, even renamed, is left alone (`onedrive_shortcut_exists`). A shortcut to a folder in the library doesn't count. | `site_url`, `library_code`, `user_principal_name`: the members table works as it is |
 
 Read-only helpers: `mgr.group_name(group_prefix, site_url, library_code, suffix)` returns a group name exactly as the operations build it, and `mgr.get_navigation_link(site_url, library_code)` and `mgr.get_site_sharing_settings(site_url)` read back what is on the site.
 
