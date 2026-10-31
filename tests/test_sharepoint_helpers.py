@@ -237,12 +237,21 @@ def test_adding_an_existing_member_is_success(tenant):
     assert list(group["members"]) == [user["id"]]
 
 
-def test_adding_to_a_new_group_waits_for_replication(tenant, monkeypatch):
+# Graph answers either way while a new group replicates
+NOT_REPLICATED = [
+    graph_error(404, "Request_ResourceNotFound"),
+    graph_error(400, "Request_BadRequest",
+                "The source resource object or one of the objects being referenced don't exist."),
+]
+
+
+@pytest.mark.parametrize("error", NOT_REPLICATED)
+def test_adding_to_a_new_group_waits_for_replication(tenant, monkeypatch, error):
     sleeps = []
     monkeypatch.setattr(time, "sleep", sleeps.append)
     group = tenant.add_group("SP-ENG-Auto-Read")
     user = tenant.add_user("jo@contoso.com")
-    tenant.fail("POST", r"/members/\$ref$", graph_error(404, "Request_ResourceNotFound"), times=2)
+    tenant.fail("POST", r"/members/\$ref$", error, times=2)
 
     _groups._add_group_member(TOKEN, group["id"], user["id"], is_new_group=True)
 
@@ -250,8 +259,9 @@ def test_adding_to_a_new_group_waits_for_replication(tenant, monkeypatch):
     assert sleeps == [5.0, 10.0]
 
 
-def test_adding_to_an_existing_group_does_not_wait(tenant):
-    tenant.fail("POST", r"/members/\$ref$", graph_error(404, "Request_ResourceNotFound"))
+@pytest.mark.parametrize("error", NOT_REPLICATED)
+def test_adding_to_an_existing_group_does_not_wait(tenant, error):
+    tenant.fail("POST", r"/members/\$ref$", error)
     with pytest.raises(requests.HTTPError):
         _groups._add_group_member(TOKEN, "missing-group", "user")
 
