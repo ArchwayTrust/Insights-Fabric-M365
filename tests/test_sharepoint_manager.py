@@ -2057,17 +2057,30 @@ def test_one_unreadable_site_does_not_stop_the_others(make_manager, tenant, site
     assert error.site_url == gone
 
 
-def test_a_member_already_removed_by_a_retried_request_is_not_a_failure(make_manager, tenant, site, library):
+def test_a_member_already_removed_by_a_retried_request_is_not_a_failure(
+    make_manager, tenant, site, library, monkeypatch,
+):
     left = tenant.add_user("left@contoso.com")
-    tenant.group_named("BAA-Sharepoint-MATH-Auto-Contribute")["members"][left["id"]] = left
-    # The first DELETE removed the member, but its response was lost, so the retry finds them gone
-    tenant.fail("DELETE", r"/members/.+/\$ref$", graph_error(404, "Request_ResourceNotFound", "Does not exist."))
+    group = tenant.group_named("BAA-Sharepoint-MATH-Auto-Contribute")
+    group["members"][left["id"]] = left
+    serve, lost = requests.Session.request, []
+
+    # The first DELETE removes the member, but its response is lost, so the retry finds them gone
+    def lose_the_first_removals_response(session, method, url, **kwargs):
+        resp = serve(session, method, url, **kwargs)
+        if method == "DELETE" and not lost:
+            lost.append(url)
+            raise requests.ReadTimeout("Read timed out.")
+        return resp
+    monkeypatch.setattr(requests.Session, "request", lose_the_first_removals_response)
 
     results = make_manager().update_memberships(memberships_df(site, []), libraries_df=libraries_df(site, "MATH"))
 
     assert results[["action", "user", "status"]].values.tolist() == [
         ["removed_from_group", "left@contoso.com", "already removed"],
     ]
+    assert group["members"] == {}
+    assert [method for method, _, _ in tenant.calls].count("DELETE") == 2
 
 
 @pytest.mark.parametrize("operation", ["update_memberships", "ensure_onedrive_shortcuts"])
