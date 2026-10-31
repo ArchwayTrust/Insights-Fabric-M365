@@ -1264,7 +1264,7 @@ Outside Fabric, `KeyVaultCertificateCredential` isn't available (it needs `noteb
 | Graph `404` for the mailbox | The mailbox address is wrong, or the mailbox doesn't exist. |
 | `ValueError` from an `Emails` method | No mailbox was given: pass one to `Emails(credential, mailbox)` or `shared_mailbox_email` to the call. |
 | `MessageNotFoundError: No matching messages found.` | No email in the Inbox matches the exact subject and sender. Check both, or try `only_search_inbox=False`. |
-| `get_attachment_ids_and_names` returns an empty list, or misses a file | The email has no file attachments. Inline attachments are left out unless you pass `include_inline=True`, and some mail clients mark ordinary files inline, so try it if a file you can see in Outlook is missing. Attached emails and cloud links are always left out. |
+| `get_attachment_ids_and_names` returns an empty list, or misses a file | Either the email has no file attachments, or they were left out. Inline attachments are left out unless you pass `include_inline=True`, and some mail clients mark ordinary files inline, so try it if a file you can see in Outlook is missing. Attached emails and cloud links are always left out. |
 | `Attachment ... is a #microsoft.graph.itemAttachment` | `download_attachment` was given the ID of an attached email, not a file. |
 | `ImportError: notebookutils is not available. KeyVaultCertificateCredential must be used in a Fabric notebook.` | The code is running outside Fabric. `KeyVaultCertificateCredential` only works in Fabric (or Synapse) notebooks. |
 | SharePoint `401` with `Unsupported app only token` | The token came from a client secret. SharePoint needs a certificate, see [Giving the app access](#giving-the-app-access). |
