@@ -16,7 +16,6 @@ import sqlite3
 import sys
 import time
 import types
-from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -78,10 +77,13 @@ class FakeSpark:
             "sharepoint_faculty_membership", self.db, index=False)
         self.db.execute("CREATE TABLE sharepoint_sync_state (process TEXT, last_processed_ts TEXT, updated_at TEXT)")
         self.saved = {}  # table name -> list of DataFrames appended
+        self.settings = {}
+        self.conf = types.SimpleNamespace(set=self.settings.__setitem__)
+        self.query_time_zones = []  # the session time zone each query ran in
         self.after_query = None  # called with each SELECT, e.g. to add rows mid-run
 
-
     def sql(self, query):
+        self.query_time_zones.append(self.settings.get("spark.sql.session.timeZone"))
         query = _translate(query)
         if re.match(r"\s*CREATE (SCHEMA|TABLE)", query):
             return None
@@ -109,19 +111,17 @@ class FakeSpark:
 
 
 class FakeSparkFrame:
+    """A query's result. It has no collect(), as that gives timestamps in the Python process's time zone rather
+    than Spark's session time zone, so the notebook mustn't use it."""
+
     def __init__(self, pdf):
-        if "last_changed_ts" in pdf.columns:
-            pdf["last_changed_ts"] = pd.to_datetime(pdf["last_changed_ts"])
+        for column in pdf.columns:
+            if column.endswith("_ts"):
+                pdf[column] = pd.to_datetime(pdf[column])
         self.pdf = pdf
 
     def toPandas(self):
         return self.pdf.copy()
-
-    def collect(self):
-        return [
-            {k: datetime.fromisoformat(v) if k.endswith("_ts") and isinstance(v, str) else v for k, v in row.items()}
-            for row in self.pdf.to_dict("records")
-        ]
 
 
 class FakeWriter:
@@ -241,6 +241,8 @@ def test_live_run_provisions_the_pilot_scope_and_advances_the_watermark(tenant, 
 
     ns = run_notebook(spark)
 
+    # Each query reads or writes timestamps in the session time zone, so UTC is set before the first
+    assert spark.query_time_zones and set(spark.query_time_zones) == {"UTC"}
     hub, old_hub, nca = (tenant.sites[url.lower()] for url in (HUB, OLD_HUB, NCA_HUB))
     assert sorted(lst["slug"] for lst in hub.lists.values()) == ["MATH", "MATHMOVED", "MATHOLD", "SLT"]
     assert nca.lists == {}  # outside the academy filter

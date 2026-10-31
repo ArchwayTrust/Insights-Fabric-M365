@@ -165,29 +165,6 @@ def _add_role_assignment(
     _raise_for_status(resp)
 
 
-def _get_library_role_assignments(
-    token: str, site_url: str, list_id: str,
-) -> dict[int, set[int]]:
-    """Return a library's role assignments as principal ID -> role definition IDs."""
-    rest_url = _get_sharepoint_rest_url(site_url)
-    url: str | None = (
-        f"{rest_url}/web/lists(guid'{list_id}')/roleassignments"
-        f"?$expand=RoleDefinitionBindings"
-        f"&$select=PrincipalId,RoleDefinitionBindings/Id"
-    )
-    bindings: dict[int, set[int]] = {}
-    while url:
-        resp = _request_with_retry("GET", url, headers=_sharepoint_headers(token))
-        _raise_for_status(resp)
-        data = resp.json()["d"]
-        for assignment in data["results"]:
-            bindings[assignment["PrincipalId"]] = {
-                role_def["Id"] for role_def in assignment["RoleDefinitionBindings"]["results"]
-            }
-        url = data.get("__next")
-    return bindings
-
-
 def _remove_library_role_assignment(
     token: str, site_url: str, list_id: str, principal_id: int,
 ) -> bool:

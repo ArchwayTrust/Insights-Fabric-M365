@@ -523,6 +523,11 @@ if RUN_SMOKE_TEST:
 
 # Watermark: process faculty-list rows changed since the last successful run.
 
+# Timestamps are read with toPandas() and written as TIMESTAMP literals,
+# which both use Spark's session time zone (collect() would use the Python
+# process's instead). UTC has no daylight-saving hour that happens twice.
+spark.conf.set("spark.sql.session.timeZone", "UTC")
+
 # CREATE TABLE does not create its schema — a fresh schema-enabled
 # lakehouse fails with SCHEMA_NOT_FOUND without this.
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS {STORE_WORKSPACE_NAME}.{BASE_LH_NAME}.it")
@@ -547,14 +552,14 @@ SYNC_PROCESS_NAME = (
     f"faculty_sharepoint_sync|{','.join(ACADEMY_CODES) or '*'}|{FACULTY_CODE_FILTER or '*'}"
 )
 
-wm_rows = spark.sql(f"""
+pdf_watermark = spark.sql(f"""
     SELECT last_processed_ts FROM {sync_state_table}
     WHERE process = '{SYNC_PROCESS_NAME}'
-""").collect()
+""").toPandas()
 
 WATERMARK = (
-    wm_rows[0]["last_processed_ts"]
-    if wm_rows and wm_rows[0]["last_processed_ts"] is not None
+    pdf_watermark["last_processed_ts"].iloc[0]
+    if not pdf_watermark.empty and pd.notna(pdf_watermark["last_processed_ts"].iloc[0])
     else datetime(1900, 1, 1)
 )
 WATERMARK_LITERAL = WATERMARK.strftime("%Y-%m-%d %H:%M:%S.%f")
@@ -564,10 +569,10 @@ WATERMARK_LITERAL = WATERMARK.strftime("%Y-%m-%d %H:%M:%S.%f")
 # bound a row landing between two reads could be missed by the earlier pass
 # yet covered by the watermark advanced from a later one. Rows newer than
 # this are left for the next run.
-hw_rows = spark.sql(f"SELECT MAX(last_changed_ts) AS max_ts FROM {curated_faculty_list}").collect()
+pdf_high_watermark = spark.sql(f"SELECT MAX(last_changed_ts) AS max_ts FROM {curated_faculty_list}").toPandas()
 HIGH_WATERMARK = (
-    hw_rows[0]["max_ts"]
-    if hw_rows and hw_rows[0]["max_ts"] is not None
+    pdf_high_watermark["max_ts"].iloc[0]
+    if not pdf_high_watermark.empty and pd.notna(pdf_high_watermark["max_ts"].iloc[0])
     else WATERMARK
 )
 HIGH_WATERMARK_LITERAL = HIGH_WATERMARK.strftime("%Y-%m-%d %H:%M:%S.%f")
