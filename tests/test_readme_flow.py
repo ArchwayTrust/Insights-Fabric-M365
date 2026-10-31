@@ -37,14 +37,14 @@ def with_setting_specific_steps(flow, site_url):
 
 
 class Frame:
+    """A table or query result. It has no collect(), as that gives timestamps in the Python process's time zone
+    rather than Spark's session time zone, so the flow mustn't use it."""
+
     def __init__(self, pdf):
         self.pdf = pdf
 
     def toPandas(self):
         return self.pdf.copy()
-
-    def collect(self):
-        return self.pdf.to_dict("records")
 
 
 class Spark:
@@ -54,6 +54,9 @@ class Spark:
         self.tables = tables
         self.watermarks = {}  # process key -> last_processed_ts
         self.saved = []
+        self.settings = {}
+        self.conf = types.SimpleNamespace(set=self.settings.__setitem__)
+        self.query_time_zones = []  # the session time zone each table read or query ran in
 
     @property
     def watermark(self):
@@ -62,9 +65,11 @@ class Spark:
         return next(iter(self.watermarks.values()), None)
 
     def table(self, name):
+        self.query_time_zones.append(self.settings.get("spark.sql.session.timeZone"))
         return Frame(self.tables[name.rsplit(".", 1)[-1]])
 
     def sql(self, query):
+        self.query_time_zones.append(self.settings.get("spark.sql.session.timeZone"))
         if "MERGE INTO" in query:
             process = re.search(r"SELECT '((?:[^']|'')*)' AS process", query).group(1).replace("''", "'")
             self.watermarks[process] = datetime.fromisoformat(re.search(r"TIMESTAMP'([^']+)'", query).group(1))
@@ -154,6 +159,8 @@ def test_readme_flow_provisions_from_the_suggested_tables(setting):
     assert all(leadership in site.list_by_slug(code)["role_assignments"] for code in ("MATH", "ENG"))
     assert spark.watermark == datetime(2026, 10, 2)
     assert {name.rsplit(".", 1)[-1] for name, _ in spark.saved} == {"sharepoint_action_log"}
+    # Each read and the watermark's MERGE use the session time zone, so UTC is set before the first
+    assert spark.query_time_zones and set(spark.query_time_zones) == {"UTC"}
 
 
 def test_readme_flow_treats_a_null_deleted_as_not_deleted(setting):

@@ -90,6 +90,38 @@ def _public(group):
     return {k: v for k, v in group.items() if k not in ("members", "owners")}
 
 
+def _xml_unescape(text):
+    return text.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+
+
+def _process_query(site, xml):
+    """Answers a CSOM ProcessQuery request, which the package sends to set a library's property bag."""
+    guid = re.search(r'<Parameter Type="Guid">\{([^}]+)\}</Parameter>', xml).group(1)
+    lst = site.lists.get(guid)
+    if lst is None:
+        return response(200, [{"SchemaVersion": "15.0.0.0", "ErrorInfo": {"ErrorMessage": "List does not exist."}}])
+    # SetFieldValue on the root folder's Properties only stages a value, and Update on that folder saves what's
+    # staged so far. CSOM runs the actions in order, so a value set after the last Update isn't saved, and
+    # SharePoint reports success either way.
+    folder = re.search(r'<Property Id="(\d+)" ParentId="\d+" Name="RootFolder" />', xml)
+    bag = folder and re.search(rf'<Property Id="(\d+)" ParentId="{folder.group(1)}" Name="Properties" />', xml)
+    if bag:
+        staged = {}
+        actions = re.finditer(
+            r'<Method Name="(SetFieldValue|Update)" Id="\d+" ObjectPathId="(\d+)"(?: />|><Parameters>'
+            r'<Parameter Type="String">(.*?)</Parameter><Parameter Type="String">(.*?)</Parameter>'
+            r'</Parameters></Method>)',
+            xml,
+        )
+        for name, path_id, key, value in (action.groups() for action in actions):
+            if name == "SetFieldValue" and path_id == bag.group(1):
+                staged[_xml_unescape(key)] = _xml_unescape(value)
+            elif name == "Update" and path_id == folder.group(1):
+                lst["properties"].update(staged)
+                staged = {}
+    return response(200, [{"SchemaVersion": "15.0.0.0", "ErrorInfo": None}])
+
+
 class FakeSite:
     def __init__(self, url):
         self.url = url.rstrip("/")
@@ -260,7 +292,7 @@ class FakeTenant:
         if parsed.hostname == HOST:
             if "/_vti_bin/client.svc/ProcessQuery" in parsed.path:
                 site = self._site_for(parsed.path.split("/_vti_bin/")[0])
-                return self._process_query(site, kwargs["data"].decode("utf-8"))
+                return _process_query(site, kwargs["data"].decode("utf-8"))
             if "/_api/" in parsed.path:
                 site_path, api_path = parsed.path.split("/_api/", 1)
                 site = self._site_for(site_path)
@@ -582,33 +614,3 @@ class FakeTenant:
         if rest == "/rootfolder/properties" and method == "GET":
             return response(200, {"d": dict(lst["properties"])})
         raise UnexpectedRequest(f"SharePoint list: {method} {rest}")
-
-    def _process_query(self, site, xml):
-        guid = re.search(r'<Parameter Type="Guid">\{([^}]+)\}</Parameter>', xml).group(1)
-        lst = site.lists.get(guid)
-        if lst is None:
-            return response(200, [{"SchemaVersion": "15.0.0.0", "ErrorInfo": {"ErrorMessage": "List does not exist."}}])
-        # SetFieldValue on the root folder's Properties only stages a value, and Update on that folder saves what's
-        # staged so far. CSOM runs the actions in order, so a value set after the last Update isn't saved, and
-        # SharePoint reports success either way.
-        folder = re.search(r'<Property Id="(\d+)" ParentId="\d+" Name="RootFolder" />', xml)
-        bag = folder and re.search(rf'<Property Id="(\d+)" ParentId="{folder.group(1)}" Name="Properties" />', xml)
-        if bag:
-            staged = {}
-            actions = re.finditer(
-                r'<Method Name="(SetFieldValue|Update)" Id="\d+" ObjectPathId="(\d+)"(?: />|><Parameters>'
-                r'<Parameter Type="String">(.*?)</Parameter><Parameter Type="String">(.*?)</Parameter>'
-                r'</Parameters></Method>)',
-                xml,
-            )
-            for name, path_id, key, value in (action.groups() for action in actions):
-                if name == "SetFieldValue" and path_id == bag.group(1):
-                    staged[_xml_unescape(key)] = _xml_unescape(value)
-                elif name == "Update" and path_id == folder.group(1):
-                    lst["properties"].update(staged)
-                    staged = {}
-        return response(200, [{"SchemaVersion": "15.0.0.0", "ErrorInfo": None}])
-
-
-def _xml_unescape(text):
-    return text.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
