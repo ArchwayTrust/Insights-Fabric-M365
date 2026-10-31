@@ -8,10 +8,12 @@ import requests
 import json
 import base64
 import hashlib
+import random
 import re
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from urllib.parse import urlparse
 from azure.core.credentials import AccessToken
 
@@ -82,6 +84,13 @@ class KeyVaultCertificateCredential:
     REFRESH_MARGIN_SECONDS = 300  # Request a new access token when the current one has less than this left
     REQUEST_TIMEOUT_SECONDS = 30  # Timeout for each call to Entra ID and Key Vault
 
+    # Throttling, server errors and dropped connections are retried, as azure-identity's credentials and the rest of
+    # the package do. Each request is safe to repeat. A token request is held up while it waits, so the waits are short.
+    MAX_ATTEMPTS = 3
+    RETRY_BASE_DELAY_SECONDS = 1
+    RETRY_MAX_DELAY_SECONDS = 30  # Also caps a Retry-After header
+    RETRY_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+
     # Key Vault DNS suffix in the Azure public cloud. The Key Vault token is only sent to these hosts. Sovereign clouds
     # aren't supported, as the token endpoint, Scopes and Microsoft Graph URL are all public cloud.
     AKV_DNS_SUFFIX = ".vault.azure.net"
@@ -146,6 +155,39 @@ class KeyVaultCertificateCredential:
             )
 
         return host
+
+    @classmethod
+    def _send_with_retry(cls, send: Callable[[], requests.Response]) -> requests.Response:
+        """Sends a request, retrying throttling, server errors and dropped connections up to MAX_ATTEMPTS times.
+
+        Args:
+            send: Makes one attempt of the request.
+
+        Returns:
+            The response to the last attempt, which may be an error for the caller to report.
+
+        Raises:
+            requests.ConnectionError: If the last attempt couldn't connect, or a certificate didn't verify.
+            requests.Timeout: If the last attempt timed out.
+        """
+        for attempt in range(1, cls.MAX_ATTEMPTS + 1):
+            delay = min(cls.RETRY_BASE_DELAY_SECONDS * 2 ** (attempt - 1), cls.RETRY_MAX_DELAY_SECONDS)
+            delay += delay * random.uniform(0, 0.25)
+            try:
+                response = send()
+            except (requests.ConnectionError, requests.Timeout) as e:
+                # A certificate that doesn't verify won't on a retry either
+                if isinstance(e, requests.exceptions.SSLError) or attempt == cls.MAX_ATTEMPTS:
+                    raise
+            else:
+                if response.status_code not in cls.RETRY_STATUS_CODES or attempt == cls.MAX_ATTEMPTS:
+                    return response
+                retry_after = response.headers.get("Retry-After", "")
+                if retry_after.isdigit():
+                    delay = min(int(retry_after), cls.RETRY_MAX_DELAY_SECONDS)
+            time.sleep(delay)
+
+        raise AssertionError("unreachable: the last attempt always returns or raises")
 
     def get_access_token(self, scope: str | None = None) -> str:
         """Returns an access token string, for calling an API directly.
@@ -234,7 +276,8 @@ class KeyVaultCertificateCredential:
         Returns:
             The access token and its expiry time (seconds since epoch).
         """
-        # Build a new assertion each time, as they're only valid for a few minutes
+        # Build a new assertion each time, as they're only valid for a few minutes. Retries resend it, as MSAL does:
+        # they finish well within its lifetime.
         client_assertion = self._build_client_assertion()
 
         data = {
@@ -247,10 +290,15 @@ class KeyVaultCertificateCredential:
         if claims:
             data["claims"] = claims
 
-        # Take the time before the request, so the expiry time errs on the early side
-        now = int(time.time())
+        now = 0  # When the last attempt was sent, set by send()
 
-        response = requests.post(self.token_endpoint, data=data, timeout=self.REQUEST_TIMEOUT_SECONDS)
+        def send() -> requests.Response:
+            nonlocal now
+            # Take the time before the request, so the expiry time errs on the early side
+            now = int(time.time())
+            return requests.post(self.token_endpoint, data=data, timeout=self.REQUEST_TIMEOUT_SECONDS)
+
+        response = self._send_with_retry(send)
 
         if response.status_code != 200:
             raise Exception(f"Failed to get access token for {self.client_id} with scope {scope}. {_describe_error(response)}")
@@ -310,12 +358,12 @@ class KeyVaultCertificateCredential:
         if self.certificate_version:
             url += f"/{self.certificate_version}"
 
-        response = requests.get(
+        response = self._send_with_retry(lambda: requests.get(
             url,
             headers=akv_headers,
             params={"api-version": self.AKV_API_VERSION},
             timeout=self.REQUEST_TIMEOUT_SECONDS
-        )
+        ))
 
         if response.status_code != 200:
             raise Exception(f"Failed to get certificate {self.certificate_name} from key vault. {_describe_error(response)}")
@@ -342,13 +390,13 @@ class KeyVaultCertificateCredential:
                 or (parsed_key_id.hostname or "").lower() != self._akv_host or parsed_key_id.port not in (None, 443)):
             raise Exception(f"Key identifier for certificate {self.certificate_name} is not in key vault {self.akv_url}.")
 
-        response = requests.post(
+        response = self._send_with_retry(lambda: requests.post(
             f"{key_id}/sign",
             headers=akv_headers,
             params={"api-version": self.AKV_API_VERSION},
             json={"alg": "PS256", "value": _base64url(digest)},
             timeout=self.REQUEST_TIMEOUT_SECONDS
-        )
+        ))
 
         if response.status_code != 200:
             raise Exception(f"Failed to sign client assertion with key vault key {self.certificate_name}. {_describe_error(response)}")

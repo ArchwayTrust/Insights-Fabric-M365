@@ -6,6 +6,7 @@ import time
 from unittest import mock
 
 import pytest
+import requests
 
 from alt_fabric_m365.auth import keyvault
 from alt_fabric_m365.auth import KeyVaultCertificateCredential, Scopes
@@ -244,6 +245,124 @@ def test_token_error_includes_status_but_not_the_assertion(fake_notebookutils):
     message = str(error.value)
     assert "Status code: 401" in message and "AADSTS700027" in message
     assert fake.token_calls[0][1]["data"]["client_assertion"] not in message
+
+
+# Retries
+
+def throttled(status=429, retry_after=None):
+    response = make_response(status, {"error": {"code": "Throttled", "message": "Too many requests"}})
+    if retry_after is not None:
+        response.headers["Retry-After"] = retry_after
+    return response
+
+
+@pytest.fixture
+def sleeps(monkeypatch):
+    """Retries wait with time.sleep; this records the waits instead."""
+    calls = []
+    monkeypatch.setattr(keyvault.time, "sleep", calls.append)
+    return calls
+
+
+def fail_first(fake, call, *outcomes):
+    """Patches requests so the first calls of one kind (certificate, sign or token) give outcomes, then FakeAzure."""
+    remaining = list(outcomes)
+
+    def handle(kind, real):
+        def send(url, **kwargs):
+            if kind == call and remaining:
+                outcome = remaining.pop(0)
+                getattr(fake, f"{kind}_calls").append((url, kwargs))
+                if isinstance(outcome, Exception):
+                    raise outcome
+                return outcome
+            return real(url, **kwargs)
+        return send
+
+    def post(url, **kwargs):
+        return handle("sign" if url.endswith("/sign") else "token", fake.post)(url, **kwargs)
+
+    return mock.patch.multiple(keyvault.requests, get=handle("certificate", fake.get), post=post)
+
+
+@pytest.mark.parametrize("call", ["certificate", "sign", "token"])
+def test_throttling_is_waited_out_for_as_long_as_retry_after_says(fake_notebookutils, sleeps, call):
+    fake = FakeAzure()
+    with fail_first(fake, call, throttled(retry_after="7")):
+        token = make_credential().get_token("a")
+
+    assert fake.issued == [token.token]
+    assert sleeps == [7]
+    assert len(getattr(fake, f"{call}_calls")) == 2
+
+
+@pytest.mark.parametrize("call", ["certificate", "sign", "token"])
+@pytest.mark.parametrize("failure", [
+    throttled(503),
+    throttled(500),
+    requests.ConnectionError("Connection reset by peer"),
+    requests.Timeout("Read timed out"),
+])
+def test_server_errors_and_dropped_connections_are_retried(fake_notebookutils, sleeps, call, failure):
+    fake = FakeAzure()
+    with fail_first(fake, call, failure):
+        make_credential().get_token("a")
+
+    assert len(sleeps) == 1 and 1 <= sleeps[0] <= 1.25
+    assert len(fake.token_calls) == 2 if call == "token" else len(fake.token_calls) == 1
+
+
+def test_a_retried_token_request_resends_its_assertion_without_asking_key_vault_again(fake_notebookutils, sleeps):
+    fake = FakeAzure()
+    with fail_first(fake, "token", throttled(503)):
+        make_credential().get_token("a")
+
+    assertions = [kwargs["data"]["client_assertion"] for _, kwargs in fake.token_calls]
+    assert len(assertions) == 2 and assertions[0] == assertions[1]
+    assert len(fake.certificate_calls) == len(fake.sign_calls) == 1
+
+
+def test_retries_stop_after_max_attempts(fake_notebookutils, sleeps):
+    fake = FakeAzure()
+    attempts = KeyVaultCertificateCredential.MAX_ATTEMPTS
+    with fail_first(fake, "certificate", *[throttled(503) for _ in range(attempts)]):
+        with pytest.raises(Exception, match="Failed to get certificate cert from key vault. Status code: 503"):
+            make_credential().get_token("a")
+
+    assert len(fake.certificate_calls) == attempts and len(sleeps) == attempts - 1
+
+
+def test_a_connection_that_keeps_dropping_is_raised(fake_notebookutils, sleeps):
+    fake = FakeAzure()
+    attempts = KeyVaultCertificateCredential.MAX_ATTEMPTS
+    with fail_first(fake, "sign", *[requests.ConnectionError("Connection reset") for _ in range(attempts)]):
+        with pytest.raises(requests.ConnectionError):
+            make_credential().get_token("a")
+
+    assert len(fake.sign_calls) == attempts
+
+
+@pytest.mark.parametrize("failure", [
+    throttled(400),
+    throttled(401),
+    throttled(403),
+    requests.exceptions.SSLError("certificate verify failed"),
+])
+def test_client_errors_and_certificate_failures_are_not_retried(fake_notebookutils, sleeps, failure):
+    fake = FakeAzure()
+    with fail_first(fake, "certificate", failure):
+        with pytest.raises(Exception):
+            make_credential().get_token("a")
+
+    assert len(fake.certificate_calls) == 1 and sleeps == []
+
+
+def test_a_long_retry_after_is_capped(fake_notebookutils, sleeps):
+    fake = FakeAzure()
+    with fail_first(fake, "token", throttled(retry_after="3600")):
+        make_credential().get_token("a")
+
+    assert sleeps == [KeyVaultCertificateCredential.RETRY_MAX_DELAY_SECONDS]
 
 
 # Key Vault URL checks
