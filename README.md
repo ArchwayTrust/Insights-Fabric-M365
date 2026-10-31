@@ -1327,7 +1327,7 @@ python -m pytest
 python -m pyflakes alt_fabric_m365 tests setup.py
 ```
 
-The [Tests workflow](.github/workflows/tests.yml) runs the same checks on Python 3.10, 3.11 and 3.12, and builds the package, for every pull request into `main` and every push to `main`. It doesn't publish anything.
+The [Tests workflow](.github/workflows/tests.yml) runs the same checks on Python 3.10, 3.11 and 3.12, builds the package, and runs the tests again against the built wheel, for every pull request into `main` and every push to `main`. It doesn't publish anything.
 
 #### Requiring the tests to pass before merging
 

@@ -46,3 +46,14 @@ jobs:
       run: |
         python -m build
         python -m twine check --strict dist/*
+
+    # The steps above test the source tree, which an editable install imports from, so a module or file left out of
+    # the wheel would still pass. Run the tests again against the wheel, installed as users install it. From tests/,
+    # the source tree isn't on the import path.
+    - name: Test the built wheel
+      run: |
+        python -m venv "$RUNNER_TEMP/wheel"
+        "$RUNNER_TEMP/wheel/bin/pip" install "$(ls dist/*.whl)[test]"
+        cd tests
+        "$RUNNER_TEMP/wheel/bin/python" -c "import alt_fabric_m365; assert 'site-packages' in alt_fabric_m365.__file__, alt_fabric_m365.__file__"
+        "$RUNNER_TEMP/wheel/bin/python" -m pytest -q
