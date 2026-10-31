@@ -152,6 +152,7 @@ class FakeTenant:
         self.without_onedrive = set()
         self.failures = []  # [method, url regex, response, remaining times]
         self.list_page_size = None  # set to page Graph list results
+        self.role_assignment_page_size = None  # set to page a library's role assignments, as SharePoint does
         # Ids of groups that $filter queries don't return yet, as Graph's replicas lag behind writes
         self.replicating = set()
         self._lock = threading.RLock()  # operations run in parallel with max_workers > 1
@@ -439,7 +440,7 @@ class FakeTenant:
             lst = site.lists.get(m.group(1))
             if lst is None:
                 return response(404)
-            return self._sharepoint_list(method, site, lst, m.group(2), body)
+            return self._sharepoint_list(method, site, lst, m.group(2), query, body)
 
         if path == "web/roledefinitions" and method == "GET":
             return response(200, {"d": {"results": [
@@ -505,7 +506,7 @@ class FakeTenant:
 
         raise AssertionError(f"Unexpected SharePoint request: {method} {site.url}/_api/{path}")
 
-    def _sharepoint_list(self, method, site, lst, rest, body):
+    def _sharepoint_list(self, method, site, lst, rest, query, body):
         if rest == "" and method == "GET":
             return response(200, {"d": {"HasUniqueRoleAssignments": lst["unique"]}})
         m = re.fullmatch(r"/breakroleinheritance\(copyRoleAssignments=(true|false), clearSubscopes=(true|false)\)", rest)
@@ -525,14 +526,24 @@ class FakeTenant:
             return response(200, {"d": {}})
         if rest == "/roleassignments" and method == "GET":
             login_names = {pid: claims for claims, pid in site.principals.items()}
-            return response(200, {"d": {"results": [
+            results = [
                 {
                     "PrincipalId": pid,
                     "Member": {"LoginName": login_names.get(pid, f"i:0#.f|membership|user{pid}")},
                     "RoleDefinitionBindings": {"results": [{"Id": r} for r in sorted(roles)]},
                 }
                 for pid, roles in lst["role_assignments"].items()
-            ]}})
+            ]
+            # SharePoint pages a long collection, linking the next page in __next
+            skip = int(query.get("$skiptoken", 0))
+            size = self.role_assignment_page_size
+            if size and skip + size < len(results):
+                next_url = (
+                    f"{site.url}/_api/web/lists(guid'{lst['id']}')/roleassignments"
+                    f"?$skiptoken={skip + size}&$expand={query.get('$expand', '')}&$select={query.get('$select', '')}"
+                )
+                return response(200, {"d": {"results": results[skip:skip + size], "__next": next_url}})
+            return response(200, {"d": {"results": results[skip:]}})
         m = re.fullmatch(r"/roleassignments/getbyprincipalid\((\d+)\)", rest)
         if m and method == "DELETE":
             if lst["role_assignments"].pop(int(m.group(1)), None) is None:

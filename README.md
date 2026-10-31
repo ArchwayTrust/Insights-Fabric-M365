@@ -43,6 +43,7 @@ The package is built for Fabric notebooks. `KeyVaultCertificateCredential` uses 
   - [Operations](#operations)
   - [The action log](#the-action-log)
   - [Safety features](#safety-features)
+  - [Adopting groups created by earlier versions](#adopting-groups-created-by-earlier-versions)
   - [Using it in your own setting](#using-it-in-your-own-setting)
   - [Example notebook](#example-notebook)
 - [Troubleshooting](#troubleshooting)
@@ -57,8 +58,8 @@ The package is published on PyPI as [`alt-fabric-m365`](https://pypi.org/project
 **In a Fabric environment** (use this for scheduled notebooks and pipelines):
 
 1. Open the environment your notebooks use.
-2. Under **Public libraries**, select **Add from PyPI**, enter `alt-fabric-m365` and choose a version, for example `1.2.0`.
-3. Select **Publish**. Notebooks pick up the new version when their next session starts.
+2. In the **External repositories** tab, select **Add library** > **Add library from public repository**, choose **PyPI**, enter `alt-fabric-m365` and choose a version, for example `1.2.0`. Choose **Full** publish mode, which Microsoft recommends for pipelines and production notebooks.
+3. Save and publish the environment. Notebooks pick up the new version when their next session starts.
 
 **In a single notebook session** (useful for testing a new version):
 
@@ -531,7 +532,7 @@ Test-ServicePrincipalAuthorization -Identity $objectId -Resource "reports@contos
 Test-ServicePrincipalAuthorization -Identity $objectId -Resource "someone.else@contoso.com" | Format-Table
 ```
 
-To cover several mailboxes, use a filter such as `MemberOfGroup -eq '<distinguished name of a mail-enabled security group>'` and add the mailboxes to the group.
+To cover several mailboxes, use a filter such as `MemberOfGroup -eq '<distinguished name of a mail-enabled security group>'` and add the mailboxes to the group. Only direct members are in scope: a mailbox in a group nested inside that group isn't, so add each mailbox to the group itself.
 
 `Test-ServicePrincipalAuthorization` reflects changes immediately, but Graph can take from 30 minutes to 2 hours to apply them.
 
@@ -912,14 +913,14 @@ mgr = SharePointLibraryManager(
 )
 ```
 
-Create the credential without a scope: the manager asks it for a Graph token and a SharePoint token (`https://<sharepoint_hostname>/.default`), and the credential caches each until shortly before it expires. The constructor gets both tokens straight away, so wrong credentials or permissions fail here rather than part way through. `dry_run`, `max_workers`, `include_site_name`, `add_to_navigation`, `navigation_label`, `create_onedrive_shortcuts`, `max_removals_per_group`, `max_removals_per_run` and `allow_mass_removal` are defaults that each operation can override, for example `mgr.create_libraries(df, dry_run=False)`. Each must be of its documented type: a notebook or pipeline parameter of type String, such as `"False"`, raises `TypeError` rather than counting as true, so give those parameters the type Bool or Int.
+Create the credential without a scope: the manager asks it for a Graph token and a SharePoint token (`https://<sharepoint_hostname>/.default`), and the credential caches each until shortly before it expires. The constructor gets both tokens straight away, so a wrong client ID, certificate or Key Vault access fails here rather than part way through. Missing API permissions or site grants don't, as Entra ID issues a token without them: they show up in the results of the first operation that needs them, as fatal actions in its action log (`error`, `add_failed` or `remove_failed`, see [The action log](#the-action-log)) or, for `get_library_metadata`, in its `status` column. `dry_run`, `max_workers`, `include_site_name`, `add_to_navigation`, `navigation_label`, `create_onedrive_shortcuts`, `max_removals_per_group`, `max_removals_per_run` and `allow_mass_removal` are defaults that each operation can override, for example `mgr.create_libraries(df, dry_run=False)`. Each must be of its documented type: a notebook or pipeline parameter of type String, such as `"False"`, raises `TypeError` rather than counting as true, so give those parameters the type Bool or Int.
 
 ### Operations
 
 | Method | What it does | DataFrame columns |
 | --- | --- | --- |
 | `create_libraries(df)` | Ensures each library exists with its own permissions, its groups, metadata and navigation link. Safe to re-run: existing libraries and groups are reused, and a changed display name is applied. | `site_url`, `library_code`, `library_display_name`, `group_prefix`. Optional: `auto_groups` (default True), `manual_read`, `manual_contribute`, `app_owned` (default True), `source_system`, `source_id` |
-| `update_memberships(df, libraries_df=None, nested_groups_df=None)` | Makes each library's Auto groups contain exactly the users (and nested groups) given. Users are matched by UPN, then mail, then proxy addresses, so aliased domains work. Libraries in `libraries_df` with no rows in `df` have their Auto groups emptied. | `site_url`, `library_code`, `user_principal_name`, `permission` (`read`, `contribute` or `owner`), `group_prefix` |
+| `update_memberships(df, *, libraries_df=None, nested_groups_df=None)` | Makes each library's Auto groups contain exactly the users (and nested groups) given. Users are matched by UPN, then mail, then proxy addresses, so aliased domains work. Libraries in `libraries_df` with no rows in `df` have their Auto groups emptied. | `site_url`, `library_code`, `user_principal_name`, `permission` (`read`, `contribute` or `owner`), `group_prefix` |
 | `unlink_libraries(df)` | For libraries removed at source: renames to `{code}_UNLINKED`, empties the Auto groups, keeps the Manual groups, removes the navigation link. Nothing is deleted. A library already unlinked isn't renamed again (`already_unlinked`). A code whose group names are another library's (`group_name_collision`, see [Safety features](#safety-features)) is skipped, so its groups are never emptied. | `site_url`, `library_code`, `group_prefix` |
 | `retire_moved_libraries(df)` | For a library whose site changed: renames the copy on the **old** site to `{code}_MOVED` and removes the groups' access to it. With `new_site_url`, waits until the library is working there (`retire_deferred` until then). A library already retired isn't renamed again (`already_retired`), and only groups that still have access are touched. | `site_url` (the old site), `library_code`, `group_prefix`. Optional: `new_site_url` |
 | `rename_libraries(df)` | Sets new display names, and the navigation links' titles. A library that already has its name is left alone (`already_named`). Groups keep their names, as the code can't change. Up to 1.0.x it accepted `old_library_code` to rename the groups to a new code, but that never worked, so a row with one now raises `ValueError`. | `site_url`, `library_code`, `library_display_name` |
@@ -956,7 +957,7 @@ results = mgr.update_memberships(members, libraries_df=libraries)
 
 ### The action log
 
-Every operation returns a DataFrame with the columns `site_url`, `document_library`, `group`, `user`, `action`, `permission` and `status`, one row per thing it did or (in a dry run) would do. Problems are rows too, so one bad library, user or site never stops the others. Where nothing needed changing, the row says so (`already_member`, `already_assigned`, `metadata_unchanged`), and nothing is written. Two sets of action names help decide whether a run succeeded:
+Every operation except `get_library_metadata` returns a DataFrame with the columns `site_url`, `document_library`, `group`, `user`, `action`, `permission` and `status`, one row per thing it did or (in a dry run) would do. Problems are rows too, so one bad library, user or site never stops the others. Where nothing needed changing, the row says so (`already_member`, `already_assigned`, `metadata_unchanged`), and nothing is written. Two sets of action names help decide whether a run succeeded:
 
 - `FATAL_ACTIONS`: `error`, `add_failed`, `remove_failed`. Something failed and should be retried, so fail the run.
 - `WARNING_ACTIONS`: for example `user_not_found`, `library_not_found` and `removal_guardrail_triggered`. Problems with the data that failing the run wouldn't fix.
@@ -976,7 +977,7 @@ if not failures.empty:
 - **Removal guardrail.** If syncing a group would remove more than `max_removals_per_group` members, its removals are skipped and logged as `removal_guardrail_triggered` (additions still happen). Re-run with `allow_mass_removal=True` once you've checked the data.
 - **Run-wide removal limit.** Each group's limit alone wouldn't stop an empty or truncated members table, which would empty every small group. So `update_memberships` adds up the removals for the whole call before making any: if they'd remove more than `max_removals_per_run` members in total (default 100), none are made, and one `removal_guardrail_triggered` row, with no library, says how many there would have been. `allow_mass_removal=True` lifts this limit too.
 - **Incomplete data never drives removals.** If any user (or nested group) for a role can't be resolved, removals of that kind from that role's group are skipped (`removals_skipped`), as the "stale" member may be the one that failed to resolve. A row whose `permission` isn't `read`, `contribute` or `owner` is logged as `skip`, and as it could be meant for any role, removals of that kind are skipped from all of the library's groups.
-- **Manual groups are never synced or emptied,** and service principals and devices in Auto groups are left in place.
+- **Manual groups are never synced or emptied.** Membership sync leaves service principals and devices in Auto groups in place, but unlinking a library empties its Auto groups completely.
 - **No guessing between duplicates.** If two Entra groups share a name the manager would use, it stops for that library rather than pick one. Library codes that would produce the same group names (such as `PE-KS3` and `PEKS3`, or codes differing only in case) are skipped with `group_name_collision`, including when the other library was created on the same site by an earlier run. Libraries on different sites are only compared within one call, so keep two sites' group names apart (see [Group naming](#adding-setting-specific-steps)). A library is only ever found by its URL, so a code is never matched to another library that merely has that title (`library_name_conflict`). A library is given its own permissions and groups before its display name, so if another list already has that name, it keeps its code as its title (also `library_name_conflict`) rather than being left open to the whole site.
 - **Groups must be the app's.** Group names are predictable, so a group someone else creates with the name a library would use could otherwise be handed that library's access. The app is made owner of the groups it creates, and before it grants or syncs an existing group it checks the app is an owner: a group with no owner (as earlier versions created them) has the app added and is logged as `group_owner_added`; a group owned only by others is skipped with `group_not_owned`. This includes an Auto group that `update_memberships` would empty, so a group the app doesn't own is never emptied. Dry runs of `create_libraries` and `update_memberships` read the owners and log what a live run would do. Groups are only checked when an operation uses them, so to adopt them all at once see [Adopting groups created by earlier versions](#adopting-groups-created-by-earlier-versions). The app's object ID is read from its Graph token, or can be passed as `service_principal_id`. Groups created with `app_owned=False` aren't owned or checked, and `grant_group_access` grants the groups it's given by name.
 - **Creating a group, navigation link or OneDrive shortcut is never repeated** after a failure that may have succeeded (a 5xx or timeout), so a retry can't make a duplicate. The next run finds what was created. Graph's name lookups can miss a group for a short while after it's created, so a manager also remembers the groups it creates. Until the lookup finds one, later operations in the same run reuse it rather than create it again, and check its owner and read its members as they would any group's.
@@ -1310,8 +1311,8 @@ To upgrade:
    from alt_fabric_m365.exchange import Emails
    ```
 
-2. In each Fabric environment, remove `fabric_python_helper` under **Public libraries** if it's there. Its last release, 0.6.0, requires `alt-fabric-m365` 0.6, so it can't be installed alongside 1.0.0.
-3. Set `alt-fabric-m365` to `1.0.0` and publish the environment.
+2. In each Fabric environment, remove `fabric_python_helper` under **External repositories** if it's there. Its last release, 0.6.0, requires `alt-fabric-m365` 0.6, so it can't be installed alongside 1.0.0.
+3. Set `alt-fabric-m365` to the latest 1.x version (see [Installation](#installation)) and publish the environment.
 
 To upgrade from 0.3.x or earlier, which used delegated (signed-in user) authentication and had a `pbi_admin` module, first follow [Upgrading from 0.3.x](https://github.com/ArchwayTrust/Insights-Fabric-M365/blob/v0.7.2/README.md#upgrading-from-03x) in the 0.7.2 README.
 
@@ -1385,7 +1386,7 @@ From the repository root, in PowerShell:
 python -m pip install --upgrade build twine
 Remove-Item dist -Recurse -Force -ErrorAction SilentlyContinue
 python -m build
-python -m twine check dist/*
+python -m twine check --strict dist/*
 ```
 
 This creates two files in `dist/`:
@@ -1411,7 +1412,7 @@ Upload the `.whl` file to a lakehouse's `Files` folder, then in a notebook attac
 %pip install /lakehouse/default/Files/alt_fabric_m365-1.2.0-py3-none-any.whl
 ```
 
-Or add it to an environment under **Custom libraries** > **Upload**.
+Or add it to an environment: on its **Custom** libraries page, select **Upload**.
 
 ### Publishing to PyPI with a GitHub release
 
@@ -1471,7 +1472,7 @@ python -m twine upload --repository testpypi dist/*
 
 ### After publishing
 
-Update the version in each Fabric environment that uses the package (**Public libraries**), and publish the environment.
+Update the version in each Fabric environment that uses the package (**External repositories**), and publish the environment.
 
 ### Release checklist
 

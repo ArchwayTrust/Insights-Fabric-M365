@@ -272,6 +272,14 @@ def test_delete_failure_raises(emails):
             emails.delete_email("m")
 
 
+def test_deleting_an_email_graph_answers_400_item_not_found_raises(emails):
+    # Only a 404 with ErrorItemNotFound means the email is already gone
+    response = make_response(400, {"error": {"code": "ErrorItemNotFound", "message": "Not found."}})
+    with patch_request(return_value=response):
+        with pytest.raises(Exception, match="Status code: 400, Error code: ErrorItemNotFound"):
+            emails.delete_email("m")
+
+
 def test_send_email(emails):
     with patch_request(return_value=make_response(202)) as post:
         emails.send_email("Subject", "Body", ["a@contoso.com", "b@contoso.com"])
@@ -351,6 +359,8 @@ def test_missing_message(emails):
     (make_response(404, {"error": {"code": "ErrorInvalidUser", "message": "The requested user is invalid."}}), "ErrorInvalidUser"),
     (make_response(404, {"error": {"code": "MailboxNotEnabledForRESTAPI", "message": "Not supported."}}), "MailboxNotEnabledForRESTAPI"),
     (make_response(400, {"error": {"code": "ErrorInvalidIdMalformed", "message": "Id is malformed."}}), "ErrorInvalidIdMalformed"),
+    # Only a 404 with this code means the message is missing; with another status, something else went wrong
+    (make_response(400, {"error": {"code": "ErrorItemNotFound", "message": "Not found."}}), "ErrorItemNotFound"),
     (make_response(403, {"error": {"code": "ErrorAccessDenied", "message": "Access is denied."}}), "ErrorAccessDenied"),
     (make_response(503, text="<html>Service Unavailable</html>"), "Service Unavailable"),
     (make_response(404, ["not", "a", "dict"]), "Status code: 404"),
