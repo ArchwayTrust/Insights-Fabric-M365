@@ -206,6 +206,29 @@ def test_send_failure_raises(emails):
             emails.send_email("Subject", "Body", ["a@contoso.com"])
 
 
+# Errors
+
+ACCESS_DENIED = {"error": {"code": "ErrorAccessDenied", "message": "Access is denied. Check credentials and try again."}}
+
+
+# The README's troubleshooting table matches on Graph's error code, such as ErrorAccessDenied for a missing Exchange role
+@pytest.mark.parametrize("call, method, error", [
+    (lambda e: e.search_message_by_subject_and_sender("s", "from@contoso.com"), "get", Exception),
+    (lambda e: e.get_attachment_ids_and_names("m"), "get", requests.HTTPError),
+    (lambda e: e.download_attachment("m", "a"), "get", requests.HTTPError),
+    (lambda e: e.delete_email("m"), "delete", Exception),
+    (lambda e: e.send_email("s", "c", ["to@contoso.com"]), "post", Exception),
+    (lambda e: e._check_if_message_exists("m"), "get", Exception),
+])
+def test_errors_include_graphs_error_code_and_message(emails, capsys, call, method, error):
+    with mock.patch.object(emails_module.requests, method, return_value=make_response(403, ACCESS_DENIED)):
+        with pytest.raises(error) as raised:
+            call(emails)
+
+    assert "Status code: 403, Error code: ErrorAccessDenied, Message: Access is denied." in str(raised.value)
+    assert capsys.readouterr().out == ""  # raised, not printed as well
+
+
 # Checking a message exists
 
 def test_existing_message(emails):
