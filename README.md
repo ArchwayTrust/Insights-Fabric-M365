@@ -47,6 +47,8 @@ The package is built for Fabric notebooks. `KeyVaultCertificateCredential` uses 
   - [Using it in your own setting](#using-it-in-your-own-setting)
   - [Example notebook](#example-notebook)
 - [Troubleshooting](#troubleshooting)
+- [Upgrading to 2.0.0](#upgrading-to-200)
+  - [From 1.1.0 or 1.2.0](#from-110-or-120)
 - [Upgrading to 1.0.0](#upgrading-to-100)
 - [Building and publishing](#building-and-publishing)
 - [Licence](#licence)
@@ -72,7 +74,7 @@ Always pin a version. 1.0.0 removes the old names that 0.x versions kept working
 - A site, redirect or Key Vault URL with a backslash or a user name before its host is refused, as it could send a token to another host.
 - Taking over an existing library keeps the permissions of its folders and files (`inheritance_broken` is logged), and a library gets its own permissions and groups before its display name is set.
 - `retire_moved_libraries` leaves a library whose new site is the same site, spelt differently, and `unlink_libraries` skips a code whose groups are another library's (`group_name_collision`).
-- A dry run of `update_memberships` reads each group's members, so it shows removals (`remove_from_group (dry run)`), `removals_skipped` and the guardrail. `reconcile_group (dry run)` is gone.
+- A dry run of `update_memberships` reads each group's members, so it shows removals (`removed_from_group (dry run)`), `removals_skipped` and the guardrail. `reconcile_group (dry run)` is gone.
 - A membership row with an unknown permission no longer removes anyone, and `skip` is now in `WARNING_ACTIONS`.
 - Options must be of their documented type: a String pipeline parameter such as `"False"` raises `TypeError` rather than counting as true, so give those parameters the type Bool or Int. Blanks in `create_libraries`' flag columns take their defaults.
 - `rename_libraries` no longer accepts `old_library_code`, and raises `ValueError` if given one. It never worked (the library was looked up by its new code), so no notebook could rely on it, and it's removed in a minor version.
@@ -1031,33 +1033,32 @@ Every action an operation can write to its log. Class is the set the action is i
 
 #### Dry-run actions
 
-A dry run logs these in place of the changes it would make. Anything it finds by reading is logged under its live name, as in a live run: rows such as `already_member` and `metadata_unchanged`, and warnings and errors.
+A dry run logs these in place of the changes it would make. Each is the action a live run logs for that change, followed by ` (dry run)`, so `action.removesuffix(" (dry run)")` gives the live action. Where the live run might log something else instead, the table says so. Anything a dry run finds by reading is logged under its live name, as in a live run: rows such as `already_member` and `metadata_unchanged`, and warnings and errors. Before 2.0.0, some dry-run actions had other names: see [Upgrading to 2.0.0](#upgrading-to-200).
 
-| Dry-run action | What a live run would do |
+| Dry-run action | What a live run would log |
 | --- | --- |
-| `add_to_group (dry run)` | `added_to_group` |
-| `empty_group (dry run)` | `group_emptied`, with `remove_failed` for any member that can't be removed |
-| `ensure_group (dry run)` | `group_assigned`, or `already_assigned`, creating the group first if it's missing. `create_libraries` logs it for every Auto group, `update_memberships` only for a group it would create |
-| `ensure_manual_contribute_group (dry run)` | `manual_contribute_group_ensured`, or `already_assigned` |
-| `ensure_manual_read_group (dry run)` | `manual_read_group_ensured`, or `already_assigned` |
-| `ensure_navigation_link (dry run)` | `navigation_link_added`, or `navigation_link_renamed` if the link has another title, or nothing if it's already right |
-| `grant_group_access (dry run)` | `group_access_granted` |
-| `group_assigned (dry run)` | `group_assigned` |
+| `added_to_group (dry run)` | `added_to_group` |
+| `group_access_granted (dry run)` | `group_access_granted` |
+| `group_access_removed (dry run)` | `group_access_removed` |
+| `group_assigned (dry run)` | `group_assigned`, or `already_assigned`, creating the group first if it's missing. `create_libraries` logs it for every Auto group, and `update_memberships` for a group it would create or that isn't yet assigned to the library |
 | `group_description_updated (dry run)` | `group_description_updated` |
+| `group_emptied (dry run)` | `group_emptied`, with `remove_failed` for any member that can't be removed |
 | `group_owner_added (dry run)` | `group_owner_added` |
 | `inheritance_broken (dry run)` | `inheritance_broken` |
 | `library_created (dry run)` | `library_created` |
+| `library_renamed (dry run)` | `library_renamed` |
+| `library_retired (dry run)` | `library_retired`, or `retire_deferred` if the library isn't working on its new site yet: a dry run doesn't check, as a dry run of `create_libraries` won't have made it. The group access it would remove is logged separately, as `group_access_removed (dry run)` |
+| `library_unlinked (dry run)` | `library_unlinked` |
+| `manual_contribute_group_ensured (dry run)` | `manual_contribute_group_ensured`, or `already_assigned` |
+| `manual_read_group_ensured (dry run)` | `manual_read_group_ensured`, or `already_assigned` |
 | `metadata_set (dry run)` | `metadata_set` |
 | `navigation_label_created (dry run)` | `navigation_label_created` |
-| `onedrive_shortcut (dry run)` | `onedrive_shortcut_created`, or `onedrive_shortcut_failed` |
-| `remove_from_group (dry run)` | `removed_from_group` |
-| `remove_group_access (dry run)` | `group_access_removed` |
-| `remove_navigation_link (dry run)` | `navigation_link_removed`, if the link exists |
-| `rename_library (dry run)` | `library_renamed` |
-| `retire_library (dry run)` | `library_retired`, or `retire_deferred` if the library isn't working on its new site yet: a dry run doesn't check, as a dry run of `create_libraries` won't have made it. The group access it would remove is logged separately, as `remove_group_access (dry run)` |
-| `site_sharing_lockdown (dry run)` | `site_sharing_disabled` |
-| `sync_navigation_link (dry run)` | `navigation_link_renamed`, if the link exists and has another title |
-| `unlink_library (dry run)` | `library_unlinked` |
+| `navigation_link_added (dry run)` | `navigation_link_added`, or `navigation_link_renamed` if the link has another title, or nothing if it's already right |
+| `navigation_link_removed (dry run)` | `navigation_link_removed`, if the link exists |
+| `navigation_link_renamed (dry run)` | `navigation_link_renamed`, if the link exists and has another title |
+| `onedrive_shortcut_created (dry run)` | `onedrive_shortcut_created`, or `onedrive_shortcut_failed` |
+| `removed_from_group (dry run)` | `removed_from_group` |
+| `site_sharing_disabled (dry run)` | `site_sharing_disabled` |
 
 ### Safety features
 
@@ -1400,6 +1401,83 @@ Outside Fabric, `KeyVaultCertificateCredential` isn't available (it needs `noteb
 | `group_name_collision` row | Two library codes give the same group names, because names keep only letters and digits and ignore case (`PE-KS3` and `PEKS3`), or a code gives the names of a library already on the site. The libraries are skipped until one code changes: recode it as the `library_code` row of the input table describes. |
 | `add_failed` or `remove_failed` row | Graph refused to add or remove that member, or couldn't be reached. The status gives Graph's error. These fail the run, and a re-run tries again. A 403 means the app can't change that group's members: check it owns the group and has `Group.ReadWrite.All` (see [Giving the app access](#giving-the-app-access)). |
 | `retire_skipped` row | Nothing was retired: the old site no longer exists, there's no library with the code on it, or `new_site_url` is the same site as `site_url`. Nothing to do unless the move was recorded wrongly. |
+
+## Upgrading to 2.0.0
+
+2.0.0 renames the dry-run actions that weren't named after the action a live run logs. Each dry-run action is now the live action followed by ` (dry run)`, so `action.removesuffix(" (dry run)")` gives the live action. Live runs log exactly what they did before, and `FATAL_ACTIONS`, `WARNING_ACTIONS` and the action log's columns don't change. No other change in 2.0.0 needs a notebook written for 1.3.0 to change.
+
+| Before 2.0.0 | From 2.0.0 |
+| --- | --- |
+| `add_to_group (dry run)` | `added_to_group (dry run)` |
+| `empty_group (dry run)` | `group_emptied (dry run)` |
+| `ensure_group (dry run)` | `group_assigned (dry run)` |
+| `ensure_manual_contribute_group (dry run)` | `manual_contribute_group_ensured (dry run)` |
+| `ensure_manual_read_group (dry run)` | `manual_read_group_ensured (dry run)` |
+| `ensure_navigation_link (dry run)` | `navigation_link_added (dry run)` |
+| `grant_group_access (dry run)` | `group_access_granted (dry run)` |
+| `onedrive_shortcut (dry run)` | `onedrive_shortcut_created (dry run)` |
+| `remove_from_group (dry run)` | `removed_from_group (dry run)` |
+| `remove_group_access (dry run)` | `group_access_removed (dry run)` |
+| `remove_navigation_link (dry run)` | `navigation_link_removed (dry run)` |
+| `rename_library (dry run)` | `library_renamed (dry run)` |
+| `retire_library (dry run)` | `library_retired (dry run)` |
+| `site_sharing_lockdown (dry run)` | `site_sharing_disabled (dry run)` |
+| `sync_navigation_link (dry run)` | `navigation_link_renamed (dry run)` |
+| `unlink_library (dry run)` | `library_unlinked (dry run)` |
+
+The other dry-run actions, such as `group_owner_added (dry run)` and `library_created (dry run)`, keep their names.
+
+To upgrade:
+
+1. Find anything that reads dry-run rows by their action, such as a filter, a report or a comparison of two dry runs, and change the names it uses to the new ones. The example notebook only filters on `FATAL_ACTIONS` and `WARNING_ACTIONS`, so it needs no change for this. To compare a dry run logged before 2.0.0 with one logged after, rename the older one's actions first:
+
+   ```python
+   DRY_RUN_RENAMES = {
+    "add_to_group (dry run)": "added_to_group (dry run)",
+    "empty_group (dry run)": "group_emptied (dry run)",
+    "ensure_group (dry run)": "group_assigned (dry run)",
+    "ensure_manual_contribute_group (dry run)": "manual_contribute_group_ensured (dry run)",
+    "ensure_manual_read_group (dry run)": "manual_read_group_ensured (dry run)",
+    "ensure_navigation_link (dry run)": "navigation_link_added (dry run)",
+    "grant_group_access (dry run)": "group_access_granted (dry run)",
+    "onedrive_shortcut (dry run)": "onedrive_shortcut_created (dry run)",
+    "remove_from_group (dry run)": "removed_from_group (dry run)",
+    "remove_group_access (dry run)": "group_access_removed (dry run)",
+    "remove_navigation_link (dry run)": "navigation_link_removed (dry run)",
+    "rename_library (dry run)": "library_renamed (dry run)",
+    "retire_library (dry run)": "library_retired (dry run)",
+    "site_sharing_lockdown (dry run)": "site_sharing_disabled (dry run)",
+    "sync_navigation_link (dry run)": "navigation_link_renamed (dry run)",
+    "unlink_library (dry run)": "library_unlinked (dry run)",
+   }
+   old_log["action"] = old_log["action"].replace(DRY_RUN_RENAMES)
+   ```
+
+2. If you're upgrading from a version before 1.3.0, such as 1.1.0, also make the change in [From 1.1.0 or 1.2.0](#from-110-or-120).
+3. Set `alt-fabric-m365` to 2.0.0 in each Fabric environment (see [Installation](#installation)) and publish it.
+4. Run the notebook with `DRY_RUN = True`, check the new names in its action log, then let the pipeline run it live.
+
+### From 1.1.0 or 1.2.0
+
+**`get_library_metadata` returns an extra column, so the notebook needs a change where it reads the metadata.** Since 1.3.0, it returns a `status` column alongside each library's `source_system` and `source_id`: `ok` where it read the library, `library_not_found`, or `error: <reason>` where it couldn't read the site or library. Before 1.3.0, a library that couldn't be read looked like one with no metadata set: both gave `None`.
+
+**Where:** in the faculty notebook, the first cell under the *Smoke Test* heading, which calls `mgr.get_library_metadata(query)` for the demo library and displays the result. Change it to stop the smoke test when the read failed. On a first run the demo library doesn't exist yet, as the next cell creates it, so `library_not_found` is expected there:
+
+```python
+metadata_df = mgr.get_library_metadata(query)
+display(metadata_df)
+# ok, library_not_found, or error: <reason> where the site or library couldn't be read
+failed = metadata_df[metadata_df["status"].str.startswith("error")]
+if not failed.empty:
+    raise RuntimeError(f"Couldn't read the demo library's metadata: {failed['status'].iloc[0]}")
+```
+
+Change anything else that uses the result in the same way:
+
+- **Code that saves it to a Delta table.** The append fails while the table lacks the new column. Add the column once with `ALTER TABLE <table> ADD COLUMNS (status STRING)`, or leave it out with `metadata_df.drop(columns="status")`.
+- **Code that checks its columns exactly,** such as `list(metadata_df.columns) == [...]`. Add `status` to the list.
+
+The other changes in 1.2.0 and 1.3.0 don't change how the package is called, but some change what it accepts or logs. For example, from 1.2.0 a `library_code` SharePoint can't use as a library's URL raises `ValueError`. They're listed in the version history under [Installation](#installation).
 
 ## Upgrading to 1.0.0
 
