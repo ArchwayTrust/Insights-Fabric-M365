@@ -142,7 +142,7 @@ mgr = SharePointLibraryManager(
 
 - The create, unlink and retire passes each read the faculty list separately. A row landing between two reads could be missed by an earlier pass, yet still be covered by the watermark advanced from a later pass. The watermark cell now reads the newest `last_changed_ts` once, as `HIGH_WATERMARK`, and all three passes only take rows up to it. Rows newer than that are left for the next run.
 - The watermark key contains the rollout filters, so a `'` in a filter broke the watermark's lookup and its `MERGE`. The filters can no longer contain one (see **Run context**).
-- The watermark cell sets Spark's session time zone to UTC. The watermark is read with `collect()` and written back as a SQL `TIMESTAMP` literal, which only agree on the time while the session time zone is the notebook's own. `last_changed_ts` should be a UTC write time, stamped when the curated row is written.
+- The watermark cell sets Spark's session time zone to UTC, and reads the watermark and the newest `last_changed_ts` with `toPandas()` rather than `collect()`. `toPandas()` and the `TIMESTAMP` literals the watermark is written back as both use the session time zone, while `collect()` uses the Python process's. `last_changed_ts` should be a UTC write time, stamped when the curated row is written.
 
 **Smoke test.** The navigation and sharing checks read the site through the manager instead of calling private functions with its token:
 
