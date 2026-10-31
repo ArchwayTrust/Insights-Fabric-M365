@@ -186,6 +186,18 @@ def test_title_conflict_with_a_display_name(tenant):
     assert _graph._find_title_conflict(lists, "MATH", title="Maths") is None  # its own title
 
 
+def test_a_library_shortcut_is_found_by_list_id_or_url():
+    library = {"id": "ABC-1", "webUrl": "https://contoso.sharepoint.com/sites/maths/Year%207"}
+
+    assert _graph._find_library_shortcut([{"remoteItem": {"sharepointIds": {"listId": "abc-1"}}}], library)
+    assert _graph._find_library_shortcut(
+        [{"remoteItem": {"webUrl": "https://contoso.sharepoint.com/sites/maths/Year 7/"}}], library,
+    )
+    assert _graph._find_library_shortcut(
+        [{"name": "Year 7", "id": "ABC-1"}, {"remoteItem": {"sharepointIds": {"listId": "other"}}}], library,
+    ) is None
+
+
 # Groups and members
 
 def test_duplicate_group_names_are_refused(tenant):

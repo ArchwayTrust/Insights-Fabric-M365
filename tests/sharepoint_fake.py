@@ -119,6 +119,8 @@ class FakeTenant:
         self.groups = {}  # id -> group dict with a "members" dict of member id -> directory object
         self.users = {}  # id -> user dict
         self.shortcuts = []  # (user id, body)
+        # Ids of users whose OneDrive hasn't been created yet: it's made the first time they open it
+        self.without_onedrive = set()
         self.failures = []  # [method, url regex, response, remaining times]
         self.list_page_size = None  # set to page Graph list results
         self._lock = threading.RLock()  # operations run in parallel with max_workers > 1
@@ -307,9 +309,17 @@ class FakeTenant:
             return response(204)
 
         m = re.fullmatch(r"/users/([^/]+)/drive/root/children", path)
+        if m and m.group(1) in self.without_onedrive:
+            return graph_error(404, "itemNotFound", "The resource could not be found.")
         if m and method == "POST":
             self.shortcuts.append((m.group(1), body))
             return response(201, {"id": "shortcut"})
+        if m and method == "GET":
+            # Shortcuts list their target in remoteItem
+            return response(200, {"value": [
+                {"id": f"shortcut-{i}", "name": body["name"], "remoteItem": dict(body["remoteItem"])}
+                for i, (user_id, body) in enumerate(self.shortcuts) if user_id == m.group(1)
+            ]})
 
         m = re.fullmatch(r"/users/(.+)", path)
         if m and method == "GET":

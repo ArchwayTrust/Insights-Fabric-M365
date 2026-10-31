@@ -16,7 +16,8 @@ from ._common import (
     _validate_required_columns, _validate_site_urls,
 )
 from ._graph import (
-    _create_onedrive_shortcut, _ensure_document_library, _find_title_conflict, _get_library_display_name, _get_list_id,
+    _create_onedrive_shortcut, _ensure_document_library, _find_library_shortcut, _find_title_conflict,
+    _get_library_display_name, _get_list_id, _get_onedrive_root_items,
     _get_site_id, _list_existing_lists, _set_library_display_name,
 )
 from ._groups import (
@@ -2257,6 +2258,134 @@ class SharePointLibraryManager:
             ))
 
         _run_parallel(self._process_update_memberships, items, max_workers_, action_log)
+        return _action_log_to_dataframe(action_log)
+
+    # -------------------------------------------------------------------
+    # ensure_onedrive_shortcuts
+    # -------------------------------------------------------------------
+
+    def _process_ensure_shortcuts(
+        self,
+        site_url: str,
+        site_id: str,
+        library_code: str,
+        existing_lists: dict[str, dict],
+        upns: list[str],
+        user_refs: dict[str, tuple],
+        dry_run: bool,
+        *,
+        action_log: _ThreadSafeLog,
+    ) -> None:
+        """Ensure each user has a OneDrive shortcut to one library.
+
+        Args:
+            site_url: The library's site.
+            site_id: The site's Graph ID.
+            library_code: The library's code.
+            existing_lists: The site's lists, from _list_existing_lists.
+            upns: Normalised user principal names, keys of *user_refs*.
+            user_refs: _resolve_users result.
+            dry_run: Log the shortcuts that would be created rather than create them.
+            action_log: The operation's action log.
+        """
+        library = existing_lists.get(library_code.lower())
+        if library is None:
+            _append_log(
+                action_log, site_url, library_code, "library_not_found",
+                "library does not exist on the site — no shortcuts made",
+            )
+            return
+        shortcut_name = _get_library_display_name(existing_lists, library_code)
+        for upn in upns:
+            oid, _, fail_reason, fatal = user_refs[upn]
+            if oid is None:
+                _append_log(
+                    action_log, site_url, library_code, "error" if fatal else "user_not_found", fail_reason, user=upn,
+                )
+                continue
+            try:
+                if _find_library_shortcut(_get_onedrive_root_items(self._graph_token, oid), library) is not None:
+                    _append_log(
+                        action_log, site_url, library_code, "onedrive_shortcut_exists", "no change needed", user=upn,
+                    )
+                    continue
+                if dry_run:
+                    _append_log(
+                        action_log, site_url, library_code,
+                        "onedrive_shortcut (dry run)", "would create OneDrive shortcut", user=upn,
+                    )
+                    continue
+                _create_onedrive_shortcut(
+                    graph_token=self._graph_token, user_object_id=oid, shortcut_name=shortcut_name,
+                    site_id=site_id, list_id=library["id"], site_url=site_url,
+                )
+                _append_log(action_log, site_url, library_code, "onedrive_shortcut_created", "success", user=upn)
+            except requests.RequestException as exc:
+                status = getattr(getattr(exc, "response", None), "status_code", None)
+                reason = (
+                    "the user's OneDrive doesn't exist yet: it's created the first time they open it"
+                    if status == 404 else str(exc)
+                )
+                logger.warning("OneDrive shortcut for '%s' to '%s' failed: %s", upn, library_code, reason)
+                _append_log(action_log, site_url, library_code, "onedrive_shortcut_failed", reason, user=upn)
+
+    def ensure_onedrive_shortcuts(
+        self,
+        df: pd.DataFrame,
+        *,
+        dry_run: bool | None = None,
+        max_workers: int | None = None,
+    ) -> pd.DataFrame:
+        """Create any missing OneDrive shortcuts to libraries, for example ones that failed before.
+
+        With ``create_onedrive_shortcuts``, update_memberships only creates a
+        shortcut when it adds a user to a group, and doesn't try again if that
+        fails, most often because the user's OneDrive didn't exist yet.  This
+        isn't part of the usual flow: run it to make those shortcuts later.
+        For each user and library it reads the root of the user's OneDrive,
+        and creates a shortcut to the library unless one is already there,
+        even if the user has renamed it.  Safe to re-run.
+
+        Needs ``Files.ReadWrite.All`` on Microsoft Graph, as shortcuts do in
+        update_memberships.
+
+        Required DataFrame columns (other columns are ignored, so the
+        DataFrame given to update_memberships can be reused):
+          - site_url:             Full SharePoint site URL
+          - library_code:         Library code (URL slug)
+          - user_principal_name:  User's UPN
+
+        Args:
+            df:          DataFrame with the required columns.
+            dry_run:     Override instance default.
+            max_workers: Override instance default.
+
+        Returns:
+            Action-log DataFrame: ``onedrive_shortcut_created``,
+            ``onedrive_shortcut_exists``, or ``onedrive_shortcut (dry run)``
+            for each user and library, and ``onedrive_shortcut_failed`` where
+            one couldn't be made, for example because the user's OneDrive
+            doesn't exist yet.
+        """
+        dry_run_, max_workers_ = self._resolve_config(dry_run=dry_run, max_workers=max_workers)
+
+        df = _validate_required_columns(df, {"site_url", "library_code", "user_principal_name"})
+        _validate_site_urls(df["site_url"].unique(), self.sharepoint_hostname)
+
+        action_log = _ThreadSafeLog()
+        sites = self._prefetch_sites(df["site_url"].unique(), action_log)
+        df = df[df["site_url"].isin(list(sites))]
+        user_refs = self._resolve_users(df["user_principal_name"])
+
+        items = []
+        for (site_url, library_code), library_df in df.groupby(["site_url", "library_code"]):
+            upns = sorted({upn.strip().lower() for upn in library_df["user_principal_name"]})
+            items.append((
+                site_url, sites[site_url]["site_id"], library_code, sites[site_url]["lists"],
+                upns, user_refs, dry_run_,
+            ))
+
+        _run_parallel(self._process_ensure_shortcuts, items, max_workers_, action_log)
         return _action_log_to_dataframe(action_log)
 
     # -------------------------------------------------------------------
