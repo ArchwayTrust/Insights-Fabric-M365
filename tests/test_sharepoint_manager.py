@@ -1008,12 +1008,22 @@ def test_retire_finds_the_new_librarys_groups_this_manager_just_created(make_man
     assert (library["displayName"], library["role_assignments"]) == ("MATH_MOVED", {})
 
 
+def not_json():
+    resp = response(200)
+    resp._content = b"<html>Service unavailable</html>"
+    return resp
+
+
 # A failed check says nothing about the new library, and as a warning the run would count as clean
-def test_a_replacement_that_couldnt_be_checked_is_an_error_not_a_deferral(make_manager, tenant, site):
+@pytest.mark.parametrize("failure", ["server error", "not JSON"])
+def test_a_replacement_that_couldnt_be_checked_is_an_error_not_a_deferral(make_manager, tenant, site, failure):
     new_site = tenant.add_site("/sites/BAANew")
     make_manager().create_libraries(libraries_df(site, "MATH"))
     make_manager().create_libraries(libraries_df(new_site, "MATH"))
-    tenant.fail("GET", r"HasUniqueRoleAssignments", response(503), times=6)  # the first try and every retry
+    if failure == "server error":
+        tenant.fail("GET", r"HasUniqueRoleAssignments", response(503), times=6)  # the first try and every retry
+    else:
+        tenant.fail("GET", r"HasUniqueRoleAssignments", not_json())
     tenant.calls.clear()
 
     results = make_manager().retire_moved_libraries(libraries_df(site, "MATH").assign(new_site_url=new_site.url))

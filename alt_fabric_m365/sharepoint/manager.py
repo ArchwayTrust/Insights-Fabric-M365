@@ -1801,6 +1801,9 @@ class SharePointLibraryManager:
                     group = (self._created_group(name) or (None, False))[0]
                 if group is not None and roles.get(_group_claims(group["id"]).lower(), set()) & library_roles:
                     return None
+        except requests.RequestException:
+            # Before ValueError: a response that isn't JSON raises requests' JSONDecodeError, which is both
+            raise
         except ValueError as exc:
             return f"on its new site ({site_url}) has groups that can't be told apart: {exc}"
         return f"on its new site ({site_url}) gives none of its groups access yet"
