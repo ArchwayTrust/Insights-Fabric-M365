@@ -1757,6 +1757,57 @@ def test_grant_skips_a_site_whose_prefetch_fails(make_manager, tenant, site, lib
     assert actions(results) == ["error"]
 
 
+# Each site takes several reads before the per-library work, so they run in parallel with max_workers above 1
+def on_both(build, a, b):
+    """The rows build(site) gives for each of two sites."""
+    return pd.concat([build(a), build(b)], ignore_index=True)
+
+
+TWO_SITE_OPERATIONS = {
+    "create_libraries": lambda m, a, b: m.create_libraries(on_both(lambda s: libraries_df(s, "MATH"), a, b)),
+    "set_library_metadata": lambda m, a, b: m.set_library_metadata(
+        on_both(lambda s: libraries_df(s, "MATH", source_system="MIS"), a, b)),
+    "rename_libraries": lambda m, a, b: m.rename_libraries(on_both(lambda s: libraries_df(s, "MATH"), a, b)),
+    "unlink_libraries": lambda m, a, b: m.unlink_libraries(on_both(lambda s: libraries_df(s, "MATH"), a, b)),
+    "retire_moved_libraries": lambda m, a, b: m.retire_moved_libraries(
+        on_both(lambda s: libraries_df(s, "MATH"), a, b)),
+    "update_memberships": lambda m, a, b: m.update_memberships(
+        on_both(lambda s: memberships_df(s, [("MATH", "jo@contoso.com", "read")]), a, b)),
+    "ensure_onedrive_shortcuts": lambda m, a, b: m.ensure_onedrive_shortcuts(
+        on_both(lambda s: memberships_df(s, [("MATH", "jo@contoso.com", "read")]), a, b)),
+    "grant_group_access": lambda m, a, b: m.grant_group_access(
+        on_both(lambda s: grants_df(s, [("MATH", "Staff", "read")]), a, b)),
+}
+
+
+@pytest.mark.parametrize("operation", TWO_SITE_OPERATIONS)
+def test_sites_are_read_in_parallel_and_their_errors_logged_in_order(make_manager, tenant, monkeypatch, operation):
+    import threading
+    from alt_fabric_m365.sharepoint import manager as manager_module
+    from sharepoint_fake import graph_error
+    tenant.add_user("jo@contoso.com")
+    tenant.add_group("Staff")
+    first, second = tenant.add_site("/sites/A"), tenant.add_site("/sites/B")
+    tenant.fail("GET", r":/sites/[AB]$", graph_error(403, "accessDenied", "Access denied"), times=2)
+    real_get_site_id, second_read = manager_module._get_site_id, threading.Event()
+
+    def get_site_id(token, site_url):
+        # The first site's read only ends after the second's, so the reads overlap and finish out of order
+        if site_url == first.url:
+            assert second_read.wait(timeout=5), "the second site wasn't read while the first was"
+        try:
+            return real_get_site_id(token, site_url)
+        finally:
+            if site_url == second.url:
+                second_read.set()
+    monkeypatch.setattr(manager_module, "_get_site_id", get_site_id)
+
+    results = TWO_SITE_OPERATIONS[operation](make_manager(max_workers=2), first, second)
+
+    assert rows(results, "error")["site_url"].tolist() == [first.url, second.url]
+    assert tenant.writes() == []
+
+
 # Regression tests
 
 def test_nested_group_with_an_ampersand_in_its_name(make_manager, tenant, site, library):
