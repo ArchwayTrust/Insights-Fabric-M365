@@ -48,7 +48,9 @@ The package is built for Fabric notebooks. `KeyVaultCertificateCredential` uses 
   - [Example notebook](#example-notebook)
 - [Troubleshooting](#troubleshooting)
 - [Upgrading to 2.0.0](#upgrading-to-200)
-  - [From 1.1.0 or 1.2.0](#from-110-or-120)
+  - [get_library_metadata returns a status column](#get_library_metadata-returns-a-status-column)
+  - [Dry-run actions are renamed](#dry-run-actions-are-renamed)
+  - [To upgrade](#to-upgrade)
 - [Upgrading to 1.0.0](#upgrading-to-100)
 - [Building and publishing](#building-and-publishing)
 - [Licence](#licence)
@@ -1404,7 +1406,37 @@ Outside Fabric, `KeyVaultCertificateCredential` isn't available (it needs `noteb
 
 ## Upgrading to 2.0.0
 
-2.0.0 renames the dry-run actions that weren't named after the action a live run logs. Each dry-run action is now the live action followed by ` (dry run)`, so `action.removesuffix(" (dry run)")` gives the live action. Live runs log exactly what they did before, and `FATAL_ACTIONS`, `WARNING_ACTIONS` and the action log's columns don't change. No other change in 2.0.0 needs a notebook written for 1.3.0 to change.
+2.0.0 has two changes that can break a notebook written for 1.x, such as 1.1.0 or 1.2.0:
+
+- `get_library_metadata` returns an extra column, `status`. **If you're upgrading from 1.1.0, the notebook needs a change where it reads the metadata:** see the next section.
+- Dry-run actions that weren't named after the action a live run logs are renamed: see [Dry-run actions are renamed](#dry-run-actions-are-renamed).
+
+Live runs log exactly what they did before, and `FATAL_ACTIONS`, `WARNING_ACTIONS` and the action log's columns don't change. Everything else new in 2.0.0 works with a 1.x notebook unchanged; it's listed in the version history under [Installation](#installation).
+
+### get_library_metadata returns a status column
+
+`get_library_metadata` now returns a `status` column alongside each library's `source_system` and `source_id`: `ok` where it read the library, `library_not_found`, or `error: <reason>` where it couldn't read the site or library. In 1.x, a library that couldn't be read looked like one with no metadata set: both gave `None`. Code that unpacks a row into four values, saves the result to a table, or checks its columns breaks on the fifth column.
+
+**Where, in the faculty notebook:** the first cell under the *Smoke Test* heading, which calls `mgr.get_library_metadata(query)` for the demo library and displays the result. Upgrading from 1.1.0, change it to stop the smoke test when the read failed. On a first run the demo library doesn't exist yet, as the next cell creates it, so `library_not_found` is expected there:
+
+```python
+metadata_df = mgr.get_library_metadata(query)
+display(metadata_df)
+# ok, library_not_found, or error: <reason> where the site or library couldn't be read
+failed = metadata_df[metadata_df["status"].str.startswith("error")]
+if not failed.empty:
+    raise RuntimeError(f"Couldn't read the demo library's metadata: {failed['status'].iloc[0]}")
+```
+
+Change anything else that uses the result in the same way:
+
+- **Code that unpacks each row,** such as `for site_url, library_code, source_system, source_id in metadata_df.itertuples(index=False)`. Add `status` to the names, or select the columns first: `metadata_df[["site_url", "library_code", "source_system", "source_id"]]`.
+- **Code that saves it to a Delta table.** The append fails while the table lacks the new column. Add the column once with `ALTER TABLE <table> ADD COLUMNS (status STRING)`, or leave it out with `metadata_df.drop(columns="status")`.
+- **Code that checks its columns exactly,** such as `list(metadata_df.columns) == [...]`. Add `status` to the list.
+
+### Dry-run actions are renamed
+
+Each dry-run action is now the action a live run logs, followed by ` (dry run)`, so `action.removesuffix(" (dry run)")` gives the live action.
 
 | Before 2.0.0 | From 2.0.0 |
 | --- | --- |
@@ -1425,14 +1457,10 @@ Outside Fabric, `KeyVaultCertificateCredential` isn't available (it needs `noteb
 | `sync_navigation_link (dry run)` | `navigation_link_renamed (dry run)` |
 | `unlink_library (dry run)` | `library_unlinked (dry run)` |
 
-The other dry-run actions, such as `group_owner_added (dry run)` and `library_created (dry run)`, keep their names.
+The other dry-run actions, such as `group_owner_added (dry run)` and `library_created (dry run)`, keep their names. The example notebook only filters on `FATAL_ACTIONS` and `WARNING_ACTIONS`, so it needs no change for this. To compare a dry run logged by 1.x with one logged by 2.0.0, rename the older one's actions first:
 
-To upgrade:
-
-1. Find anything that reads dry-run rows by their action, such as a filter, a report or a comparison of two dry runs, and change the names it uses to the new ones. The example notebook only filters on `FATAL_ACTIONS` and `WARNING_ACTIONS`, so it needs no change for this. To compare a dry run logged before 2.0.0 with one logged after, rename the older one's actions first:
-
-   ```python
-   DRY_RUN_RENAMES = {
+```python
+DRY_RUN_RENAMES = {
     "add_to_group (dry run)": "added_to_group (dry run)",
     "empty_group (dry run)": "group_emptied (dry run)",
     "ensure_group (dry run)": "group_assigned (dry run)",
@@ -1449,35 +1477,16 @@ To upgrade:
     "site_sharing_lockdown (dry run)": "site_sharing_disabled (dry run)",
     "sync_navigation_link (dry run)": "navigation_link_renamed (dry run)",
     "unlink_library (dry run)": "library_unlinked (dry run)",
-   }
-   old_log["action"] = old_log["action"].replace(DRY_RUN_RENAMES)
-   ```
-
-2. If you're upgrading from a version before 1.3.0, such as 1.1.0, also make the change in [From 1.1.0 or 1.2.0](#from-110-or-120).
-3. Set `alt-fabric-m365` to 2.0.0 in each Fabric environment (see [Installation](#installation)) and publish it.
-4. Run the notebook with `DRY_RUN = True`, check the new names in its action log, then let the pipeline run it live.
-
-### From 1.1.0 or 1.2.0
-
-**`get_library_metadata` returns an extra column, so the notebook needs a change where it reads the metadata.** Since 1.3.0, it returns a `status` column alongside each library's `source_system` and `source_id`: `ok` where it read the library, `library_not_found`, or `error: <reason>` where it couldn't read the site or library. Before 1.3.0, a library that couldn't be read looked like one with no metadata set: both gave `None`.
-
-**Where:** in the faculty notebook, the first cell under the *Smoke Test* heading, which calls `mgr.get_library_metadata(query)` for the demo library and displays the result. Change it to stop the smoke test when the read failed. On a first run the demo library doesn't exist yet, as the next cell creates it, so `library_not_found` is expected there:
-
-```python
-metadata_df = mgr.get_library_metadata(query)
-display(metadata_df)
-# ok, library_not_found, or error: <reason> where the site or library couldn't be read
-failed = metadata_df[metadata_df["status"].str.startswith("error")]
-if not failed.empty:
-    raise RuntimeError(f"Couldn't read the demo library's metadata: {failed['status'].iloc[0]}")
+}
+old_log["action"] = old_log["action"].replace(DRY_RUN_RENAMES)
 ```
 
-Change anything else that uses the result in the same way:
+### To upgrade
 
-- **Code that saves it to a Delta table.** The append fails while the table lacks the new column. Add the column once with `ALTER TABLE <table> ADD COLUMNS (status STRING)`, or leave it out with `metadata_df.drop(columns="status")`.
-- **Code that checks its columns exactly,** such as `list(metadata_df.columns) == [...]`. Add `status` to the list.
-
-The other changes in 1.2.0 and 1.3.0 don't change how the package is called, but some change what it accepts or logs. For example, from 1.2.0 a `library_code` SharePoint can't use as a library's URL raises `ValueError`. They're listed in the version history under [Installation](#installation).
+1. Make the change in [get_library_metadata returns a status column](#get_library_metadata-returns-a-status-column) wherever a notebook uses `get_library_metadata`'s result.
+2. Change anything that reads dry-run rows by their action, such as a filter, a report or a comparison of two dry runs, to the new names.
+3. Set `alt-fabric-m365` to 2.0.0 in each Fabric environment (see [Installation](#installation)) and publish it.
+4. Run the notebook with `DRY_RUN = True` and `RUN_SMOKE_TEST = True`, check its action log, then let the pipeline run it live.
 
 ## Upgrading to 1.0.0
 
