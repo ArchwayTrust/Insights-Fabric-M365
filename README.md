@@ -1097,6 +1097,8 @@ Run the operations in this order, from a pipeline, with a dry run first whenever
 
 Every operation is safe to re-run, so a failed run is fixed by running it again.
 
+Run it from a pipeline. Mark the parameters cell as such (in the cell's **...** menu, **Toggle parameter cell**), so the pipeline's Notebook activity can override it under **Base parameters**, for example `DRY_RUN = False`. Give each base parameter the type it has in the cell, Bool for `DRY_RUN`: a String `"False"` is true, so the manager raises `TypeError` for it rather than run live. Don't let two runs overlap, as both would sync the same groups and advance the same watermark: set the pipeline's **Concurrency** to 1, and don't run the notebook live by hand while the pipeline can run.
+
 ```python
 # Parameters cell
 DRY_RUN = True
