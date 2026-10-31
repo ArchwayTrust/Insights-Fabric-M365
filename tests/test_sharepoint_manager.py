@@ -876,9 +876,51 @@ def test_nested_group_with_an_ampersand_in_its_name(make_manager, tenant, site, 
     assert staff["id"] in tenant.group_named("BAA-Sharepoint-MATH-Auto-Read")["members"]
 
 
-def test_sharepoint_token_is_never_sent_to_another_host(make_manager, tenant):
+def nested_df(site_url, member_group="Staff"):
+    return pd.DataFrame({
+        "site_url": [site_url], "library_code": ["MATH"], "group_prefix": [PREFIX],
+        "member_group": [member_group], "permission": ["read"],
+    })
+
+
+# Every way a site URL reaches the manager, each called with the URL under test
+SITE_URL_OPERATIONS = {
+    "create_libraries": lambda m, site, url: m.create_libraries(libraries_df(site, "MATH").assign(site_url=url)),
+    "set_library_metadata": lambda m, site, url: m.set_library_metadata(
+        libraries_df(site, "MATH", source_system="MIS").assign(site_url=url)),
+    "get_library_metadata": lambda m, site, url: m.get_library_metadata(
+        libraries_df(site, "MATH").assign(site_url=url)),
+    "rename_libraries": lambda m, site, url: m.rename_libraries(libraries_df(site, "MATH").assign(site_url=url)),
+    "unlink_libraries": lambda m, site, url: m.unlink_libraries(libraries_df(site, "MATH").assign(site_url=url)),
+    "retire_moved_libraries": lambda m, site, url: m.retire_moved_libraries(
+        libraries_df(site, "MATH").assign(site_url=url)),
+    "retire_moved_libraries new_site_url": lambda m, site, url: m.retire_moved_libraries(
+        libraries_df(site, "MATH").assign(new_site_url=url)),
+    "update_memberships": lambda m, site, url: m.update_memberships(
+        memberships_df(site, [("MATH", "jo@contoso.com", "read")]).assign(site_url=url)),
+    "update_memberships libraries_df": lambda m, site, url: m.update_memberships(
+        memberships_df(site, []), libraries_df=libraries_df(site, "MATH").assign(site_url=url)),
+    "update_memberships nested_groups_df": lambda m, site, url: m.update_memberships(
+        memberships_df(site, []), nested_groups_df=nested_df(url)),
+    "grant_group_access": lambda m, site, url: m.grant_group_access(grants_df(site, [("MATH", "Staff", "read")]).assign(
+        site_url=url)),
+    "enforce_site_sharing_lockdown": lambda m, site, url: m.enforce_site_sharing_lockdown([url]),
+    "get_site_sharing_settings": lambda m, site, url: m.get_site_sharing_settings(url),
+    "get_navigation_link": lambda m, site, url: m.get_navigation_link(url, "MATH"),
+}
+
+
+@pytest.mark.parametrize("url", [
+    "http://contoso.sharepoint.com/sites/x",
+    "https://evil.example.com/sites/x",
+    # urlparse reads these as on contoso.sharepoint.com, but requests sends the first to evil.example.com
+    "https://evil.example.com\\@contoso.sharepoint.com/sites/x",
+    "https://user@contoso.sharepoint.com/sites/x",
+])
+@pytest.mark.parametrize("operation", SITE_URL_OPERATIONS)
+def test_sharepoint_token_is_never_sent_to_another_host(make_manager, tenant, site, operation, url):
     with pytest.raises(ValueError, match="site_url"):
-        make_manager().enforce_site_sharing_lockdown(["https://evil.example.com/sites/x"])
+        SITE_URL_OPERATIONS[operation](make_manager(), site, url)
 
     assert tenant.calls == []
 

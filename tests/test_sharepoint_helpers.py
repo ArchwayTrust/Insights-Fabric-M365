@@ -510,6 +510,9 @@ def test_user_principal_name_cannot_change_the_graph_path(tenant):
     "http://contoso.sharepoint.com/sites/maths",
     "https://evil.example.com/sites/maths",
     "https://contoso.sharepoint.com.evil.example.com/sites/maths",
+    # urlparse reads these as on contoso.sharepoint.com, but requests sends the first to evil.example.com
+    "https://evil.example.com\\@contoso.sharepoint.com/sites/maths",
+    "https://user@contoso.sharepoint.com/sites/maths",
 ])
 def test_site_urls_must_be_https_on_the_sharepoint_host(url):
     with pytest.raises(ValueError, match="site_url"):
