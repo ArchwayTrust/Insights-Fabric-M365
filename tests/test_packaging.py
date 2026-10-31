@@ -108,6 +108,16 @@ def test_readme_examples_show_the_current_version(pattern):
     assert found and set(found) == {alt_fabric_m365.__version__}
 
 
+def test_readme_action_reference_gives_each_fatal_and_warning_actions_class():
+    from alt_fabric_m365.sharepoint import FATAL_ACTIONS, WARNING_ACTIONS
+    section = README.split("#### Action reference", 1)[1].split("#### Dry-run actions", 1)[0]
+    classed = re.findall(r"^\| `([a-z_]+)` \|.*\| (Fatal|Warning) \|$", section, re.M)
+
+    # A notebook's run gate depends on these, so the reference must agree with them
+    assert {name for name, cls in classed if cls == "Fatal"} == set(FATAL_ACTIONS)
+    assert {name for name, cls in classed if cls == "Warning"} == set(WARNING_ACTIONS)
+
+
 def test_graph_api_was_removed_in_1_0():
     with pytest.raises(ModuleNotFoundError):
         importlib.import_module("alt_fabric_m365.graph_api")

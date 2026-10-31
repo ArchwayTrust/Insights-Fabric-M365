@@ -959,7 +959,7 @@ results = mgr.update_memberships(members, libraries_df=libraries)
 Every operation returns a DataFrame with the columns `site_url`, `document_library`, `group`, `user`, `action`, `permission` and `status`, one row per thing it did or (in a dry run) would do. Problems are rows too, so one bad library, user or site never stops the others. Where nothing needed changing, the row says so (`already_member`, `already_assigned`, `metadata_unchanged`), and nothing is written. Two sets of action names help decide whether a run succeeded:
 
 - `FATAL_ACTIONS`: `error`, `add_failed`, `remove_failed`. Something failed and should be retried, so fail the run.
-- `WARNING_ACTIONS`: for example `user_not_found`, `library_not_found` and `removal_guardrail_triggered`. Problems with the data that failing the run wouldn't fix.
+- `WARNING_ACTIONS`: for example `user_not_found`, `library_not_found` and `removal_guardrail_triggered`. Problems with the data that failing the run wouldn't fix. The [action reference](#action-reference) below lists every action and its class.
 
 ```python
 from alt_fabric_m365.sharepoint import FATAL_ACTIONS, WARNING_ACTIONS
@@ -970,6 +970,90 @@ if not failures.empty:
     raise RuntimeError(f"{len(failures)} failed action(s)")
 ```
 
+#### Action reference
+
+Every action an operation can write to its log. Class is the set the action is in: Fatal for `FATAL_ACTIONS`, Warning for `WARNING_ACTIONS`, and blank for neither.
+
+| Action | Operations | Meaning | Class |
+| --- | --- | --- | --- |
+| `add_failed` | `update_memberships` | A user or nested group couldn't be added to the group. The status gives the error. | Fatal |
+| `added_to_group` | `update_memberships` | A user was added to the Auto group, or a group was nested in it. | |
+| `already_assigned` | `create_libraries`, `update_memberships`, `grant_group_access` | The group already holds its permission level on the library, so nothing changed. | |
+| `already_member` | `update_memberships` | The user or nested group is already in the group, so nothing changed. | |
+| `already_named` | `rename_libraries` | The library already has that display name, so nothing changed. | |
+| `already_retired` | `retire_moved_libraries` | The old library is already named `{code}_MOVED`, so it isn't renamed again. Its group access is still checked. | |
+| `already_unlinked` | `unlink_libraries` | The library is already named `{code}_UNLINKED`, so it isn't renamed again. Its Auto groups are still emptied. | |
+| `error` | All operations | Something failed, such as a request, an unreadable site or a duplicated group name. The status says what. | Fatal |
+| `group_access_granted` | `grant_group_access` | The group was granted the permission level on the library. | |
+| `group_access_removed` | `retire_moved_libraries` | A group's permission level was removed from the old library, ending the access it gave there. | |
+| `group_assigned` | `create_libraries`, `update_memberships` | An Auto group was given its permission level on the library. | |
+| `group_description_updated` | `create_libraries` | An existing group's description didn't match the library, such as after a rename, so it was updated. | |
+| `group_emptied` | `unlink_libraries` | Every member was removed from an Auto group. The status gives how many, and any that couldn't be. | |
+| `group_name_collision` | `create_libraries`, `unlink_libraries`, `update_memberships` | The library's group names would be the same as another library's, so the library was skipped. | Warning |
+| `group_not_found` | `update_memberships`, `grant_group_access` | A group named in `grant_group_access` doesn't exist, or a nested group can't be found or can't be nested. | Warning |
+| `group_not_owned` | `create_libraries`, `unlink_libraries`, `update_memberships` | The group's owners don't include the app, so it wasn't granted access, synced or emptied. | Warning |
+| `group_owner_added` | `create_libraries`, `unlink_libraries`, `update_memberships` | The group had no owner, so the app was added as its owner. | |
+| `inheritance_broken` | `create_libraries` | An existing library stopped inheriting the site's permissions, so only its groups give access now. | |
+| `library_created` | `create_libraries` | The library was created, with its code as its URL. The status gives its address. | |
+| `library_name_conflict` | `create_libraries` | Another list already has the title, so the library wasn't created, or keeps its current display name. | Warning |
+| `library_not_found` | `update_memberships`, `unlink_libraries`, `grant_group_access`, `ensure_onedrive_shortcuts` | The library doesn't exist on the site, so it was skipped. `unlink_libraries` still empties its Auto groups. | Warning |
+| `library_renamed` | `create_libraries`, `rename_libraries` | The library's display name was changed. | |
+| `library_retired` | `retire_moved_libraries` | The old library was renamed `{code}_MOVED`, as it has moved to another site. | |
+| `library_unlinked` | `unlink_libraries` | The library was renamed `{code}_UNLINKED`. | |
+| `manual_contribute_group_ensured` | `create_libraries` | The Manual-Contribute group was given Contribute on the library. Its membership isn't synced. | |
+| `manual_groups_preserved` | `unlink_libraries` | Logged for every library unlinked: its Manual groups, if any, are left as they are. | |
+| `manual_read_group_ensured` | `create_libraries` | The Manual-Read group was given Read on the library. Its membership isn't synced. | |
+| `metadata_set` | `create_libraries`, `set_library_metadata` | A `source_system` or `source_id` value was written to the library. The status gives the property and value. | |
+| `metadata_unchanged` | `create_libraries`, `set_library_metadata` | The library already had that `source_system` or `source_id` value, so nothing was written. | |
+| `navigation_label_created` | `create_libraries` | The navigation label the library links go under was created on the site. | |
+| `navigation_link_added` | `create_libraries` | A link to the library was added under the navigation label. | |
+| `navigation_link_removed` | `unlink_libraries`, `retire_moved_libraries` | The library's link was removed from under the navigation label. | |
+| `navigation_link_renamed` | `create_libraries`, `rename_libraries` | The library's navigation link was given its new display name. | |
+| `non_user_member_preserved` | `update_memberships` | A member that isn't a user or group, such as a service principal or device, was left in place. | |
+| `onedrive_shortcut_created` | `update_memberships`, `ensure_onedrive_shortcuts` | A shortcut to the library was added to the user's OneDrive. | |
+| `onedrive_shortcut_exists` | `ensure_onedrive_shortcuts` | The user's OneDrive already has a shortcut to the library, even if they've renamed it. | |
+| `onedrive_shortcut_failed` | `update_memberships`, `ensure_onedrive_shortcuts` | A shortcut couldn't be made, most often because the user's OneDrive doesn't exist yet. | Warning |
+| `removal_guardrail_triggered` | `update_memberships` | Removals were skipped as there were more than `max_removals_per_group`, or `max_removals_per_run` for the call. | Warning |
+| `removals_skipped` | `update_memberships` | A user or nested group for the role couldn't be resolved, so that kind of removal was skipped. | Warning |
+| `remove_failed` | `update_memberships`, `unlink_libraries` | A member couldn't be removed from a group. The status gives the error. | Fatal |
+| `removed_from_group` | `update_memberships` | A user or nested group no longer wanted was removed from an Auto group. | |
+| `retire_deferred` | `retire_moved_libraries` | The library isn't working on its new site yet, so the old one keeps its access. | Warning |
+| `retire_skipped` | `retire_moved_libraries` | Nothing was retired: the old site or library no longer exists, or the new site is the same site. | |
+| `site_sharing_check` | `enforce_site_sharing_lockdown` | Member sharing, access requests and member invites were already off, so nothing changed. | |
+| `site_sharing_disabled` | `enforce_site_sharing_lockdown` | Member sharing, access requests or member invites were turned off. The status lists which. | |
+| `skip` | `update_memberships` | A row's permission isn't read, contribute or owner, so it wasn't synced and that kind of removal was skipped. | Warning |
+| `skipped` | `set_library_metadata` | The row had neither a `source_system` nor a `source_id` value, so nothing was done. | |
+| `user_not_found` | `update_memberships`, `ensure_onedrive_shortcuts` | The user couldn't be found in Entra ID, by sign-in name, mail or proxy address, or was blank. | Warning |
+
+#### Dry-run actions
+
+A dry run logs these in place of the changes it would make. Anything it finds by reading is logged under its live name, as in a live run: rows such as `already_member` and `metadata_unchanged`, and warnings and errors.
+
+| Dry-run action | What a live run would do |
+| --- | --- |
+| `add_to_group (dry run)` | `added_to_group` |
+| `empty_group (dry run)` | `group_emptied`, with `remove_failed` for any member that can't be removed |
+| `ensure_group (dry run)` | `group_assigned`, or `already_assigned`, creating the group first if it's missing. `create_libraries` logs it for every Auto group, `update_memberships` only for a group it would create |
+| `ensure_manual_contribute_group (dry run)` | `manual_contribute_group_ensured`, or `already_assigned` |
+| `ensure_manual_read_group (dry run)` | `manual_read_group_ensured`, or `already_assigned` |
+| `ensure_navigation_link (dry run)` | `navigation_link_added`, or `navigation_link_renamed` if the link has another title, or nothing if it's already right |
+| `grant_group_access (dry run)` | `group_access_granted` |
+| `group_assigned (dry run)` | `group_assigned` |
+| `group_owner_added (dry run)` | `group_owner_added` |
+| `inheritance_broken (dry run)` | `inheritance_broken` |
+| `library_created (dry run)` | `library_created` |
+| `metadata_set (dry run)` | `metadata_set` |
+| `navigation_label_created (dry run)` | `navigation_label_created` |
+| `onedrive_shortcut (dry run)` | `onedrive_shortcut_created`, or `onedrive_shortcut_failed` |
+| `remove_from_group (dry run)` | `removed_from_group` |
+| `remove_group_access (dry run)` | `group_access_removed` |
+| `remove_navigation_link (dry run)` | `navigation_link_removed`, if the link exists |
+| `rename_library (dry run)` | `library_renamed` |
+| `retire_library (dry run)` | `library_retired`. The group access it would remove is logged separately, as `remove_group_access (dry run)` |
+| `site_sharing_lockdown (dry run)` | `site_sharing_disabled` |
+| `sync_navigation_link (dry run)` | `navigation_link_renamed`, if the link exists and has another title |
+| `unlink_library (dry run)` | `library_unlinked` |
+
 ### Safety features
 
 - **Dry run.** With `dry_run=True` nothing is changed; the log shows what would be, with actions ending `(dry run)`. A dry run of `update_memberships` reads each group's current members, so it lists the members a live run would add and remove, and shows `removals_skipped` and `removal_guardrail_triggered` where a live run would. A dry run of `grant_group_access` reads the groups and the libraries' role assignments, so it reports missing groups and libraries, and grants already held, as a live run would.
@@ -978,7 +1062,7 @@ if not failures.empty:
 - **Incomplete data never drives removals.** If any user (or nested group) for a role can't be resolved, removals of that kind from that role's group are skipped (`removals_skipped`), as the "stale" member may be the one that failed to resolve. A row whose `permission` isn't `read`, `contribute` or `owner` is logged as `skip`, and as it could be meant for any role, removals of that kind are skipped from all of the library's groups.
 - **Manual groups are never synced or emptied,** and service principals and devices in Auto groups are left in place.
 - **No guessing between duplicates.** If two Entra groups share a name the manager would use, it stops for that library rather than pick one. Library codes that would produce the same group names (such as `PE-KS3` and `PEKS3`, or codes differing only in case) are skipped with `group_name_collision`, including when the other library was created on the same site by an earlier run. Libraries on different sites are only compared within one call, so keep two sites' group names apart (see [Group naming](#adding-setting-specific-steps)). A library is only ever found by its URL, so a code is never matched to another library that merely has that title (`library_name_conflict`). A library is given its own permissions and groups before its display name, so if another list already has that name, it keeps its code as its title (also `library_name_conflict`) rather than being left open to the whole site.
-- **Groups must be the app's.** Group names are predictable, so a group someone else creates with the name a library would use could otherwise be handed that library's access. The app is made owner of the groups it creates, and before it grants or syncs an existing group it checks the app is an owner: a group with no owner (as earlier versions created them) has the app added and is logged as `group_owner_added`; a group owned only by others is skipped with `group_not_owned`. This includes an Auto group that `update_memberships` would empty, so a group the app doesn't own is never emptied. Dry runs of `create_libraries` and `update_memberships` read the owners and log what a live run would do. Groups are only checked when an operation uses them, so to adopt them all at once see [Adopting groups created by earlier versions](#adopting-groups-created-by-earlier-versions). The app's object ID is read from its Graph token, or can be passed as `service_principal_id`. Groups created with `app_owned=False` aren't owned or checked, and `grant_group_access` grants the groups it's given by name.
+- **Groups must be the app's.** Group names are predictable, so a group someone else creates with the name a library would use could otherwise be handed that library's access. The app is made owner of the groups it creates, and before it grants or syncs an existing group it checks the app is an owner: a group with no owner (as earlier versions created them) has the app added and is logged as `group_owner_added`; a group owned only by others is skipped with `group_not_owned`. This includes an Auto group that `update_memberships` would empty, so a group the app doesn't own is never emptied. Dry runs of `create_libraries`, `update_memberships` and `unlink_libraries` read the owners and log what a live run would do. Groups are only checked when an operation uses them, so to adopt them all at once see [Adopting groups created by earlier versions](#adopting-groups-created-by-earlier-versions). The app's object ID is read from its Graph token, or can be passed as `service_principal_id`. Groups created with `app_owned=False` aren't owned or checked, and `grant_group_access` grants the groups it's given by name.
 - **Creating a group, navigation link or OneDrive shortcut is never repeated** after a failure that may have succeeded (a 5xx or timeout), so a retry can't make a duplicate. The next run finds what was created. Graph's name lookups can miss a group for a short while after it's created, so a manager also remembers the groups it creates. Until the lookup finds one, later operations in the same run reuse it rather than create it again, and check its owner and read its members as they would any group's.
 - **Only document libraries count as libraries.** An ordinary list whose URL ends in the code (`/Lists/ENG`) is never adopted, though its title still counts for `library_name_conflict`.
 - **A moved library keeps working until its replacement works.** Given `new_site_url`, `retire_moved_libraries` leaves the old library alone (`retire_deferred`) until the library is working on the new site: it exists, has its own permissions, and gives at least one of its groups access. If `new_site_url` is the same site as `site_url`, spelt differently (such as in case, or with a trailing slash), the library hasn't moved, so it's left alone (`retire_skipped`).
@@ -1291,6 +1375,11 @@ Outside Fabric, `KeyVaultCertificateCredential` isn't available (it needs `noteb
 | `group_not_owned` row | A group with the name the manager uses is owned by someone, but not by the app registration, so it wasn't used. Check who created it: if it's legitimate, add the app's service principal as an owner; otherwise delete it. |
 | `retire_deferred` row | The library isn't working on its new site yet (for example its create failed, or the copy there is the `_MOVED` leftover of an earlier move back), so the old one was left working. The status says what's missing. It's retired on a later run once the new one exists. |
 | `library_name_conflict` row | Another list on the site already has the library's code, or its display name, as its title. With the code, the library can't be created; with the display name, the library keeps its code as its title. Rename the other list's title. |
+| `group_not_found` row | A group named in `grant_group_access`, or a `member_group` in `nested_groups_df`, doesn't exist, has a name more than one group shares, or isn't a security group, as Microsoft 365 groups and distribution lists can't be nested. The status says which. Correct the name, use the group's object ID, or use a security group. |
+| `removals_skipped` row | A user or nested group for that role couldn't be resolved (see its `user_not_found`, `group_not_found` or `error` row), so that kind of removal was skipped for the role: the member that looks stale may be the one that wasn't found. Fix the unresolved row, and the next run makes the removals. |
+| `group_name_collision` row | Two library codes give the same group names, because names keep only letters and digits and ignore case (`PE-KS3` and `PEKS3`), or a code gives the names of a library already on the site. The libraries are skipped until one code changes: recode it as the `library_code` row of the input table describes. |
+| `add_failed` or `remove_failed` row | Graph refused to add or remove that member, or couldn't be reached. The status gives Graph's error. These fail the run, and a re-run tries again. A 403 means the app can't change that group's members: check it owns the group and has `Group.ReadWrite.All` (see [Giving the app access](#giving-the-app-access)). |
+| `retire_skipped` row | Nothing was retired: the old site no longer exists, there's no library with the code on it, or `new_site_url` is the same site as `site_url`. Nothing to do unless the move was recorded wrongly. |
 
 ## Upgrading to 1.0.0
 
