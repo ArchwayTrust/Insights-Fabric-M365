@@ -48,6 +48,27 @@ def _graph_error(response: requests.Response) -> tuple[str | None, str | None]:
     return error.get('code'), error.get('message')
 
 
+def _error_message(action: str, response: requests.Response) -> str:
+    """Returns the message for a failed Microsoft Graph request, with Graph's error code and message.
+
+    The README's troubleshooting table matches on Graph's error code, such as ErrorAccessDenied for a mailbox the
+    app has no Exchange role on.
+
+    Args:
+        action: What failed, such as 'Failed to send email'.
+        response: Graph's response.
+
+    Returns:
+        The message, ending with the status code, Graph's error code and its message (or the response text if the
+        body isn't a Graph error).
+    """
+    error_code, error_message = _graph_error(response)
+    return (
+        f"{action}. Status code: {response.status_code}, "
+        f"Error code: {error_code}, Message: {error_message or response.text}"
+    )
+
+
 class Emails:
     """A class to interact with Microsoft Graph API for managing emails in a mailbox.
 
@@ -152,8 +173,7 @@ class Emails:
             # Get headers for each page, so a token expiring part way through is refreshed
             response = requests.get(endpoint, headers=self._headers(), params=query_parameters, timeout=self.REQUEST_TIMEOUT_SECONDS)
             if response.status_code != 200:
-                # Handle unsuccessful API call
-                raise Exception(f"Error searching message by subject. Status code: {response.status_code}, Response: {response.text}")
+                raise Exception(_error_message("Error searching message by subject", response))
 
             data = response.json()
             messages.extend(data.get('value', []))
@@ -196,7 +216,7 @@ class Emails:
             An empty list means the email has no downloadable attachments.
 
         Raises:
-            requests.HTTPError: If the Microsoft Graph request fails.
+            requests.HTTPError: If the Microsoft Graph request fails. The message includes Graph's error code.
         """
         # Constructing the URL for the Microsoft Graph API attachments endpoint
         endpoint = f'{self._mailbox_url(shared_mailbox_email)}/messages/{_path(message_id)}/attachments'
@@ -206,7 +226,8 @@ class Emails:
         while endpoint:
             # Performing a GET request to retrieve a page of attachments, raising if unsuccessful
             response = requests.get(endpoint, headers=self._headers(), timeout=self.REQUEST_TIMEOUT_SECONDS)
-            response.raise_for_status()
+            if not response.ok:
+                raise requests.HTTPError(_error_message("Failed to list attachments", response), response=response)
 
             data = response.json()
             for attachment in data.get('value', []):
@@ -248,6 +269,10 @@ class Emails:
 
         Returns:
             The content of the attachment, as bytes for binary files or a decoded string for text files.
+
+        Raises:
+            requests.HTTPError: If the Microsoft Graph request fails. The message includes Graph's error code.
+            Exception: If the attachment isn't a file attachment.
         """
         # Constructing the URL to access the attachment via Microsoft Graph API
         attachment_url = (
@@ -256,7 +281,10 @@ class Emails:
 
         # Making a GET request to fetch the attachment and check success
         attachment_response = requests.get(attachment_url, headers=self._headers(), timeout=self.REQUEST_TIMEOUT_SECONDS)
-        attachment_response.raise_for_status()
+        if not attachment_response.ok:
+            raise requests.HTTPError(
+                _error_message("Failed to download attachment", attachment_response), response=attachment_response,
+            )
 
         # Extracting the attachment content from the response
         attachment = attachment_response.json()
@@ -284,7 +312,10 @@ class Emails:
             shared_mailbox_email: Optional. The email address of a different mailbox to delete the email from.
 
         Returns:
-            True if the email was successfully deleted. Raises an exception otherwise.
+            True if the email was successfully deleted.
+
+        Raises:
+            Exception: If Graph doesn't delete it. The message includes Graph's error code.
         """
         # Constructing the URL for the Microsoft Graph API delete message endpoint
         delete_url = f'{self._mailbox_url(shared_mailbox_email)}/messages/{_path(message_id)}'
@@ -297,7 +328,7 @@ class Emails:
             print("Email deleted successfully.")
             return True
         else:
-            raise Exception(f"Failed to delete email. Status code: {response.status_code}, Response: {response.text}")
+            raise Exception(_error_message("Failed to delete email", response))
 
     def send_email(
         self, subject: str, content: str, email_addresses: list[str], shared_mailbox_email: str | None = None,
@@ -311,6 +342,9 @@ class Emails:
             content: Email content, as plain text.
             email_addresses: A list of recipient email addresses.
             shared_mailbox_email: Optional. The email address of a different mailbox to send from.
+
+        Raises:
+            Exception: If Graph doesn't accept the email. The message includes Graph's error code.
         """
         url = f'{self._mailbox_url(shared_mailbox_email)}/sendMail'
 
@@ -338,8 +372,7 @@ class Emails:
         if response.status_code == 202:
             print("Email sent successfully!")
         else:
-            print(f"Failed to send email. Status code: {response.status_code}")
-            raise Exception(f"Failed to send email. Status code: {response.status_code}")
+            raise Exception(_error_message("Failed to send email", response))
 
     def _check_if_message_exists(self, message_id: str, shared_mailbox_email: str | None = None) -> bool:
         """Checks if an email message exists in the mailbox.
@@ -368,13 +401,10 @@ class Emails:
         if response.ok:
             return True
 
-        error_code, error_message = _graph_error(response)
+        error_code, _ = _graph_error(response)
 
         # The mailbox was found, but the message wasn't
         if response.status_code == 404 and error_code == 'ErrorItemNotFound':
             return False
 
-        raise Exception(
-            f"Failed to check for message existence. Status code: {response.status_code}, "
-            f"Error code: {error_code}, Message: {error_message or response.text}"
-        )
+        raise Exception(_error_message("Failed to check for message existence", response))

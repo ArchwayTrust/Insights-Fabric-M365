@@ -1256,7 +1256,7 @@ Outside Fabric, `KeyVaultCertificateCredential` isn't available (it needs `noteb
 | `AADSTS700027` (certificate not registered on application) | The certificate version used to sign hasn't been uploaded to the app registration. This usually happens after a renewal, see [Renewing the certificate](#renewing-the-certificate). |
 | `AADSTS700016` (application not found in the directory) | The client ID or tenant ID is wrong. |
 | `AADSTS7000215` (invalid client secret) | Client secret only: the secret is wrong or has expired. |
-| Graph `403` with `ErrorAccessDenied` | The app has no Exchange role for this mailbox. Check `Test-ServicePrincipalAuthorization`, or wait up to 2 hours after a change. |
+| `Status code: 403, Error code: ErrorAccessDenied` from an `Emails` method | The app has no Exchange role for this mailbox. Check `Test-ServicePrincipalAuthorization`, or wait up to 2 hours after a change. |
 | Graph `404` for the mailbox | The mailbox address is wrong, or the mailbox doesn't exist. |
 | `ValueError` from an `Emails` method | No mailbox was given: pass one to `Emails(credential, mailbox)` or `shared_mailbox_email` to the call. |
 | `MessageNotFoundError: No matching messages found.` | No email in the Inbox matches the exact subject and sender. Check both, or try `only_search_inbox=False`. |
