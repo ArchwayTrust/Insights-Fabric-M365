@@ -149,7 +149,27 @@ def test_run_parallel_logs_failures_and_carries_on(max_workers):
     _common._run_parallel(work, [("a",), ("bad",), ("b",)], max_workers, log)
 
     assert sorted(done) == ["a", "b"]
-    assert [(r["action"], r["status"]) for r in log.to_list()] == [("error", "boom")]
+    assert [(r["action"], r["status"]) for r in log.to_list()] == [("error", "RuntimeError: boom")]
+
+
+@pytest.mark.parametrize("max_workers", [1, 4])
+def test_run_parallel_logs_an_unhandled_error_against_its_library_only(max_workers, caplog):
+    # A membership sync's items carry every resolved user
+    users = {"jo@contoso.com": ("0b1c2d3e", "jo@contoso.com", None, False)}
+
+    def work(site_url, site_id, library_code, user_refs, *, action_log):
+        raise KeyError("Id")  # an unexpected response shape
+
+    log = _common._ThreadSafeLog()
+    _common._run_parallel(
+        work, [(SITE, "site-id", "MATH", users)], max_workers, log, locate=lambda item: (item[0], item[2]),
+    )
+
+    [row] = log.to_list()
+    assert (row["site_url"], row["document_library"], row["action"], row["status"]) == (
+        SITE, "MATH", "error", "KeyError: 'Id'",
+    )
+    assert "MATH" in caplog.text and "jo@contoso.com" not in caplog.text and "0b1c2d3e" not in caplog.text
 
 
 @pytest.mark.parametrize("cancelled_while", ["waiting", "submitting"])
