@@ -66,8 +66,10 @@ def build_group_name(
         library_name: Library code. Only its letters and digits are used.
         role: Role suffix, such as ``"Auto-Read"`` or ``"Manual-Contribute"``.
         include_site_name: Optional. Whether to include the site name, which
-            makes names longer but unique across sites with the same prefix.
-            Defaults to True.
+            makes names longer but tells apart sites with the same prefix.
+            Only the last path segment is used, so two sites can share it
+            (``/sites/hr``, ``/teams/hr``): give such sites different
+            prefixes.  Defaults to True.
 
     Returns:
         The group's display name.
