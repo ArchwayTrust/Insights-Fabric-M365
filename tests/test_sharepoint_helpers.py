@@ -826,7 +826,8 @@ def test_requests_get_and_sessions_reach_the_fake(tenant):
     assert [(method, called) for method, called, _ in tenant.calls] == [("GET", url), ("GET", url)]
 
 
-def test_a_request_the_fake_doesnt_serve_escapes_an_operations_error_handling(tenant):
+@pytest.mark.parametrize("max_workers", [1, 2])
+def test_a_request_the_fake_doesnt_serve_escapes_an_operations_error_handling(tenant, max_workers):
     from sharepoint_fake import UnexpectedRequest
 
     def work(action_log):
@@ -834,7 +835,7 @@ def test_a_request_the_fake_doesnt_serve_escapes_an_operations_error_handling(te
 
     # An operation logs an Exception from its work as an error row, which a test could take for what it checks
     with pytest.raises(UnexpectedRequest, match="unknownResource"):
-        _common._run_parallel(work, [()], 1, _common._ThreadSafeLog())
+        _common._run_parallel(work, [()], max_workers, _common._ThreadSafeLog())
 
 
 @pytest.mark.parametrize("method, path, body", [
