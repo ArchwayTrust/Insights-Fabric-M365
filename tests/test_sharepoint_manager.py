@@ -9,6 +9,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 
 import numpy as np
 import pandas as pd
@@ -18,7 +19,7 @@ import requests
 import alt_fabric_m365
 from alt_fabric_m365.auth import KeyVaultCertificateCredential, Scopes, keyvault
 from alt_fabric_m365.sharepoint import (
-    ACTION_LOG_COLUMNS, FATAL_ACTIONS, WARNING_ACTIONS, SharePointLibraryManager, _common, _http,
+    ACTION_LOG_COLUMNS, FATAL_ACTIONS, WARNING_ACTIONS, SharePointLibraryManager, _common,
 )
 from alt_fabric_m365.sharepoint import manager as manager_module
 
@@ -366,7 +367,7 @@ def test_create_dry_run_reports_a_new_display_name(make_manager, tenant, site):
     )
 
     assert tenant.writes() == []
-    assert "rename_library (dry run)" in actions(results) and "library_created (dry run)" not in actions(results)
+    assert "library_renamed (dry run)" in actions(results) and "library_created (dry run)" not in actions(results)
 
 
 def test_renaming_a_library_keeps_group_names_and_updates_descriptions(make_manager, tenant, site):
@@ -504,9 +505,9 @@ def test_create_dry_run_makes_no_writes(make_manager, tenant, site):
     assert site.lists == {}
     assert actions(results) == sorted([
         "navigation_label_created (dry run)", "library_created (dry run)",
-        "metadata_set (dry run)", "metadata_set (dry run)", "ensure_group (dry run)", "ensure_group (dry run)",
-        "ensure_manual_read_group (dry run)", "ensure_manual_contribute_group (dry run)",
-        "ensure_navigation_link (dry run)",
+        "metadata_set (dry run)", "metadata_set (dry run)", "group_assigned (dry run)", "group_assigned (dry run)",
+        "manual_read_group_ensured (dry run)", "manual_contribute_group_ensured (dry run)",
+        "navigation_link_added (dry run)",
     ])
 
 
@@ -695,11 +696,11 @@ def _fail_properties_read(tenant, monkeypatch):
 
 
 def _drop_properties_connection(tenant, monkeypatch):
-    def request(method, url, **kwargs):
+    def request(session, method, url, **kwargs):
         if "/sites/BAA/" in url and url.endswith("/rootfolder/properties"):
             raise requests.ConnectionError("Connection reset by peer")
         return tenant.request(method, url, **kwargs)
-    monkeypatch.setattr(_http.requests, "request", request)
+    monkeypatch.setattr(requests.Session, "request", request)
 
 
 # Unset values are None too, so a row that couldn't be read must say so rather than look unset
@@ -821,7 +822,7 @@ def test_rename_dry_run_makes_no_writes(make_manager, tenant, site):
     results = make_manager(dry_run=True).rename_libraries(libraries_df(site, "MATH", library_display_name="X"))
 
     assert tenant.writes() == []
-    assert actions(results) == ["rename_library (dry run)"]
+    assert actions(results) == ["library_renamed (dry run)"]
 
 
 # unlink_libraries
@@ -893,7 +894,7 @@ def test_unlink_dry_run_makes_no_writes(make_manager, tenant, site):
     results = make_manager(dry_run=True, add_to_navigation=True).unlink_libraries(libraries_df(site, "MATH"))
 
     assert tenant.writes() == []
-    assert "empty_group (dry run)" in actions(results)
+    assert "group_emptied (dry run)" in actions(results)
 
 
 @pytest.mark.parametrize("dry_run", [False, True])
@@ -1015,7 +1016,7 @@ def test_unlinking_or_retiring_again_writes_nothing(make_manager, tenant, site, 
     assert done in actions(results)
     assert not {
         "library_unlinked", "library_retired", "group_access_removed",
-        "unlink_library (dry run)", "retire_library (dry run)", "remove_group_access (dry run)",
+        "library_unlinked (dry run)", "library_retired (dry run)", "group_access_removed (dry run)",
     } & set(actions(results))
     assert tenant.writes() == []
     # Retire no longer registers each group on the old site to find it has no access to remove
@@ -1101,8 +1102,8 @@ def test_retire_dry_run_makes_no_writes(make_manager, tenant, site):
 
     assert tenant.writes() == []
     assert actions(results) == sorted([
-        "retire_library (dry run)", "remove_group_access (dry run)", "remove_group_access (dry run)",
-        "remove_navigation_link (dry run)",
+        "library_retired (dry run)", "group_access_removed (dry run)", "group_access_removed (dry run)",
+        "navigation_link_removed (dry run)",
     ])
 
 
@@ -1323,7 +1324,7 @@ def test_removals_across_the_run_above_the_limit_are_all_skipped(
 
     [row] = rows(results, "removal_guardrail_triggered").itertuples()
     assert "6 member(s) from 2 group(s)" in row.status
-    assert not {"removed_from_group", "remove_from_group (dry run)"} & set(actions(results))
+    assert not {"removed_from_group", "removed_from_group (dry run)"} & set(actions(results))
     assert tenant.writes() == []
     assert [len(group["members"]) for group in two_libraries_with_stale_members] == [3, 3]
 
@@ -1529,8 +1530,8 @@ def test_memberships_dry_run_shows_the_adds_and_removals_a_live_run_makes(make_m
 
     assert tenant.writes() == []
     assert sorted(dry[["action", "user"]].values.tolist()) == [
-        ["add_to_group (dry run)", "ali@contoso.com"], ["already_assigned", ""],
-        ["already_member", "jo@contoso.com"], ["remove_from_group (dry run)", "sam@contoso.com"],
+        ["added_to_group (dry run)", "ali@contoso.com"], ["already_assigned", ""],
+        ["already_member", "jo@contoso.com"], ["removed_from_group (dry run)", "sam@contoso.com"],
     ]
 
     live = make_manager().update_memberships(df)
@@ -1555,7 +1556,7 @@ def test_memberships_dry_run_shows_the_removal_guardrail(make_manager, tenant, s
 
     assert tenant.writes() == []
     assert actions(results) == (
-        ["remove_from_group (dry run)"] * 11 if allow_mass_removal else ["removal_guardrail_triggered"]
+        ["removed_from_group (dry run)"] * 11 if allow_mass_removal else ["removal_guardrail_triggered"]
     )
 
 
@@ -1581,7 +1582,7 @@ def test_memberships_dry_run_makes_no_writes(make_manager, tenant, site, library
     )
 
     assert tenant.writes() == []
-    assert "add_to_group (dry run)" in actions(results)
+    assert "added_to_group (dry run)" in actions(results)
 
 
 def test_memberships_dry_run_lists_new_groups_shortcuts_and_nested_groups(make_manager, tenant, site, library):
@@ -1599,8 +1600,8 @@ def test_memberships_dry_run_lists_new_groups_shortcuts_and_nested_groups(make_m
 
     assert tenant.writes() == []
     assert actions(results) == sorted([
-        "ensure_group (dry run)", "add_to_group (dry run)", "onedrive_shortcut (dry run)",  # owner, a new group
-        "already_assigned", "add_to_group (dry run)",  # read, nested group
+        "group_assigned (dry run)", "added_to_group (dry run)", "onedrive_shortcut_created (dry run)",  # owner, a new group
+        "already_assigned", "added_to_group (dry run)",  # read, nested group
     ])  # contribute exists, but has no members to remove
 
 
@@ -1673,7 +1674,7 @@ def test_ensure_onedrive_shortcuts_dry_run_makes_no_writes(make_manager, tenant,
         memberships_df(site, [("MATH", "jo@contoso.com", "read")]),
     )
 
-    assert actions(results) == ["onedrive_shortcut (dry run)"]
+    assert actions(results) == ["onedrive_shortcut_created (dry run)"]
     assert tenant.writes() == []
 
 
@@ -1815,7 +1816,7 @@ def test_grant_dry_run_reports_what_a_live_run_does(make_manager, tenant, site, 
 
     assert tenant.writes() == []
     assert actions(dry) == sorted([
-        "already_assigned", "grant_group_access (dry run)", "group_not_found", "library_not_found", "error",
+        "already_assigned", "group_access_granted (dry run)", "group_not_found", "library_not_found", "error",
     ])
 
     live = make_manager().grant_group_access(df)
@@ -1928,7 +1929,7 @@ def test_lockdown_dry_run_makes_no_writes(make_manager, tenant, site):
     results = make_manager(dry_run=True).enforce_site_sharing_lockdown([site.url])
 
     assert tenant.writes() == []
-    assert actions(results) == ["site_sharing_lockdown (dry run)"]
+    assert actions(results) == ["site_sharing_disabled (dry run)"]
 
 
 def test_lockdown_that_does_not_stick_is_an_error(make_manager, site):
@@ -2077,10 +2078,10 @@ def test_one_worker_makes_every_request_in_turn_including_user_lookups(
         tenant.add_user(f"{name}@contoso.com")
     threads = set()
 
-    def request(method, url, **kwargs):
+    def request(session, method, url, **kwargs):
         threads.add(threading.get_ident())
         return tenant.request(method, url, **kwargs)
-    monkeypatch.setattr(_http.requests, "request", request)
+    monkeypatch.setattr(requests.Session, "request", request)
 
     getattr(make_manager(max_workers=1), operation)(memberships_df(site, [
         ("MATH", f"{name}@contoso.com", "read") for name in ("jo", "sam", "ali")
@@ -2108,11 +2109,11 @@ def test_a_removal_that_cannot_reach_graph_is_logged_against_its_group_and_membe
     stale = tenant.add_user("left@contoso.com")
     tenant.group_named("BAA-Sharepoint-MATH-Auto-Contribute")["members"][stale["id"]] = stale
 
-    def request(method, url, **kwargs):
+    def request(session, method, url, **kwargs):
         if method == "DELETE":
             raise requests.ConnectionError("Connection reset by peer")
         return tenant.request(method, url, **kwargs)
-    monkeypatch.setattr(_http.requests, "request", request)
+    monkeypatch.setattr(requests.Session, "request", request)
 
     results = make_manager().update_memberships(
         memberships_df(site, []), libraries_df=libraries_df(site, "MATH"),
@@ -2407,15 +2408,15 @@ def fail_group_creates(tenant, monkeypatch, failure, times=1):
         tenant.fail("POST", r"/groups$", failures[failure](), times=times)
         return
     exception = {"connection reset": requests.ConnectionError, "connect timeout": requests.ConnectTimeout}[failure]
-    real_request = _http.requests.request
+    real_request = requests.Session.request
     failed = []
 
-    def fail_group_create(method, url, **kwargs):
+    def fail_group_create(session, method, url, **kwargs):
         if method == "POST" and url.endswith("/groups") and len(failed) < times:
             failed.append(url)
             raise exception(failure)
-        return real_request(method, url, **kwargs)
-    monkeypatch.setattr(_http.requests, "request", fail_group_create)
+        return real_request(session, method, url, **kwargs)
+    monkeypatch.setattr(requests.Session, "request", fail_group_create)
 
 
 def make_failed_create_visible_only_by_id(tenant, name):
@@ -2620,7 +2621,7 @@ def test_a_group_made_earlier_in_the_run_is_synced_from_its_members_while_it_rep
 
     for log in (preview, results):
         assert rows(log, "error").empty
-    assert list(rows(preview, "remove_from_group (dry run)")["user"]) == ["jo@contoso.com"]
+    assert list(rows(preview, "removed_from_group (dry run)")["user"]) == ["jo@contoso.com"]
     assert list(rows(results, "removed_from_group")["user"]) == ["jo@contoso.com"]
     assert tenant.member_upns("BAA-Sharepoint-MATH-Auto-Contribute") == contribute
     assert tenant.member_upns("BAA-Sharepoint-MATH-Auto-Read") == read
@@ -2741,6 +2742,57 @@ def test_an_ownerless_group_is_adopted(make_manager, tenant, site):
     assert "group_owner_added" not in actions(make_manager().create_libraries(libraries_df(site, "MATH")))
 
 
+def owner_reads(tenant):
+    return [url for method, url, _ in tenant.calls if method == "GET" and urlsplit(url).path.endswith("/owners")]
+
+
+# Group lookups expand each group's owners, so checking them takes no request of its own
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("operation", ["create_libraries", "update_memberships", "unlink_libraries"])
+def test_ownership_is_read_from_the_group_lookup(make_manager, tenant, site, operation, dry_run):
+    tenant.add_user("jo@contoso.com")
+    make_manager().create_libraries(libraries_df(site, "MATH", manual_read=True))
+    tenant.calls.clear()
+    df = {
+        "create_libraries": libraries_df(site, "MATH", manual_read=True),
+        "update_memberships": memberships_df(site, [("MATH", "jo@contoso.com", "contribute")]),
+        "unlink_libraries": libraries_df(site, "MATH"),
+    }[operation]
+
+    results = getattr(make_manager(dry_run=dry_run), operation)(df)
+
+    assert not {"error", "group_not_owned"} & set(actions(results))
+    assert owner_reads(tenant) == []
+
+
+# Graph expands at most 20 owners, so the app may be one it left out
+@pytest.mark.parametrize("app_owns_it", [True, False])
+def test_a_group_with_more_owners_than_graph_expands_has_them_all_read(make_manager, tenant, site, app_owns_it):
+    site.add_list("MATH", unique=True)
+    owners = {f"00000000-0000-0000-0000-{n:012d}" for n in range(20)}  # all listed before the app
+    tenant.add_group("BAA-Sharepoint-MATH-Auto-Contribute", owners=owners | ({APP_ID} if app_owns_it else set()))
+    tenant.add_user("jo@contoso.com")
+
+    results = make_manager().update_memberships(memberships_df(site, [("MATH", "jo@contoso.com", "contribute")]))
+
+    assert ("group_not_owned" in actions(results)) is not app_owns_it
+    assert len(owner_reads(tenant)) == 1
+
+
+def test_a_group_with_more_owners_than_graph_expands_isnt_read_again_when_the_app_is_among_them(
+    make_manager, tenant, site,
+):
+    site.add_list("MATH", unique=True)
+    owners = {f"ffffffff-0000-0000-0000-{n:012d}" for n in range(20)}  # all listed after the app
+    tenant.add_group("BAA-Sharepoint-MATH-Auto-Contribute", owners=owners | {APP_ID})
+    tenant.add_user("jo@contoso.com")
+
+    results = make_manager().update_memberships(memberships_df(site, [("MATH", "jo@contoso.com", "contribute")]))
+
+    assert "group_not_owned" not in actions(results)
+    assert owner_reads(tenant) == []
+
+
 @pytest.mark.parametrize("dry_run", [False, True])
 def test_a_duplicated_name_of_a_group_people_own_is_an_error(make_manager, tenant, site, dry_run):
     tenant.add_group("BAA-Sharepoint-SLT-Manual-Read")
@@ -2782,7 +2834,7 @@ def test_dry_run_reports_ownership_without_changing_it(make_manager, tenant, sit
     assert legacy["owners"] == set()
     assert results[["document_library", "action"]].values.tolist() == [
         ["MATH", "group_owner_added (dry run)"], ["MATH", "group_assigned (dry run)"],
-        ["MATH", "add_to_group (dry run)"], ["ENG", "group_not_owned"],
+        ["MATH", "added_to_group (dry run)"], ["ENG", "group_not_owned"],
     ]
 
 
@@ -2801,7 +2853,7 @@ def test_create_dry_run_reports_ownership_without_changing_it(make_manager, tena
     assert results[["group", "action"]].values.tolist() == [
         ["", "library_created (dry run)"],
         ["BAA-Sharepoint-MATH-Manual-Read", "group_owner_added (dry run)"],
-        ["BAA-Sharepoint-MATH-Manual-Read", "ensure_manual_read_group (dry run)"],
+        ["BAA-Sharepoint-MATH-Manual-Read", "manual_read_group_ensured (dry run)"],
         # Adopting it also gives it the description a live run sets
         ["BAA-Sharepoint-MATH-Manual-Read", "group_description_updated (dry run)"],
         ["BAA-Sharepoint-MATH-Manual-Contribute", "group_not_owned"],
@@ -2821,4 +2873,4 @@ def test_dry_run_reports_adopting_a_group_it_would_empty(make_manager, tenant, s
 
     assert tenant.writes() == []
     assert legacy["owners"] == set()
-    assert results["action"].tolist() == ["group_owner_added (dry run)", "remove_from_group (dry run)"]
+    assert results["action"].tolist() == ["group_owner_added (dry run)", "removed_from_group (dry run)"]

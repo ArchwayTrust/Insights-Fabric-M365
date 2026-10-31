@@ -47,6 +47,10 @@ The package is built for Fabric notebooks. `KeyVaultCertificateCredential` uses 
   - [Using it in your own setting](#using-it-in-your-own-setting)
   - [Example notebook](#example-notebook)
 - [Troubleshooting](#troubleshooting)
+- [Upgrading to 2.0.0](#upgrading-to-200)
+  - [get_library_metadata returns a status column](#get_library_metadata-returns-a-status-column)
+  - [Dry-run actions are renamed](#dry-run-actions-are-renamed)
+  - [To upgrade](#to-upgrade)
 - [Upgrading to 1.0.0](#upgrading-to-100)
 - [Building and publishing](#building-and-publishing)
 - [Licence](#licence)
@@ -72,7 +76,7 @@ Always pin a version. 1.0.0 removes the old names that 0.x versions kept working
 - A site, redirect or Key Vault URL with a backslash or a user name before its host is refused, as it could send a token to another host.
 - Taking over an existing library keeps the permissions of its folders and files (`inheritance_broken` is logged), and a library gets its own permissions and groups before its display name is set.
 - `retire_moved_libraries` leaves a library whose new site is the same site, spelt differently, and `unlink_libraries` skips a code whose groups are another library's (`group_name_collision`).
-- A dry run of `update_memberships` reads each group's members, so it shows removals (`remove_from_group (dry run)`), `removals_skipped` and the guardrail. `reconcile_group (dry run)` is gone.
+- A dry run of `update_memberships` reads each group's members, so it shows removals (`removed_from_group (dry run)`), `removals_skipped` and the guardrail. `reconcile_group (dry run)` is gone.
 - A membership row with an unknown permission no longer removes anyone, and `skip` is now in `WARNING_ACTIONS`.
 - Options must be of their documented type: a String pipeline parameter such as `"False"` raises `TypeError` rather than counting as true, so give those parameters the type Bool or Int. Blanks in `create_libraries`' flag columns take their defaults.
 - `rename_libraries` no longer accepts `old_library_code`, and raises `ValueError` if given one. It never worked (the library was looked up by its new code), so no notebook could rely on it, and it's removed in a minor version.
@@ -190,7 +194,7 @@ This package's `Emails` and `SharePointLibraryManager` call Microsoft Graph and 
 - **The permissions stay separate from the workspace identity's.** Mailbox and SharePoint access are powerful, so it's better held by an app registration that does only this job, where it can be reviewed and revoked on its own. How far it reaches depends on what you grant:
   - Mail access is limited to the mailboxes in its Exchange role assignment (see [Giving the app access to a mailbox](#giving-the-app-access-to-a-mailbox)).
   - SharePoint access is limited to chosen sites only with `Sites.Selected` (see [Limiting the app to chosen sites with Sites.Selected](#limiting-the-app-to-chosen-sites-with-sitesselected)). `Sites.FullControl.All` covers every site.
-  - `SharePointLibraryManager` also needs `Group.ReadWrite.All`, `GroupMember.ReadWrite.All` and `User.Read.All`, which apply to the whole tenant (see [Giving the app access](#giving-the-app-access)).
+  - `SharePointLibraryManager` also needs `Group.ReadWrite.All` and `User.Read.All`, which apply to the whole tenant (see [Giving the app access](#giving-the-app-access)).
 
   **Sign** on the key in Key Vault controls who can use the certificate this package signs with. It doesn't cover any other certificate or client secret on the app registration, which can also authenticate as the app, so remove those you don't need.
 
@@ -774,12 +778,18 @@ The app registration needs these application permissions, with admin consent:
 | API | Permission | Used for |
 | --- | --- | --- |
 | Microsoft Graph | `Sites.Selected` with full control on each site (recommended), or `Sites.FullControl.All` | Finding sites, creating and renaming libraries |
-| Microsoft Graph | `Group.ReadWrite.All` and `GroupMember.ReadWrite.All` | Creating and renaming groups, syncing membership |
+| Microsoft Graph | `Group.ReadWrite.All` | Creating and renaming groups, making the app their owner, syncing membership |
 | Microsoft Graph | `User.Read.All` | Resolving users by UPN, mail or proxy address |
 | Microsoft Graph | `Files.ReadWrite.All` | Only for OneDrive shortcuts (`create_onedrive_shortcuts=True`, or `ensure_onedrive_shortcuts`) |
 | SharePoint | `Sites.Selected` with full control on each site (recommended), or `Sites.FullControl.All` | Permissions, property bag, navigation and sharing settings |
 
 `Sites.FullControl.All` gives the app full control of every site in the tenant, including every user's OneDrive. Use `Sites.Selected` instead, so the app can only touch the sites it manages, see [Limiting the app to chosen sites with Sites.Selected](#limiting-the-app-to-chosen-sites-with-sitesselected). The group and user permissions have no per-site equivalent and always apply to the whole tenant. So does `Files.ReadWrite.All`, which reaches files on every site as well as every OneDrive, so turning on OneDrive shortcuts gives up per-site isolation for files.
+
+This README used to list `GroupMember.ReadWrite.All` as well. It isn't needed: Microsoft's [permissions reference](https://learn.microsoft.com/en-us/graph/permissions-reference#groupreadwriteall) says `Group.ReadWrite.All` lets the app update group memberships, and adding an owner needs `Group.ReadWrite.All` whatever else is granted. To remove it from an existing app registration:
+
+1. In the Microsoft Entra admin center, open the app registration's **API permissions**, select `GroupMember.ReadWrite.All`, and choose **Revoke admin consent**, then **Remove permission**. Removing it alone leaves its admin consent in place, and tokens would still carry it.
+2. In a new notebook session, as the credential caches its tokens, check that a new Graph token's `roles` no longer include it: see [Checking what a token contains](#checking-what-a-token-contains). Entra ID can take a few minutes to stop issuing it.
+3. Make a live run that both adds and removes a member, and check its `added_to_group` and `removed_from_group` rows succeeded. The smoke test syncs the same test users each time, so a repeat run changes no members: swap one of its test users for another first. If either change fails with `403`, grant the permission again.
 
 SharePoint only accepts app-only tokens obtained with a certificate, so use `KeyVaultCertificateCredential`, not a client secret. Set up the certificate as in [Setting up a certificate](#setting-up-a-certificate), uploading it to this app registration. The identity running the notebook (for a pipeline, whatever the notebook activity runs as) needs **Get** on the certificate and **Sign** on its key.
 
@@ -913,7 +923,7 @@ To block every site, revoke the admin consent for `Sites.Selected` on both APIs,
 - **Keep the old site's grant until retiring is done.** `retire_moved_libraries` can't retire a library on a site the app can no longer read: a 403 from the old site, or from the new one, is an `error` row, and the old library is left as it is. Only remove the grant after the old libraries have been retired. An old site that no longer exists (404) is `retire_skipped`, as there's nothing left to retire; a new site that doesn't exist yet defers the retire (`retire_deferred`), so the old library keeps its access.
 - **A grant covers the whole site collection**, including any subsites, and doesn't change who else can use the site. It doesn't break permission inheritance on anything.
 - **The app can't find sites it hasn't been granted.** It can only work with the site URLs you give it, which is all `SharePointLibraryManager` needs.
-- **Other permissions still reach the whole tenant.** `Group.ReadWrite.All`, `GroupMember.ReadWrite.All` and `User.Read.All` aren't limited by `Sites.Selected`. Nor is `Files.ReadWrite.All`: as an application permission it can read and write files in every document library on every site, as well as every user's OneDrive. Adding it for `create_onedrive_shortcuts=True` therefore gives the app file access to sites it hasn't been granted, so only add it if you use shortcuts and accept that.
+- **Other permissions still reach the whole tenant.** `Group.ReadWrite.All` and `User.Read.All` aren't limited by `Sites.Selected`. Nor is `Files.ReadWrite.All`: as an application permission it can read and write files in every document library on every site, as well as every user's OneDrive. Adding it for `create_onedrive_shortcuts=True` therefore gives the app file access to sites it hasn't been granted, so only add it if you use shortcuts and accept that.
 - **Lists, libraries and files can be granted too**, with `Lists.SelectedOperations.Selected`, `ListItems.SelectedOperations.Selected` and `Files.SelectedOperations.Selected`. `SharePointLibraryManager` creates libraries, so it needs a grant on the site. See Microsoft's [overview of Selected permissions](https://learn.microsoft.com/en-us/graph/permissions-selected-overview).
 
 ### Creating a SharePointLibraryManager
@@ -1056,33 +1066,32 @@ Every action an operation can write to its log. Class is the set the action is i
 
 #### Dry-run actions
 
-A dry run logs these in place of the changes it would make. Anything it finds by reading is logged under its live name, as in a live run: rows such as `already_member` and `metadata_unchanged`, and warnings and errors.
+A dry run logs these in place of the changes it would make. Each is the action a live run logs for that change, followed by ` (dry run)`, so `action.removesuffix(" (dry run)")` gives the live action. Where the live run might log something else instead, the table says so. Anything a dry run finds by reading is logged under its live name, as in a live run: rows such as `already_member` and `metadata_unchanged`, and warnings and errors. Before 2.0.0, some dry-run actions had other names: see [Upgrading to 2.0.0](#upgrading-to-200).
 
-| Dry-run action | What a live run would do |
+| Dry-run action | What a live run would log |
 | --- | --- |
-| `add_to_group (dry run)` | `added_to_group` |
-| `empty_group (dry run)` | `group_emptied`, with `remove_failed` for any member that can't be removed |
-| `ensure_group (dry run)` | `group_assigned`, or `already_assigned`, creating the group first if it's missing. `create_libraries` logs it for every Auto group, `update_memberships` only for a group it would create |
-| `ensure_manual_contribute_group (dry run)` | `manual_contribute_group_ensured`, or `already_assigned` |
-| `ensure_manual_read_group (dry run)` | `manual_read_group_ensured`, or `already_assigned` |
-| `ensure_navigation_link (dry run)` | `navigation_link_added`, or `navigation_link_renamed` if the link has another title, or nothing if it's already right |
-| `grant_group_access (dry run)` | `group_access_granted` |
-| `group_assigned (dry run)` | `group_assigned` |
+| `added_to_group (dry run)` | `added_to_group` |
+| `group_access_granted (dry run)` | `group_access_granted` |
+| `group_access_removed (dry run)` | `group_access_removed` |
+| `group_assigned (dry run)` | `group_assigned`, or `already_assigned`, creating the group first if it's missing. `create_libraries` logs it for every Auto group, and `update_memberships` for a group it would create or that isn't yet assigned to the library |
 | `group_description_updated (dry run)` | `group_description_updated` |
+| `group_emptied (dry run)` | `group_emptied`, with `remove_failed` for any member that can't be removed |
 | `group_owner_added (dry run)` | `group_owner_added` |
 | `inheritance_broken (dry run)` | `inheritance_broken` |
 | `library_created (dry run)` | `library_created` |
+| `library_renamed (dry run)` | `library_renamed` |
+| `library_retired (dry run)` | `library_retired`, or `retire_deferred` if the library isn't working on its new site yet: a dry run doesn't check, as a dry run of `create_libraries` won't have made it. The group access it would remove is logged separately, as `group_access_removed (dry run)` |
+| `library_unlinked (dry run)` | `library_unlinked` |
+| `manual_contribute_group_ensured (dry run)` | `manual_contribute_group_ensured`, or `already_assigned` |
+| `manual_read_group_ensured (dry run)` | `manual_read_group_ensured`, or `already_assigned` |
 | `metadata_set (dry run)` | `metadata_set` |
 | `navigation_label_created (dry run)` | `navigation_label_created` |
-| `onedrive_shortcut (dry run)` | `onedrive_shortcut_created`, or `onedrive_shortcut_failed` |
-| `remove_from_group (dry run)` | `removed_from_group` |
-| `remove_group_access (dry run)` | `group_access_removed` |
-| `remove_navigation_link (dry run)` | `navigation_link_removed`, if the link exists |
-| `rename_library (dry run)` | `library_renamed` |
-| `retire_library (dry run)` | `library_retired`, or `retire_deferred` if the library isn't working on its new site yet: a dry run doesn't check, as a dry run of `create_libraries` won't have made it. The group access it would remove is logged separately, as `remove_group_access (dry run)` |
-| `site_sharing_lockdown (dry run)` | `site_sharing_disabled` |
-| `sync_navigation_link (dry run)` | `navigation_link_renamed`, if the link exists and has another title |
-| `unlink_library (dry run)` | `library_unlinked` |
+| `navigation_link_added (dry run)` | `navigation_link_added`, or `navigation_link_renamed` if the link has another title, or nothing if it's already right |
+| `navigation_link_removed (dry run)` | `navigation_link_removed`, if the link exists |
+| `navigation_link_renamed (dry run)` | `navigation_link_renamed`, if the link exists and has another title |
+| `onedrive_shortcut_created (dry run)` | `onedrive_shortcut_created`, or `onedrive_shortcut_failed` |
+| `removed_from_group (dry run)` | `removed_from_group` |
+| `site_sharing_disabled (dry run)` | `site_sharing_disabled` |
 
 ### Safety features
 
@@ -1092,13 +1101,14 @@ A dry run logs these in place of the changes it would make. Anything it finds by
 - **Incomplete data never drives removals.** If any user (or nested group) for a role can't be resolved, removals of that kind from that role's group are skipped (`removals_skipped`), as the "stale" member may be the one that failed to resolve. A row whose `permission` isn't `read`, `contribute` or `owner` is logged as `skip`, and as it could be meant for any role, removals of that kind are skipped from all of the library's groups.
 - **Manual groups are never synced or emptied.** Membership sync leaves service principals and devices in Auto groups in place, but unlinking a library empties its Auto groups completely.
 - **No guessing between duplicates.** If two Entra groups share a name the manager would use, it stops for that library rather than pick one. Library codes that would produce the same group names (such as `PE-KS3` and `PEKS3`, or codes differing only in case) are skipped with `group_name_collision`, including when the other library was created on the same site by an earlier run. Libraries on different sites are only compared within one call, so keep two sites' group names apart (see [Group naming](#adding-setting-specific-steps)). A library is only ever found by its URL, so a code is never matched to another library that merely has that title (`library_name_conflict`). A library is given its own permissions and groups before its display name, so if another list already has that name, it keeps its code as its title (also `library_name_conflict`) rather than being left open to the whole site.
-- **Groups must be the app's.** Group names are predictable, so a group someone else creates with the name a library would use could otherwise be handed that library's access. The app is made owner of the groups it creates, and before it grants or syncs an existing group it checks the app is an owner: a group with no owner (as earlier versions created them) has the app added and is logged as `group_owner_added`; a group owned only by others is skipped with `group_not_owned`. This includes an Auto group that `update_memberships` would empty, so a group the app doesn't own is never emptied. Dry runs of `create_libraries`, `update_memberships` and `unlink_libraries` read the owners and log what a live run would do. Groups are only checked when an operation uses them, so to adopt them all at once see [Adopting groups created by earlier versions](#adopting-groups-created-by-earlier-versions). The app's object ID is read from its Graph token, or can be passed as `service_principal_id`. Groups created with `app_owned=False` aren't owned or checked, and `grant_group_access` grants the groups it's given by name.
+- **Groups must be the app's.** Group names are predictable, so a group someone else creates with the name a library would use could otherwise be handed that library's access. The app is made owner of the groups it creates, and before it grants or syncs an existing group it checks the app is an owner: a group with no owner (as earlier versions created them) has the app added and is logged as `group_owner_added`; a group owned only by others is skipped with `group_not_owned`. This includes an Auto group that `update_memberships` would empty, so a group the app doesn't own is never emptied. Dry runs of `create_libraries`, `update_memberships` and `unlink_libraries` read the owners and log what a live run would do. The owners come with the lookup that finds the group by name (`$expand`), so checking them costs no extra request. Graph returns at most 20 that way, so a group with 20 or more owners, none of them the app, has its owners read in full. Groups are only checked when an operation uses them, so to adopt them all at once see [Adopting groups created by earlier versions](#adopting-groups-created-by-earlier-versions). The app's object ID is read from its Graph token, or can be passed as `service_principal_id`. Groups created with `app_owned=False` aren't owned or checked, and `grant_group_access` grants the groups it's given by name.
 - **Creating a group, navigation link or OneDrive shortcut is never repeated** after a failure that may have succeeded (a 5xx or timeout), so a retry can't make a duplicate. The next run finds what was created. Graph's name lookups can miss a group for a short while after it's created, so within the run, a later operation that needs a group whose create may have succeeded logs an `error` for its library, in a dry run too, rather than create it again. A manager also remembers the groups it creates. Until the lookup finds one, later operations in the same run reuse it rather than create it again, and check its owner and read its members as they would any group's.
 - **Only document libraries count as libraries.** An ordinary list whose URL ends in the code (`/Lists/ENG`) is never adopted, though its title still counts for `library_name_conflict`.
 - **A moved library keeps working until its replacement works.** Given `new_site_url`, `retire_moved_libraries` leaves the old library alone (`retire_deferred`) until the library is working on the new site: it exists, has its own permissions, and gives at least one of its groups access. If `new_site_url` is the same site as `site_url`, spelt differently (such as in case, or with a trailing slash), the library hasn't moved, so it's left alone (`retire_skipped`).
 - **Permission levels are found by type**, not by name, so sites in another language, or with renamed levels, work too.
 - **Tokens only go to your tenant.** Every `site_url` must be `https://` on `sharepoint_hostname`, with no user name and no backslash before its path (which some URL parsers read as part of the host and others don't), and redirects to another host or to plain http are refused. A redirect that can't be followed is an error, never a success.
 - **Throttling and transient errors are retried,** honouring `Retry-After`, with exponential backoff. Each attempt, and each redirect it follows, gets a current token from the credential, so a request retried for several minutes doesn't fail because its token expired while it waited. Every request's User-Agent starts `NONISV|ArchwayTrust|alt-fabric-m365/<version>`, in the form Microsoft's SharePoint throttling guidance asks for, as SharePoint serves traffic that says where it's from ahead of traffic that doesn't. To name your own organisation instead, pass `organisation`, for example `SharePointLibraryManager(credential, hostname, organisation="Contoso")`, or the same to `Emails`. It can contain letters, digits, spaces, `.`, `-` and `_`.
+- **Connections are reused.** Each thread keeps its connections to Graph and SharePoint open between requests, rather than making a new one, with its handshakes, for every request. Cookies are never kept, so each request is authenticated only by its own token. A request that mustn't run twice, such as creating a group, still gets a new connection: one the server closed while it sat idle would fail it in a way that can't be safely retried.
 
 ### Adopting groups created by earlier versions
 
@@ -1426,6 +1436,87 @@ Outside Fabric, `KeyVaultCertificateCredential` isn't available (it needs `noteb
 | `add_failed` or `remove_failed` row | Graph refused to add or remove that member, or couldn't be reached. The status gives Graph's error. These fail the run, and a re-run tries again. A 403 means the app can't change that group's members: check it owns the group and has `Group.ReadWrite.All` (see [Giving the app access](#giving-the-app-access)). |
 | `retire_skipped` row | Nothing was retired: the old site no longer exists, there's no library with the code on it, or `new_site_url` is the same site as `site_url`. Nothing to do unless the move was recorded wrongly. |
 
+## Upgrading to 2.0.0
+
+2.0.0 renames the dry-run actions that weren't named after the action a live run logs: see [Dry-run actions are renamed](#dry-run-actions-are-renamed). Live runs log exactly what they did before, and `FATAL_ACTIONS`, `WARNING_ACTIONS` and the action log's columns don't change. Everything else new in 2.0.0 works with a 1.3.0 notebook unchanged; it's listed in the version history under [Installation](#installation).
+
+**If you're upgrading from 1.1.0 or 1.2.0, the notebook also needs a change where it reads library metadata.** 1.3.0 added a column to what `get_library_metadata` returns: see [get_library_metadata returns a status column](#get_library_metadata-returns-a-status-column).
+
+### get_library_metadata returns a status column
+
+From 1.3.0, `get_library_metadata` returns a `status` column alongside each library's `source_system` and `source_id`: `ok` where it read the library, `library_not_found`, or `error: <reason>` where it couldn't read the site or library. Before 1.3.0, a library that couldn't be read looked like one with no metadata set: both gave `None`. Code written for 1.1.0 or 1.2.0 that unpacks a row into four values, saves the result to a table, or checks its columns breaks on the fifth column. 1.3.0 added it in a minor version, so this applies whether you upgrade to 1.3.0 or straight to 2.0.0.
+
+**Where, in the faculty notebook:** the first cell under the *Smoke Test* heading, which calls `mgr.get_library_metadata(query)` for the demo library and displays the result. Change it to stop the smoke test when the read failed. On a first run the demo library doesn't exist yet, as the next cell creates it, so `library_not_found` is expected there:
+
+```python
+metadata_df = mgr.get_library_metadata(query)
+display(metadata_df)
+# ok, library_not_found, or error: <reason> where the site or library couldn't be read
+failed = metadata_df[metadata_df["status"].str.startswith("error")]
+if not failed.empty:
+    raise RuntimeError(f"Couldn't read the demo library's metadata: {failed['status'].iloc[0]}")
+```
+
+Change anything else that uses the result in the same way:
+
+- **Code that unpacks each row,** such as `for site_url, library_code, source_system, source_id in metadata_df.itertuples(index=False)`. Add `status` to the names, or select the columns first: `metadata_df[["site_url", "library_code", "source_system", "source_id"]]`.
+- **Code that saves it to a Delta table.** The append fails while the table lacks the new column. Add the column once with `ALTER TABLE <table> ADD COLUMNS (status STRING)`, or leave it out with `metadata_df.drop(columns="status")`.
+- **Code that checks its columns exactly,** such as `list(metadata_df.columns) == [...]`. Add `status` to the list.
+
+### Dry-run actions are renamed
+
+Each dry-run action is now the action a live run logs, followed by ` (dry run)`, so `action.removesuffix(" (dry run)")` gives the live action.
+
+| Before 2.0.0 | From 2.0.0 |
+| --- | --- |
+| `add_to_group (dry run)` | `added_to_group (dry run)` |
+| `empty_group (dry run)` | `group_emptied (dry run)` |
+| `ensure_group (dry run)` | `group_assigned (dry run)` |
+| `ensure_manual_contribute_group (dry run)` | `manual_contribute_group_ensured (dry run)` |
+| `ensure_manual_read_group (dry run)` | `manual_read_group_ensured (dry run)` |
+| `ensure_navigation_link (dry run)` | `navigation_link_added (dry run)` |
+| `grant_group_access (dry run)` | `group_access_granted (dry run)` |
+| `onedrive_shortcut (dry run)` | `onedrive_shortcut_created (dry run)` |
+| `remove_from_group (dry run)` | `removed_from_group (dry run)` |
+| `remove_group_access (dry run)` | `group_access_removed (dry run)` |
+| `remove_navigation_link (dry run)` | `navigation_link_removed (dry run)` |
+| `rename_library (dry run)` | `library_renamed (dry run)` |
+| `retire_library (dry run)` | `library_retired (dry run)` |
+| `site_sharing_lockdown (dry run)` | `site_sharing_disabled (dry run)` |
+| `sync_navigation_link (dry run)` | `navigation_link_renamed (dry run)` |
+| `unlink_library (dry run)` | `library_unlinked (dry run)` |
+
+The other dry-run actions, such as `group_owner_added (dry run)` and `library_created (dry run)`, keep their names. The example notebook only filters on `FATAL_ACTIONS` and `WARNING_ACTIONS`, so it needs no change for this. To compare a dry run logged by 1.x with one logged by 2.0.0, rename the older one's actions first:
+
+```python
+DRY_RUN_RENAMES = {
+    "add_to_group (dry run)": "added_to_group (dry run)",
+    "empty_group (dry run)": "group_emptied (dry run)",
+    "ensure_group (dry run)": "group_assigned (dry run)",
+    "ensure_manual_contribute_group (dry run)": "manual_contribute_group_ensured (dry run)",
+    "ensure_manual_read_group (dry run)": "manual_read_group_ensured (dry run)",
+    "ensure_navigation_link (dry run)": "navigation_link_added (dry run)",
+    "grant_group_access (dry run)": "group_access_granted (dry run)",
+    "onedrive_shortcut (dry run)": "onedrive_shortcut_created (dry run)",
+    "remove_from_group (dry run)": "removed_from_group (dry run)",
+    "remove_group_access (dry run)": "group_access_removed (dry run)",
+    "remove_navigation_link (dry run)": "navigation_link_removed (dry run)",
+    "rename_library (dry run)": "library_renamed (dry run)",
+    "retire_library (dry run)": "library_retired (dry run)",
+    "site_sharing_lockdown (dry run)": "site_sharing_disabled (dry run)",
+    "sync_navigation_link (dry run)": "navigation_link_renamed (dry run)",
+    "unlink_library (dry run)": "library_unlinked (dry run)",
+}
+old_log["action"] = old_log["action"].replace(DRY_RUN_RENAMES)
+```
+
+### To upgrade
+
+1. If you're upgrading from 1.1.0 or 1.2.0, make the change in [get_library_metadata returns a status column](#get_library_metadata-returns-a-status-column) wherever a notebook uses `get_library_metadata`'s result.
+2. Change anything that reads dry-run rows by their action, such as a filter, a report or a comparison of two dry runs, to the new names.
+3. Set `alt-fabric-m365` to 2.0.0 in each Fabric environment (see [Installation](#installation)) and publish it.
+4. Run the notebook with `DRY_RUN = True` and `RUN_SMOKE_TEST = True`, check its action log, then let the pipeline run it live.
+
 ## Upgrading to 1.0.0
 
 1.0.0 removes the old names that 0.x versions kept working with a `FutureWarning`. Nothing else changes, so a notebook that runs on 0.7.x without a `FutureWarning` runs unchanged on 1.0.0.
@@ -1478,18 +1569,20 @@ If the Python versions in `tests.yml` change, update the required checks to matc
 
 Dependabot ([`.github/dependabot.yml`](https://github.com/ArchwayTrust/Insights-Fabric-M365/blob/main/.github/dependabot.yml)) checks each week for new versions of the actions the workflows use, and opens one pull request to update them. Review and merge it like any other, once the tests pass.
 
+The workflows name each action by the commit it was released at, with its version in a comment, as in `uses: actions/checkout@<40-character commit SHA>  # v7.0.1`. A tag can be moved to other code by whoever controls the action, and the release workflow can publish to PyPI, so a pinned commit means only reviewed code runs there. Dependabot updates the commit and the comment together. Pin a new action the same way, or `test_packaging.py` fails.
+
 What they cover:
 
 | File | Covers |
 | --- | --- |
 | `test_auth.py` | `KeyVaultCertificateCredential`: token requests and caching, Key Vault signing, the client assertion, error descriptions |
 | `test_exchange.py` | `Emails`, its retries and reading Graph errors |
-| `test_sharepoint_http.py` | The retry wrapper: throttling, `Retry-After`, server and connection errors, redirects, a current token for each attempt |
+| `test_sharepoint_http.py` | The retry wrapper: throttling, `Retry-After`, server and connection errors, redirects, a current token for each attempt, and the connections each thread reuses |
 | `test_sharepoint_helpers.py` | Group naming and collisions, input validation, user and group resolution, the property bag, navigation URLs |
 | `test_sharepoint_manager.py` | Every `SharePointLibraryManager` operation end to end, including re-runs, dry runs, guardrails and failures, and authenticating with `KeyVaultCertificateCredential` |
 | `test_readme_flow.py` | Runs the [recommended flow](#recommended-flow) example against the suggested input tables (a dry run, a live run, a re-run and a deletion), and again with the [setting-specific steps](#adding-setting-specific-steps) inserted |
 | `test_faculty_notebook.py` | Runs the [example notebook](#example-notebook) cell by cell, with Spark SQL on SQLite and the real `KeyVaultCertificateCredential` |
-| `test_packaging.py` | The version, public names, that removed names stay removed, what the source distribution ships and its licence metadata, and that the README's examples are valid Python |
+| `test_packaging.py` | The version, public names, that removed names stay removed, what the source distribution ships and its licence metadata, that the README's examples are valid Python, and that the workflows pin each action to a commit |
 
 The SharePoint tests run against `tests/sharepoint_fake.py`, an in-memory fake of the Graph and SharePoint endpoints the manager calls, which keeps state so a test can check what an operation changed. Add `--cov=alt_fabric_m365` to see coverage.
 

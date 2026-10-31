@@ -737,7 +737,9 @@ def test_prefix_lookup_sends_the_filter_as_a_parameter_on_the_first_page_only(mo
         response(200, {"value": []}),
     ]
     sent = []
-    monkeypatch.setattr(requests, "request", lambda method, url, **kwargs: sent.append((url, kwargs)) or pages.pop(0))
+    monkeypatch.setattr(
+        requests.Session, "request", lambda session, method, url, **kwargs: sent.append((url, kwargs)) or pages.pop(0),
+    )
 
     _groups._find_groups_by_name_prefix(GRAPH_TOKEN, "SP-")
 

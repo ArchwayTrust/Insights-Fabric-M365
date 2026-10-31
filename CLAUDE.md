@@ -68,11 +68,11 @@ CI also runs `python -m build` and `python -m twine check --strict dist/*`.
 
 ## HTTP and security
 
-- Every request has a timeout. SharePoint code goes through `_request_with_retry` in `sharepoint/_http.py`, which retries throttling and server errors; pass `idempotent=False` for a request that mustn't run twice, such as creating a group.
+- Every request has a timeout. SharePoint code goes through `_request_with_retry` in `sharepoint/_http.py`, which retries throttling and server errors, and sends each thread's requests on that thread's `requests.Session` so they reuse connections; pass `idempotent=False` for a request that mustn't run twice, such as creating a group, which also gives it a new connection.
 - Error messages include the status code and the service's error code and message, never request data, tokens or full response bodies from auth endpoints. See `_describe_error`.
 - Only send a token to the host it's for. `KeyVaultCertificateCredential` checks the Key Vault URL, and the key identifier Key Vault returns, before sending its token.
 - Escape values put into OData filters (`_odata_escape`, or doubling single quotes). Pass query string values with `params=` rather than formatting them into the URL, and quote values put into a URL path (`requests.utils.quote(value, safe='')`).
-- `SharePointLibraryManager` operations take a DataFrame of desired state and return an action-log DataFrame. They must be safe to run again (a re-run changes nothing), and a dry run must make no writes.
+- `SharePointLibraryManager` operations take a DataFrame of desired state and return an action-log DataFrame. They must be safe to run again (a re-run changes nothing), and a dry run must make no writes. A dry run logs each change it would make as the action a live run logs, followed by ` (dry run)`.
 
 ## Tests
 
@@ -84,18 +84,18 @@ No test calls a real service. `requests` is mocked and `notebookutils` and Spark
 | `sharepoint_fake.py` | `FakeTenant`, an in-memory fake of the Graph and SharePoint endpoints that keeps state, so a test can check what an operation changed |
 | `test_auth.py` | `KeyVaultCertificateCredential` and its helpers |
 | `test_exchange.py` | `Emails` and its helpers |
-| `test_sharepoint_http.py` | The retry wrapper |
+| `test_sharepoint_http.py` | The retry wrapper, and the connections it reuses |
 | `test_sharepoint_helpers.py` | The `sharepoint/_*.py` helpers, imported directly as `_groups._build_mail_nickname` and so on |
 | `test_sharepoint_manager.py` | Each `SharePointLibraryManager` operation end to end |
 | `test_readme_flow.py` | Runs the README's recommended flow |
 | `test_faculty_notebook.py` | Runs the example notebook cell by cell |
-| `test_packaging.py` | The version, public names, that removed names stay removed, what the source distribution ships and its licence metadata, and that every README Python example parses |
+| `test_packaging.py` | The version, public names, that removed names stay removed, what the source distribution ships and its licence metadata, that every README Python example parses, and that the workflows pin each action to a commit |
 
 Expectations for a change:
 
 - New behaviour and bug fixes come with tests. A bug fix's test fails without the fix.
 - Test through the public interface where you can. Test a private helper directly (`keyvault._describe_error`, `emails_module._graph_error`) when it has cases that are awkward to reach from outside, such as malformed responses.
-- Mock at the `requests` boundary (`mock.patch.object(emails_module.requests, "get", ...)`, `FakeTenant().install(monkeypatch)`) so the real request building and response handling run. Build responses with `make_response` or `sharepoint_fake.response`, which return real `requests.Response` objects.
+- Mock at the `requests` boundary (`mock.patch.object(requests.Session, "request", ...)`, which every request goes through, or `FakeTenant().install(monkeypatch)`) so the real request building and response handling run. Build responses with `make_response` or `sharepoint_fake.response`, which return real `requests.Response` objects.
 - For a `SharePointLibraryManager` operation, check the action log it returns and the state it changed in `FakeTenant`, that running it again changes nothing, and that a dry run makes no writes (`tenant.writes()`).
 - When the fake has to learn a new endpoint, make it behave like the real one, including its errors and its parsing of query strings.
 - Patch `time.sleep` in tests that would otherwise wait on retries.

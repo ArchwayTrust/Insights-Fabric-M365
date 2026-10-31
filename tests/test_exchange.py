@@ -1,6 +1,6 @@
 """
-Emails: searching, attachments, deleting and sending, mocked at requests.request, which every request goes through
-(the SharePoint package's retry wrapper).
+Emails: searching, attachments, deleting and sending, mocked at requests.Session.request, which every request goes
+through (the SharePoint package's retry wrapper).
 """
 import json
 import time
@@ -41,8 +41,8 @@ def sleeps(monkeypatch):
 
 
 def patch_request(**kwargs):
-    """Patches requests.request, which is called as request(method, url, **kwargs)."""
-    return mock.patch.object(emails_module.requests, "request", **kwargs)
+    """Patches requests.Session.request, which a mock on the class receives as request(method, url, **kwargs)."""
+    return mock.patch.object(requests.Session, "request", **kwargs)
 
 
 def file_attachment(attachment_id, name, is_inline=False):

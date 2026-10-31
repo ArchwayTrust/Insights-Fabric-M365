@@ -67,11 +67,10 @@ class SharePointLibraryManager:
     The app registration needs these application permissions, with admin
     consent: Microsoft Graph ``Sites.FullControl.All`` (or
     ``Sites.Selected`` with full control on each site),
-    ``Group.ReadWrite.All``, ``GroupMember.ReadWrite.All`` and
-    ``User.Read.All``; SharePoint ``Sites.FullControl.All`` (or
-    ``Sites.Selected``).  OneDrive shortcuts also need Graph
-    ``Files.ReadWrite.All``.  SharePoint only accepts app-only tokens
-    obtained with a certificate, not a client secret.
+    ``Group.ReadWrite.All`` and ``User.Read.All``; SharePoint
+    ``Sites.FullControl.All`` (or ``Sites.Selected``).  OneDrive shortcuts
+    also need Graph ``Files.ReadWrite.All``.  SharePoint only accepts
+    app-only tokens obtained with a certificate, not a client secret.
 
     Args:
         credential:           Credential with a ``get_token(*scopes)`` method,
@@ -304,6 +303,7 @@ class SharePointLibraryManager:
     def _check_group_owner(
         self, group_id: str, group_name: str, site_url: str, library_code: str,
         permission: str, action_log: _ThreadSafeLog, *, dry_run: bool = False, is_new_group: bool = False,
+        expanded_owners: list[dict] | None = None,
     ) -> bool:
         """Return whether an existing group may be granted access or synced.
 
@@ -312,9 +312,12 @@ class SharePointLibraryManager:
         with no owner gets the app added as owner and is logged.  A dry run
         only reads the owners, so it reports what a live run would do.  With
         *is_new_group*, a 404 while the group replicates is waited out.
+        *expanded_owners* are the owners the lookup that found the group
+        expanded, which save reading them again.
         """
         outcome = _ensure_app_owns_group(
             self._graph_token, group_id, self.service_principal_id, dry_run=dry_run, is_new_group=is_new_group,
+            expanded_owners=expanded_owners,
         )
         if outcome == "adopted":
             _append_log(
@@ -619,13 +622,11 @@ class SharePointLibraryManager:
                         self._refuse_if_maybe_created(group_display_name)
                     if existing_group and app_owned and not self._check_group_owner(
                         existing_group["id"], group_display_name, site_url, library_code, role_key, action_log,
-                        dry_run=True,
+                        dry_run=True, expanded_owners=existing_group.get("owners"),
                     ):
                         continue
-                    dry_action = (
-                        f"ensure_{suffix.lower().replace('-', '_')}_group (dry run)"
-                        if is_manual else "ensure_group (dry run)"
-                    )
+                    # A live run logs action_name, or already_assigned
+                    dry_action = f"{action_name} (dry run)"
                     dry_status = (
                         f"would ensure {suffix} group exists and is assigned to library"
                         if is_manual else "would ensure group exists and is assigned to library"
@@ -667,6 +668,7 @@ class SharePointLibraryManager:
                     if app_owned and not is_new:
                         if not self._check_group_owner(
                             group_id, group_display_name, site_url, library_code, role_key, action_log,
+                            expanded_owners=group.get("owners"),
                         ):
                             continue
                         # The name follows the code, which never changes, but the
@@ -738,7 +740,7 @@ class SharePointLibraryManager:
                 elif dry_run:
                     if existing_list is not None:
                         _append_log(
-                            action_log, site_url, library_code, "rename_library (dry run)",
+                            action_log, site_url, library_code, "library_renamed (dry run)",
                             f"would set display name to '{library_display_name}'",
                         )
                 else:
@@ -778,7 +780,7 @@ class SharePointLibraryManager:
                     )
                     _append_log(
                         action_log, site_url, library_code,
-                        "ensure_navigation_link (dry run)",
+                        "navigation_link_added (dry run)",
                         f"would ensure link under '{nav['label']}' navigation label",
                     )
                 else:
@@ -1214,7 +1216,7 @@ class SharePointLibraryManager:
                 )
                 _append_log(
                     action_log, site_url, library_code,
-                    "rename_library (dry run)",
+                    "library_renamed (dry run)",
                     f"would set display name to '{new_display_name}'",
                 )
             else:
@@ -1233,7 +1235,7 @@ class SharePointLibraryManager:
                 if dry_run:
                     _append_log(
                         action_log, site_url, library_code,
-                        "sync_navigation_link (dry run)",
+                        "navigation_link_renamed (dry run)",
                         f"would update the '{navigation_label}' navigation link "
                         f"title to '{new_display_name}' if the link exists",
                     )
@@ -1406,7 +1408,7 @@ class SharePointLibraryManager:
                 logger.info("[DRY RUN] Would set display name to '%s'", unlinked_display)
                 _append_log(
                     action_log, site_url, library_code,
-                    "unlink_library (dry run)",
+                    "library_unlinked (dry run)",
                     f"would set display name to '{unlinked_display}'",
                 )
             else:
@@ -1445,7 +1447,7 @@ class SharePointLibraryManager:
                 # Emptying is destructive, so only for the app's own groups
                 if not self._check_group_owner(
                     existing_group["id"], group_name, site_url, library_code, "", action_log,
-                    dry_run=dry_run,
+                    dry_run=dry_run, expanded_owners=existing_group.get("owners"),
                 ):
                     continue
 
@@ -1453,7 +1455,7 @@ class SharePointLibraryManager:
                     logger.info("[DRY RUN] Would empty group '%s'", group_name)
                     _append_log(
                         action_log, site_url, library_code,
-                        "empty_group (dry run)", "would remove all members",
+                        "group_emptied (dry run)", "would remove all members",
                         group=group_name,
                     )
                 else:
@@ -1493,7 +1495,7 @@ class SharePointLibraryManager:
                     )
                     _append_log(
                         action_log, site_url, library_code,
-                        "remove_navigation_link (dry run)",
+                        "navigation_link_removed (dry run)",
                         f"would remove link from under '{navigation_label}' "
                         f"navigation label if present",
                     )
@@ -1671,7 +1673,7 @@ class SharePointLibraryManager:
                 logger.info("[DRY RUN] Would set display name to '%s'", retired_display)
                 _append_log(
                     action_log, site_url, library_code,
-                    "retire_library (dry run)",
+                    "library_retired (dry run)",
                     f"would set display name to '{retired_display}' and remove "
                     f"automation group access",
                 )
@@ -1708,7 +1710,7 @@ class SharePointLibraryManager:
                 if dry_run:
                     _append_log(
                         action_log, site_url, library_code,
-                        "remove_group_access (dry run)",
+                        "group_access_removed (dry run)",
                         "would remove the group's role assignment from the old library",
                         group=group_name,
                     )
@@ -1732,7 +1734,7 @@ class SharePointLibraryManager:
                 if dry_run:
                     _append_log(
                         action_log, site_url, library_code,
-                        "remove_navigation_link (dry run)",
+                        "navigation_link_removed (dry run)",
                         f"would remove link from under '{navigation_label}' "
                         f"navigation label if present",
                     )
@@ -2174,6 +2176,7 @@ class SharePointLibraryManager:
                 if existing_group and not known_owned and not self._check_group_owner(
                     existing_group["id"], group_display_name, site_url, library_code,
                     role, action_log, dry_run=dry_run, is_new_group=replicating,
+                    expanded_owners=existing_group.get("owners"),
                 ):
                     continue
                 if desired_upns or desired_groups:
@@ -2184,7 +2187,7 @@ class SharePointLibraryManager:
                         logger.info("[DRY RUN] Would create group '%s'", group_display_name)
                         _append_log(
                             action_log, site_url, library_code,
-                            "ensure_group (dry run)",
+                            "group_assigned (dry run)",
                             "would create the group and assign it to the library",
                             group=group_display_name, permission=role,
                         )
@@ -2231,7 +2234,7 @@ class SharePointLibraryManager:
             for (role, group_display_name, group_id, is_new_group,
                  desired_upns, desired_groups, assign_needed) in created_role_groups:
                 if assign_needed and dry_run:
-                    # A group the dry run would create was logged as ensure_group above
+                    # A group the dry run would create was logged as group_assigned (dry run) above
                     if group_id is not None:
                         held = role_def_ids[role] in existing_roles.get(_group_claims(group_id).lower(), set())
                         _append_log(
@@ -2277,14 +2280,14 @@ class SharePointLibraryManager:
                         if dry_run:
                             _append_log(
                                 action_log, site_url, library_code,
-                                "add_to_group (dry run)", "would add to group",
+                                "added_to_group (dry run)", "would add to group",
                                 group=group_display_name, user=upn, permission=role,
                             )
                             if create_onedrive_shortcuts and upn not in shortcuts_created:
                                 shortcuts_created.add(upn)
                                 _append_log(
                                     action_log, site_url, library_code,
-                                    "onedrive_shortcut (dry run)", "would create OneDrive shortcut",
+                                    "onedrive_shortcut_created (dry run)", "would create OneDrive shortcut",
                                     group=group_display_name, user=upn, permission=role,
                                 )
                             continue
@@ -2360,7 +2363,7 @@ class SharePointLibraryManager:
                         if dry_run:
                             _append_log(
                                 action_log, site_url, library_code,
-                                "add_to_group (dry run)", f"would nest group '{member_name}' in group",
+                                "added_to_group (dry run)", f"would nest group '{member_name}' in group",
                                 group=group_display_name, user=member_key, permission=role,
                             )
                             continue
@@ -2479,7 +2482,7 @@ class SharePointLibraryManager:
             if dry_run:
                 _append_log(
                     action_log, site_url, library_code,
-                    "remove_from_group (dry run)", "would remove from group",
+                    "removed_from_group (dry run)", "would remove from group",
                     group=group_name, user=member_key, permission=role,
                 )
                 continue
@@ -2557,8 +2560,8 @@ class SharePointLibraryManager:
 
         A dry run reads each group's owners, current members and library
         assignment, so it logs the same rows a live run would (adds and
-        removals as ``add_to_group (dry run)`` and ``remove_from_group (dry
-        run)``, including ``removals_skipped`` and
+        removals as ``added_to_group (dry run)`` and
+        ``removed_from_group (dry run)``, including ``removals_skipped`` and
         ``removal_guardrail_triggered``), without changing anything.
 
         Required DataFrame columns:
@@ -2818,7 +2821,7 @@ class SharePointLibraryManager:
                 if dry_run:
                     _append_log(
                         action_log, site_url, library_code,
-                        "onedrive_shortcut (dry run)", "would create OneDrive shortcut", user=upn,
+                        "onedrive_shortcut_created (dry run)", "would create OneDrive shortcut", user=upn,
                     )
                     continue
                 _create_onedrive_shortcut(
@@ -2868,7 +2871,7 @@ class SharePointLibraryManager:
 
         Returns:
             Action-log DataFrame: ``onedrive_shortcut_created``,
-            ``onedrive_shortcut_exists``, or ``onedrive_shortcut (dry run)``
+            ``onedrive_shortcut_exists``, or ``onedrive_shortcut_created (dry run)``
             for each user and library, and ``onedrive_shortcut_failed`` where
             one couldn't be made, for example because the user's OneDrive
             doesn't exist yet.
@@ -2962,7 +2965,7 @@ class SharePointLibraryManager:
                 if dry_run:
                     _append_log(
                         action_log, site_url, library_code,
-                        "grant_group_access (dry run)",
+                        "group_access_granted (dry run)",
                         f"would grant the group '{role}' on the library",
                         group=group_name, permission=role,
                     )
@@ -3018,7 +3021,7 @@ class SharePointLibraryManager:
         (ensureuser) when one of its libraries needs a new grant, and then
         once per site.  A dry run reads the groups, sites and role
         assignments, so it logs the same rows a live run would, with
-        ``grant_group_access (dry run)`` in place of ``group_access_granted``.
+        ``group_access_granted (dry run)`` in place of ``group_access_granted``.
 
         Required DataFrame columns:
           - site_url:      Full SharePoint site URL
@@ -3171,7 +3174,7 @@ class SharePointLibraryManager:
                     "[DRY RUN] Would turn off on '%s': %s", site_url, ", ".join(violations),
                 )
                 _append_log(
-                    action_log, site_url, "", "site_sharing_lockdown (dry run)",
+                    action_log, site_url, "", "site_sharing_disabled (dry run)",
                     f"would turn off: {', '.join(violations)}",
                 )
                 return

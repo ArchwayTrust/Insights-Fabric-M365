@@ -1,6 +1,7 @@
 """
 Checks on the package itself: the version is set in one place, the public names, what the source distribution ships
-and its licence metadata, and that the README's examples are valid Python.
+and its licence metadata, that the README's examples are valid Python, and that the workflows pin each action to a
+commit.
 """
 import ast
 import email.parser
@@ -90,8 +91,10 @@ def sdist(tmp_path_factory):
 def test_source_distribution_has_what_its_tests_need(sdist):
     with tarfile.open(sdist) as tar:
         shipped = {name.split("/", 1)[1] for name in tar.getnames() if "/" in name}
-    # Every test module, fixture and fake, and the example notebook test_faculty_notebook runs
+    # Every test module, fixture and fake, the workflows whose pins are checked, and the example notebook
+    # test_faculty_notebook runs
     needed = {path.relative_to(ROOT).as_posix() for path in (ROOT / "tests").glob("*.py")}
+    needed |= {path.relative_to(ROOT).as_posix() for path in (ROOT / ".github" / "workflows").glob("*.yml")}
     needed |= {
         path.relative_to(ROOT).as_posix() for path in (ROOT / "examples").rglob("*")
         # MANIFEST.in leaves out compiled files, which running the example locally can leave behind
@@ -143,10 +146,20 @@ def test_readme_dry_run_table_lists_every_dry_run_action():
     section = README.split("#### Dry-run actions", 1)[1].split("\n### ", 1)[0]
     listed = set(re.findall(r"^\| `([a-z_]+ \(dry run\))` \|", section, re.M))
     source = "".join(path.read_text(encoding="utf-8") for path in (ROOT / "alt_fabric_m365").rglob("*.py"))
-    # Names built from a group's suffix, such as ensure_manual_read_group (dry run), aren't literals, so aren't checked
+    # Names built from the live action, such as manual_read_group_ensured (dry run), aren't literals, so aren't checked
     used = set(re.findall(r'"([a-z_]+ \(dry run\))"', source))
 
     assert used and used - listed == set()
+
+
+# From 2.0.0, so removing the suffix gives the action a live run logs
+def test_each_dry_run_action_is_a_live_action_followed_by_dry_run():
+    reference = README.split("#### Action reference", 1)[1].split("#### Dry-run actions", 1)[0]
+    live = set(re.findall(r"^\| `([a-z_]+)` \|", reference, re.M))
+    section = README.split("#### Dry-run actions", 1)[1].split("\n### ", 1)[0]
+    dry = re.findall(r"^\| `([a-z_]+) \(dry run\)` \| `([a-z_]+)`", section, re.M)
+
+    assert dry and all(name in live and first_live == name for name, first_live in dry), dry
 
 
 def test_graph_api_was_removed_in_1_0():
@@ -184,3 +197,24 @@ def test_code_indented_further_than_its_fence_is_kept_so_it_fails_to_parse(markd
 @pytest.mark.parametrize("block", [b for b in PYTHON_BLOCKS if not b.lstrip().startswith("%")])
 def test_readme_examples_are_valid_python(block):
     ast.parse(block)
+
+
+# Workflows
+
+# A tag can be moved to other code, so each action is pinned to a commit, with its version in a comment for Dependabot
+WORKFLOW_USES = [
+    (path.name, match.group(1))
+    for path in sorted((ROOT / ".github" / "workflows").glob("*.yml"))
+    for match in re.finditer(r"^\s*(?:-\s*)?uses:\s*(.+?)\s*$", path.read_text(encoding="utf-8"), re.MULTILINE)
+]
+
+
+def test_workflows_use_actions():
+    assert len(WORKFLOW_USES) >= 5
+
+
+@pytest.mark.parametrize("workflow, uses", WORKFLOW_USES)
+def test_workflow_actions_are_pinned_to_a_commit(workflow, uses):
+    if uses.startswith("./"):
+        return  # A workflow in this repository runs as it is at the same commit
+    assert re.fullmatch(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}  # v\d+(\.\d+)*", uses), f"{workflow}: {uses}"

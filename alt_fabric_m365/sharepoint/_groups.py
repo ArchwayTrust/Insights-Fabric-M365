@@ -12,7 +12,10 @@ from urllib.parse import urlparse
 
 import requests
 
-from ._common import GRAPH_BASE_URL, REPLICATION_BASE_DELAY, REPLICATION_MAX_ATTEMPTS, _append_log, _ThreadSafeLog
+from ._common import (
+    GRAPH_BASE_URL, GRAPH_EXPAND_LIMIT, GROUP_OWNERS_EXPAND, REPLICATION_BASE_DELAY, REPLICATION_MAX_ATTEMPTS,
+    _append_log, _ThreadSafeLog,
+)
 from ._graph import _graph_headers
 from ._http import _raise_for_status, _request_with_retry
 
@@ -88,6 +91,7 @@ def _find_group_by_name(token: str, display_name: str) -> dict | None:
     here is subsequently granted library permissions and has its membership
     synced, silently picking one of several matches would be dangerous —
     multiple matches raise instead so a human can resolve the duplicate.
+    The group's owners are expanded, for _ensure_app_owns_group.
     """
     # Use $filter with eq for exact match.  Passed as params so requests
     # encodes it — a name containing '&', '#' or '+' would otherwise break
@@ -97,6 +101,7 @@ def _find_group_by_name(token: str, display_name: str) -> dict | None:
         params={
             "$filter": f"displayName eq '{_odata_escape(display_name)}'",
             "$select": "id,displayName,description,mailNickname,securityEnabled,groupTypes",
+            "$expand": GROUP_OWNERS_EXPAND,
         },
     )
     _raise_for_status(resp)
@@ -122,7 +127,8 @@ def _find_groups_by_name_prefix(token: str, name_prefix: str) -> dict[str, list[
     unrelated duplicate under the same prefix cannot fail the whole operation.
 
     Keys are lowercase because Graph compares display names case-insensitively,
-    so this matches the groups _find_group_by_name would find.
+    so this matches the groups _find_group_by_name would find.  Each group's
+    owners are expanded, for _ensure_app_owns_group.
     """
     url: str | None = f"{GRAPH_BASE_URL}/groups"
     # The first page takes the query as params (encoded by requests); the
@@ -130,6 +136,7 @@ def _find_groups_by_name_prefix(token: str, name_prefix: str) -> dict[str, list[
     params: dict | None = {
         "$filter": f"startswith(displayName, '{_odata_escape(name_prefix)}')",
         "$select": "id,displayName,description,mailNickname",
+        "$expand": GROUP_OWNERS_EXPAND,
     }
     groups_by_name: dict[str, list[dict]] = {}
     while url:
@@ -281,8 +288,28 @@ def _add_group_owner(token: str, group_id: str, owner_id: str, *, is_new_group: 
     _raise_for_status(resp)
 
 
+def _expanded_owner_ids(expanded_owners: list[dict] | None, app_object_id: str) -> set[str] | None:
+    """Return the owner IDs a group lookup expanded, or None when they must be read on their own.
+
+    Args:
+        expanded_owners: The group's ``owners`` from a lookup with GROUP_OWNERS_EXPAND, or None if it had none.
+        app_object_id: The app's object ID.
+
+    Returns:
+        The owners' object IDs, in lower case, or None if there were none to use or the list may be cut short.
+    """
+    if expanded_owners is None:
+        return None
+    owner_ids = {owner["id"].lower() for owner in expanded_owners}
+    # Graph cuts the list off at the limit, so the app may be one of the owners left out
+    if len(expanded_owners) >= GRAPH_EXPAND_LIMIT and app_object_id.lower() not in owner_ids:
+        return None
+    return owner_ids
+
+
 def _ensure_app_owns_group(
     token: str, group_id: str, app_object_id: str, *, dry_run: bool = False, is_new_group: bool = False,
+    expanded_owners: list[dict] | None = None,
 ) -> str:
     """Check that the app owns a group before granting it access or syncing it.
 
@@ -295,9 +322,13 @@ def _ensure_app_owns_group(
     Returns ``"owned"``, ``"adopted"`` (the app was added as owner — or, with
     *dry_run*, would be) or ``"not_owned"`` (someone else owns it, and the
     app doesn't).  With *is_new_group*, a 404 while the group replicates is
-    waited out.
+    waited out.  The owners are read from *expanded_owners*, the group's
+    ``owners`` from a lookup that expanded them, when they're complete
+    enough to decide (see _expanded_owner_ids), and otherwise from Graph.
     """
-    owners = _get_group_owner_ids(token, group_id, is_new_group=is_new_group)
+    owners = _expanded_owner_ids(expanded_owners, app_object_id)
+    if owners is None:
+        owners = _get_group_owner_ids(token, group_id, is_new_group=is_new_group)
     if app_object_id.lower() in owners:
         return "owned"
     if owners:

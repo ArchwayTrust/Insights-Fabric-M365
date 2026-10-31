@@ -23,7 +23,7 @@ The notebook's final state is [`examples/Manage Faculty Sharepoint Libraries.Not
 
    Nothing else (tables, the app registration's API permissions) needs to change.
 5. **Dry run it.** Run the notebook with `DRY_RUN = True` and `RUN_SMOKE_TEST = True`. The imports cell prints the package version. Compare the action log rows for this run (in `it.sharepoint_action_log`, by `run_id`) with those of a recent dry run from the old notebook: they should match, apart from the [behaviour changes](#what-changed-in-behaviour). Membership sync's dry run reads each Auto group's owners: `group_owner_added (dry run)` rows are ownerless groups (how the notebook created them), which the live run adopts automatically, and `group_not_owned` rows are groups with an owner who isn't the app. Add the app's service principal as a co-owner of those, or the live run will leave them alone. Manual groups are checked the same way when their faculty next goes through the create pass, or all at once with [Adopting the existing Manual groups](#adopting-the-existing-manual-groups).
-6. **Let the pipeline run it** as before. The pipeline passes `DRY_RUN = False`, and any other parameter it sets, as base parameters of the cell's own type: Bool for the flags, Int for the numbers. A String `"False"` stops the run with `TypeError`. Keep the pipeline's concurrency at 1, and don't run the notebook live by hand while the pipeline can run, as two runs would sync the same groups and advance the same watermark.
+6. **Let the pipeline run it** as before. The pipeline passes `DRY_RUN = False`, and any other parameter it sets, as base parameters of the cell's own type: Bool for the flags, Int for the numbers. A String `"False"` stops the run with `TypeError`. Keep the pipeline's concurrency at 1, and don't run the notebook live by hand while the pipeline can run, as two runs would sync the same groups and advance the same watermark. If two live runs do overlap, the second stops before changing anything, as the first holds the run lease (see **Run lease** under [What changed in the notebook](#what-changed-in-the-notebook)).
 7. **Retire the old certificate.** Once the pipeline has run successfully, remove the old certificate from the app registration and delete the two Key Vault secrets that held its thumbprint and private key.
 
 To roll back, restore the previous notebook content; it works for as long as the old certificate is on the app registration and its two secrets exist, so keep them until step 7. The package doesn't change any state the old notebook relies on: group names, library URLs, property bag keys and the watermark are all the same.
@@ -69,24 +69,25 @@ Cells are listed in order. **Changed** marks the cells that differ from the prev
 | --- | --- | --- | --- |
 | 1-2 | *Manage Faculty Sharepoint Libraries*, *Setup* | Headings | |
 | 3 | `from notebookutils import variableLibrary` | | |
-| 4 | **Parameters** | `DRY_RUN` (default True; the pipeline passes False), `MAX_WORKERS`, `INCLUDE_SITE_NAME`, `CREATE_ONEDRIVE_SHORTCUTS`, the removal guardrail, `ENFORCE_SITE_SHARING_LOCKDOWN`, navigation, the SLT library, the rollout scope (`ACADEMY_FILTER`, `FACULTY_CODE_FILTER`), `RUN_SMOKE_TEST`, the app's client ID, the SharePoint host and `CERTIFICATE_NAME`, the app's certificate in Key Vault | **Changed** |
+| 4 | **Parameters** | `DRY_RUN` (default True; the pipeline passes False), `MAX_WORKERS`, `INCLUDE_SITE_NAME`, `CREATE_ONEDRIVE_SHORTCUTS`, the removal guardrail, `ENFORCE_SITE_SHARING_LOCKDOWN`, navigation, the SLT library, the rollout scope (`ACADEMY_FILTER`, `FACULTY_CODE_FILTER`), `RUN_SMOKE_TEST`, `LEASE_MINUTES`, the app's client ID, the SharePoint host and `CERTIFICATE_NAME`, the app's certificate in Key Vault | **Changed** |
 | 5 | Variable library | Reads the workspace, lakehouse, Key Vault and tenant from `VL_CORE` | **Changed** |
 | 6 | Lakehouse tables | Names the curated faculty list and membership tables, and the action log, sync state and unresolved users tables | |
 | 7-9 | *Load Libraries* | Imports, including the package, and prints the package version. Turns on INFO logging | **Changed** |
 | 10-11 | *Core Setup* | Creates a `KeyVaultCertificateCredential` for the app's certificate, and the `SharePointLibraryManager` from the parameters | **Changed** |
-| 12 | Run context | Run ID, `persist_action_log` (appends each operation's log to the audit table), the rollout scope predicate `scoped()`, the reserved SLT code and the shared eligibility predicate `eligible()` | **Changed** |
-| 13-18 | *Smoke Test* | Only with `RUN_SMOKE_TEST`: against the IT site's demo library, reads metadata, creates the library, checks its navigation link, locks down sharing and checks it, and syncs four test members | **Changed** (cells 16 and 17) |
-| 19-20 | *Real Data*, watermark | Creates the sync state table if needed, reads this scope's watermark, and reads the newest change as the upper bound for this run's incremental passes | **Changed** |
-| 21-23 | *Site Sharing Lockdown* | Every in-scope hub, every run | |
-| 24-26 | *SLT Libraries* | One SLT library per hub, with Manual groups only, owned by the headteacher rather than the app (`app_owned=False`). Reports faculties whose code collides with the SLT code, and hubs shared by two academies | **Changed** (cell 25) |
-| 27-29 | *Create/Modify Libraries* | Faculties new or changed since the watermark | **Changed** (bounded by the run's upper watermark) |
-| 30-32 | *Unlink Deleted Faculties* | Faculties deleted at source since the watermark | **Changed** (bounded by the run's upper watermark) |
-| 33-35 | *Retire Moved Libraries* | Faculties whose hub changed since the watermark: retires the copy on the old hub, once the library exists on the new one | **Changed** (bounded by the run's upper watermark; waits for the new library) |
-| 36-38 | *SLT Access to Faculty Libraries* | Grants each academy's SLT groups Contribute and Read on every faculty library, every run | **Changed** (cell 37) |
-| 39-41 | *Update Memberships* | Full membership sync for every in-scope faculty, including the all-staff nested groups | |
-| 42-43 | *Unresolved Users* | Appends users that couldn't be resolved to the unresolved users table, with academy and subject | |
-| 44-45 | *Run Outcome* | Shows warnings, and fails the run if any action failed | |
-| 46 | Watermark | Advances the watermark, only after a clean run that wasn't a dry run | **Changed** (escaped process key) |
+| 12 | Run context | Run ID, `persist_action_log` (appends each operation's log to the audit table, then renews the lease), the rollout scope predicate `scoped()`, the reserved SLT code and the shared eligibility predicate `eligible()` | **Changed** |
+| 13 | Run lease | Sets Spark's session time zone to UTC, creates the sync state table if needed (adding the lease columns to one made before them), and, for a live run, takes the lease, or stops if another live run holds it | **New** |
+| 14-19 | *Smoke Test* | Only with `RUN_SMOKE_TEST`: against the IT site's demo library, reads metadata, creates the library, checks its navigation link, locks down sharing and checks it, and syncs four test members | **Changed** (cells 17 and 18) |
+| 20-21 | *Real Data*, watermark | Reads this scope's watermark, and reads the newest change as the upper bound for this run's incremental passes | **Changed** |
+| 22-24 | *Site Sharing Lockdown* | Every in-scope hub, every run | |
+| 25-27 | *SLT Libraries* | One SLT library per hub, with Manual groups only, owned by the headteacher rather than the app (`app_owned=False`). Reports faculties whose code collides with the SLT code, and hubs shared by two academies | **Changed** (cell 26) |
+| 28-30 | *Create/Modify Libraries* | Faculties new or changed since the watermark | **Changed** (bounded by the run's upper watermark) |
+| 31-33 | *Unlink Deleted Faculties* | Faculties deleted at source since the watermark | **Changed** (bounded by the run's upper watermark) |
+| 34-36 | *Retire Moved Libraries* | Faculties whose hub changed since the watermark: retires the copy on the old hub, once the library exists on the new one | **Changed** (bounded by the run's upper watermark; waits for the new library) |
+| 37-39 | *SLT Access to Faculty Libraries* | Grants each academy's SLT groups Contribute and Read on every faculty library, every run | **Changed** (cell 38) |
+| 40-42 | *Update Memberships* | Full membership sync for every in-scope faculty, including the all-staff nested groups | |
+| 43-44 | *Unresolved Users* | Appends users that couldn't be resolved to the unresolved users table, with academy and subject | |
+| 45-46 | *Run Outcome* | Shows warnings, and fails the run if any action failed, releasing the lease first | **Changed** |
+| 47 | Watermark | Advances the watermark, only after a clean run that wasn't a dry run, then releases the lease | **Changed** (escaped process key, lease) |
 
 The cell that held the core code, and its *Core Code* heading, have been removed.
 
@@ -137,6 +138,17 @@ mgr = SharePointLibraryManager(
 ```
 
 **Run context.** `FATAL_ACTIONS` and `WARNING_ACTIONS` are imported rather than defined here, as the package defines the action names. They hold the same values. `SLT_CODE_KEY` uses the now public `sanitise_for_group_name`. `ACADEMY_FILTER` and `FACULTY_CODE_FILTER` go into the SQL as literals, and Spark SQL doesn't read a doubled `''` as an escaped quote, so the notebook no longer tries to escape them. Instead they can only contain letters, digits, spaces, `-`, `_` and `.`, plus `%` in `FACULTY_CODE_FILTER`, and any other character stops the run before any SQL runs.
+
+**Run lease.** A live run takes a lease before it changes anything: a row in the sync state table, with process `faculty_sharepoint_sync|lease`, naming the run and when its lease expires. A second live run that starts while the lease is held stops with `RuntimeError` before the smoke test, so it changes nothing. Pipeline concurrency 1 already stops the pipeline overlapping itself; the lease also covers a run started by hand, or from another pipeline.
+
+- **One `MERGE` takes it.** Of two runs taking it at the same moment, Delta fails the second one's write.
+- **It's checked and renewed** for another `LEASE_MINUTES` (default 120) just before each pass that changes anything, after each pass (by `persist_action_log`), and before the watermark is written. Renewing only extends a lease still in the run's name. A run whose lease expired, during a long pass or a pause between cells, stops at the next check if another run took it, even if that run has since released it, and never overwrites that run's watermark.
+- **It's released** when the run ends, including when the run outcome cell fails the run, so the next run needn't wait.
+- **A run that crashes in another cell leaves it** until it expires, `LEASE_MINUTES` after its last renewal. To release it sooner, once you're sure that run has stopped, run `UPDATE <BASE_LH_NAME>.it.sharepoint_sync_state SET lease_holder = NULL, lease_expires_at = NULL WHERE process = 'faculty_sharepoint_sync|lease'`.
+- **A dry run takes no lease,** as it changes nothing, so it can run while a live run does.
+- **`LEASE_MINUTES` must be an Int** above 0, or the run stops with `TypeError`. Keep it above the longest single pass, which is usually the first full membership sync.
+
+The lease cell adds `lease_holder` and `lease_expires_at` to an existing sync state table, and creates both with a new one. It also now sets Spark's session time zone to UTC and creates the table, which the watermark cell did before.
 
 **Watermark.** Four fixes from review, each covered by a notebook test:
 
@@ -212,16 +224,16 @@ The old core cell said it was an inlined copy of `SharePointLibraryPermissions` 
 
 ## Test coverage
 
-All tests run without credentials or a Fabric workspace: [`tests/sharepoint_fake.py`](../tests/sharepoint_fake.py) is an in-memory fake of the Graph and SharePoint REST endpoints the manager calls. It replaces `requests.request`, so the real request building, retries and response handling all run, and it keeps state (groups, members, libraries, role assignments, navigation, sharing settings), so tests check what an operation actually changed and that running it again changes nothing. Like the real services, it parses query strings out of the URL, which is how the `&` bug above was caught.
+All tests run without credentials or a Fabric workspace: [`tests/sharepoint_fake.py`](../tests/sharepoint_fake.py) is an in-memory fake of the Graph and SharePoint REST endpoints the manager calls. It replaces `requests.Session.request`, which every request made with `requests` goes through, so the real request building, retries and response handling all run, a request it doesn't serve fails the test, and it keeps state (groups, members, libraries, role assignments, navigation, sharing settings), so tests check what an operation actually changed and that running it again changes nothing. Like the real services, it parses query strings out of the URL, which is how the `&` bug above was caught.
 
 CI runs the suite on Python 3.10, 3.11 and 3.12 for every pull request, and again against the built wheel.
 
 | File | Covers |
 | --- | --- |
-| [`test_sharepoint_http.py`](../tests/test_sharepoint_http.py) | `Retry-After` in seconds and as a date (with clamping, NaN and past dates); retries on 429, 5xx, connection errors and timeouts, with backoff and jitter; redirects for POST keep the method; cross-host, https-to-http and looping redirects are refused |
+| [`test_sharepoint_http.py`](../tests/test_sharepoint_http.py) | `Retry-After` in seconds and as a date (with clamping, NaN and past dates); retries on 429, 5xx, connection errors and timeouts, with backoff and jitter; redirects for POST keep the method; cross-host, https-to-http and looping redirects are refused; each thread reuses its connections and keeps no cookies, and a request that mustn't run twice gets a new connection |
 | [`test_sharepoint_helpers.py`](../tests/test_sharepoint_helpers.py) | Group naming, mail nicknames and collisions; DataFrame and URL validation; parallel runs logging failures without stopping; library lookup by URL slug only, with paging; duplicate and case-differing group names; member keys for users, groups and service principals; replication waits; user resolution by UPN, mail and proxy address, malformed and unknown users; nestable group resolution; property bag XML escaping and errors; navigation URL normalisation |
 | [`test_sharepoint_manager.py`](../tests/test_sharepoint_manager.py) | Every operation end to end: creating libraries with groups, metadata and navigation, and again changing nothing; renaming; dry runs making no writes; manual-only (SLT) libraries; colliding codes; one failing library not stopping others; parallel runs. Membership sync adding users and aliases, removing stale members, keeping service principals, emptying roles without creating groups, the removal guardrail, unresolved users blocking removals, nested groups, OneDrive shortcuts, `add_failed` and `remove_failed`. Unlink keeping Manual groups; retire removing access but not membership; grants being additive and idempotent; site sharing lockdown, including a write that doesn't stick. Authenticating with the real `KeyVaultCertificateCredential` (Entra ID and Key Vault faked): one Graph and one SharePoint token, each sent only to its own API |
-| [`test_faculty_notebook.py`](../tests/test_faculty_notebook.py) | Runs the example notebook cell by cell, as Fabric does, with Spark SQL run on SQLite over small faculty tables and the real `KeyVaultCertificateCredential`, and checks a live run, a second run, a dry run, a failed run and a widened scope (below). Also checks the notebook has no undefined names and uses only the package's public API |
+| [`test_faculty_notebook.py`](../tests/test_faculty_notebook.py) | Runs the example notebook cell by cell, as Fabric does, with Spark SQL run on SQLite over small faculty tables and the real `KeyVaultCertificateCredential`, and checks a live run, a second run, a dry run, a failed run, a widened scope and the run lease (below). Also checks the notebook has no undefined names and uses only the package's public API |
 
 Line and branch coverage of `alt_fabric_m365.sharepoint` is 97%. Most of what's left is handling for rarer failures, such as a site's prefetch failing part way through a rename.
 
@@ -233,7 +245,8 @@ The notebook test's scenarios, against a pilot scope of `BAA` and `MATH%`:
 - **Authentication.** The certificate named by `CERTIFICATE_NAME` is read from the key vault and signs the assertions, and the run uses one Graph and one SharePoint token.
 - **Rows landing mid-run.** A new faculty and a newer move added after the create read are both left for the next run, which picks them up.
 - **Scope values.** A `'` or `\` in `ACADEMY_FILTER` or `FACULTY_CODE_FILTER` stops the run before any SQL or SharePoint write, and spaces, `-`, `.` and `_` work.
-- **Failed run.** A failed member addition makes the run outcome cell raise, and the watermark isn't advanced.
+- **Failed run.** A failed member addition makes the run outcome cell raise, the watermark isn't advanced, and the lease is released.
+- **Run lease.** A live run holds the lease from before the smoke test until it ends. A live run started while another holds it changes nothing. A lease left by a crashed run is taken once it expires. A dry run takes none, so it runs alongside a live one. A run whose lease was taken stops before its next pass, doesn't take the lease back once it's free, and doesn't write the watermark if it lost the lease after its last pass. A `LEASE_MINUTES` that isn't a whole number above 0 stops the run before anything runs.
 - **Widened scope.** Changing the filters starts a new watermark and replays events for the newly in-scope faculties, and the faculty coded `SLT` is reported and skipped.
 
 **Not covered:** whether Microsoft Graph and SharePoint accept these requests. The fake follows the documented APIs, but only a run against the tenant can show it. The notebook's smoke test does that against the IT site's demo library. With `DRY_RUN = True` it only checks the reads; the writes are only tried in a live run, which also runs every Real Data pass, so do that once the dry run's action log looks right. Do both before switching the pipeline over, and after upgrading the package.
