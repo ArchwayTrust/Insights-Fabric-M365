@@ -7,7 +7,6 @@ import importlib
 import re
 import subprocess
 import sys
-import textwrap
 from pathlib import Path
 
 import pytest
@@ -19,8 +18,15 @@ README = (ROOT / "README.md").read_text(encoding="utf-8")
 
 
 def python_blocks(markdown):
-    """Returns the code of each python fenced block. A fence in a list item is indented, and so is its code."""
-    return [textwrap.dedent(block) for _, block in re.findall(r"^([ \t]*)```python\n(.*?)^\1```", markdown, re.S | re.M)]
+    """Returns the code of each python fenced block.
+
+    A fence in a list item is indented, and so is its code. Only the fence's indentation is removed, so code indented
+    further than its fence still fails to parse.
+    """
+    return [
+        "".join(line.removeprefix(indent) for line in block.splitlines(keepends=True))
+        for indent, block in re.findall(r"^([ \t]*)```python\n(.*?)^\1```", markdown, re.S | re.M)
+    ]
 
 
 PYTHON_BLOCKS = python_blocks(README)
@@ -51,6 +57,17 @@ def test_examples_in_list_items_are_found():
     markdown = "1. Import it:\n\n   ```python\n   import a\n   if a:\n       b()\n   ```\n\n```python\nc()\n```\n"
 
     assert python_blocks(markdown) == ["import a\nif a:\n    b()\n", "c()\n"]
+
+
+@pytest.mark.parametrize("markdown", [
+    "```python\n    import a\n```\n",
+    "1. Import it:\n\n   ```python\n       import a\n   ```\n",
+])
+def test_code_indented_further_than_its_fence_is_kept_so_it_fails_to_parse(markdown):
+    [block] = python_blocks(markdown)
+
+    with pytest.raises(IndentationError):
+        ast.parse(block)
 
 
 @pytest.mark.parametrize("block", [b for b in PYTHON_BLOCKS if not b.lstrip().startswith("%")])
