@@ -340,6 +340,7 @@ class SharePointLibraryManager:
             # Step 2: Break role inheritance.  The library's existing group
             # bindings are read here so step 6 only writes missing ones.
             existing_roles: dict[str, set[int]] = {}
+            existing_list = existing_lists.get(library_code.lower())
             if not dry_run:
                 if _has_unique_permissions(self._sp_token, site_url, list_id):
                     logger.info(
@@ -350,6 +351,21 @@ class SharePointLibraryManager:
                 else:
                     # copyRoleAssignments=false: no group holds a role yet
                     _break_role_inheritance(self._sp_token, site_url, list_id)
+                    # Taking over a library people already use takes away the
+                    # access site members had through the site, so record it.
+                    if existing_list is not None:
+                        _append_log(
+                            action_log, site_url, library_code, "inheritance_broken",
+                            "stopped inheriting the site's permissions: only its groups, and any folders "
+                            "or files with their own permissions, give access now",
+                        )
+            elif existing_list is not None and not _has_unique_permissions(
+                self._sp_token, site_url, existing_list["id"],
+            ):
+                _append_log(
+                    action_log, site_url, library_code, "inheritance_broken (dry run)",
+                    "would stop it inheriting the site's permissions",
+                )
 
             # Step 2.5: Set metadata properties on the library's root folder
             if source_system is not None or source_id is not None:
