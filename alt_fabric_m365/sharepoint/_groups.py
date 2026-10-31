@@ -519,7 +519,8 @@ def _add_group_member(
 ) -> None:
     """Add a user to a security group.
 
-    When *is_new_group* is True, retries on 404 (group not yet replicated).
+    When *is_new_group* is True, retries while the group hasn't replicated
+    yet: a 404, or a 400 saying a referenced object doesn't exist.
     """
     url = f"{GRAPH_BASE_URL}/groups/{group_id}/members/$ref"
     body = {
@@ -529,15 +530,21 @@ def _add_group_member(
     max_attempts = REPLICATION_MAX_ATTEMPTS if is_new_group else 1
     for attempt in range(max_attempts):
         resp = _request_with_retry("POST", url, headers=_graph_headers(token), json=body)
+        text = resp.text.lower()
         # 400 with "already exist" means user is already a member — treat as success
-        if resp.status_code == 400 and "already exist" in resp.text.lower():
+        if resp.status_code == 400 and "already exist" in text:
             logger.info("User %s already a member of group %s", user_object_id, group_id)
             return
-        if resp.status_code == 404 and is_new_group and attempt < max_attempts - 1:
+        # Graph documents both answers for a group created moments ago: 404, or
+        # 400 "...one of the objects being referenced don't exist"
+        not_replicated = resp.status_code == 404 or (
+            resp.status_code == 400 and ("not exist" in text or "n't exist" in text)
+        )
+        if not_replicated and is_new_group and attempt < max_attempts - 1:
             delay = REPLICATION_BASE_DELAY * (2 ** attempt)
             logger.info(
-                "Group %s not yet replicated (404) — waiting %.0fs (attempt %d/%d)",
-                group_id, delay, attempt + 1, max_attempts,
+                "Group %s not yet replicated (%d) — waiting %.0fs (attempt %d/%d)",
+                group_id, resp.status_code, delay, attempt + 1, max_attempts,
             )
             time.sleep(delay)
             continue
