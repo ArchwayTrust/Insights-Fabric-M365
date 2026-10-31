@@ -112,8 +112,9 @@ class FakeSite:
 
 
 class FakeTenant:
-    """
-    Install with install(monkeypatch). Every request is recorded in calls as (method, url, kwargs).
+    """A tenant's groups, users and SharePoint sites, served to requests once installed with install(monkeypatch).
+
+    Every request is recorded in calls as (method, url, kwargs).
     """
 
     def __init__(self):

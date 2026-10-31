@@ -15,9 +15,7 @@ import requests
 
 @pytest.fixture
 def fake_notebookutils(monkeypatch):
-    """
-    Installs a fake notebookutils module. Returns the list of audiences getToken was called with.
-    """
+    """Installs a fake notebookutils module. Returns the list of audiences getToken was called with."""
     audiences = []
 
     def get_token(audience):
@@ -33,16 +31,12 @@ def fake_notebookutils(monkeypatch):
 
 @pytest.fixture
 def no_notebookutils(monkeypatch):
-    """
-    Makes sure notebookutils can't be imported, as outside Fabric.
-    """
+    """Makes sure notebookutils can't be imported, as outside Fabric."""
     monkeypatch.setitem(sys.modules, "notebookutils", None)
 
 
 class FakeCredential:
-    """
-    A credential with a get_token method, standing in for KeyVaultCertificateCredential or ClientSecretCredential.
-    """
+    """A credential with a get_token method, standing in for KeyVaultCertificateCredential or ClientSecretCredential."""
 
     def __init__(self):
         self.scopes = []
@@ -58,9 +52,7 @@ def credential():
 
 
 def make_response(status_code, body=None, text=None):
-    """
-    Builds a real requests.Response, so raise_for_status, ok and json behave as they do against Graph.
-    """
+    """Builds a real requests.Response, so raise_for_status, ok and json behave as they do against Graph."""
     response = requests.Response()
     response.status_code = status_code
     response._content = json.dumps(body).encode() if body is not None else (text or "").encode()
@@ -83,8 +75,7 @@ def _key_vault_error(kwargs):
 
 
 class FakeAzure:
-    """
-    Stands in for Key Vault (certificate GET and sign POST) and the Entra ID token endpoint, recording each call.
+    """Stands in for Key Vault (certificate GET and sign POST) and the Entra ID token endpoint, recording each call.
 
     Like the real services, Key Vault refuses a request without an api-version or the notebook's Key Vault token, and
     Entra ID one without a client_id. certificate_status, sign_status and token_status (with their bodies) make a
