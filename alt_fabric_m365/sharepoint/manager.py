@@ -250,10 +250,11 @@ class SharePointLibraryManager:
         """Create a security group and remember it (see _remember_created_group).
 
         A create that fails other than with a 4xx or a connect timeout, such
-        as with a 5xx or a dropped connection, may still have made the group,
-        and Graph's name lookups can miss it for a while, so it isn't tried
-        again by this manager: a second one would be a duplicate that blocks
-        the library until removed by hand.
+        as with a 5xx or a dropped connection, or is interrupted, as by
+        cancelling the cell, may still have made the group, and Graph's name
+        lookups can miss it for a while, so it isn't tried again by this
+        manager: a second one would be a duplicate that blocks the library
+        until removed by hand.
 
         Args:
             name: The group's display name.
@@ -281,6 +282,14 @@ class SharePointLibraryManager:
             if not isinstance(exc, requests.ConnectTimeout) and not (status is not None and 400 <= status < 500):
                 with self._created_groups_lock:
                     self._maybe_created_groups[name.lower()] = str(exc)
+            raise
+        except BaseException as exc:
+            # Cancelling the cell while the create is in flight, which with
+            # max_workers=1 interrupts this thread, may still leave the group
+            # made, and a re-run on this manager mustn't make it again
+            if not isinstance(exc, Exception):
+                with self._created_groups_lock:
+                    self._maybe_created_groups[name.lower()] = f"interrupted by {type(exc).__name__}"
             raise
         self._remember_created_group(name, group, app_owned=app_owned)
         return group

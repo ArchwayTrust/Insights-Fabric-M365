@@ -2514,6 +2514,30 @@ def test_group_creation_is_not_repeated_after_a_server_error(make_manager, tenan
     ]
 
 
+# With one worker, cancelling the cell interrupts the thread making the request
+def test_a_group_create_interrupted_after_graph_made_it_isnt_made_again(make_manager, tenant, site, monkeypatch):
+    serve, interrupted = requests.Session.request, []
+
+    def interrupt_the_first_group_create(session, method, url, **kwargs):
+        resp = serve(session, method, url, **kwargs)
+        if method == "POST" and url.endswith("/groups") and not interrupted:
+            interrupted.append(resp.json()["id"])
+            tenant.replicating.add(resp.json()["id"])  # so the re-run's name lookup misses it
+            raise KeyboardInterrupt
+        return resp
+    monkeypatch.setattr(requests.Session, "request", interrupt_the_first_group_create)
+    manager = make_manager(max_workers=1)
+
+    with pytest.raises(KeyboardInterrupt):
+        manager.create_libraries(libraries_df(site, "MATH"))
+    results = manager.create_libraries(libraries_df(site, "MATH"))
+
+    assert [g["displayName"] for g in tenant.groups.values()].count("BAA-Sharepoint-MATH-Auto-Read") == 1
+    [error] = rows(results, "error").itertuples()
+    assert "may have been created by an earlier request this run" in error.status
+    assert "interrupted by KeyboardInterrupt" in error.status
+
+
 def test_a_group_is_created_on_the_next_try_after_its_token_couldnt_be_got(make_manager, tenant, site, monkeypatch):
     tenant.add_user("jo@contoso.com")
     manager = make_manager()
