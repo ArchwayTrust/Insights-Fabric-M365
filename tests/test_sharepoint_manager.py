@@ -4,21 +4,26 @@ SharePointLibraryManager operations, run end to end against the in-memory FakeTe
 Each test checks the action log the operation returns and what it actually changed, and where it matters that
 running it again changes nothing and that a dry run makes no writes.
 """
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
 import pytest
+import requests
 
 import alt_fabric_m365
-from alt_fabric_m365.auth import Scopes
+from alt_fabric_m365.auth import KeyVaultCertificateCredential, Scopes, keyvault
 from alt_fabric_m365.sharepoint import (
-    ACTION_LOG_COLUMNS, FATAL_ACTIONS, WARNING_ACTIONS, SharePointLibraryManager,
+    ACTION_LOG_COLUMNS, FATAL_ACTIONS, WARNING_ACTIONS, SharePointLibraryManager, _common, _http,
 )
+from alt_fabric_m365.sharepoint import manager as manager_module
 
-from conftest import fake_token
-from sharepoint_fake import APP_ID, HOST, ROLE_DEFINITIONS, FakeTenant
+from conftest import FakeAzure, fake_token
+from sharepoint_fake import APP_ID, HOST, ROLE_DEFINITIONS, FakeTenant, graph_error, response
 
 READ = ROLE_DEFINITIONS["Read"]
 CONTRIBUTE = ROLE_DEFINITIONS["Contribute"]
@@ -94,10 +99,6 @@ def test_constructor_gets_graph_and_sharepoint_tokens_up_front(credential, tenan
 
 
 def test_works_with_key_vault_certificate_credential(fake_notebookutils, tenant, site, monkeypatch):
-    from alt_fabric_m365.auth import keyvault
-    from alt_fabric_m365.auth import KeyVaultCertificateCredential
-    from conftest import FakeAzure
-
     azure = FakeAzure(object_id=APP_ID)
     monkeypatch.setattr(keyvault.requests, "get", azure.get)
     monkeypatch.setattr(keyvault.requests, "post", azure.post)
@@ -120,9 +121,6 @@ def test_works_with_key_vault_certificate_credential(fake_notebookutils, tenant,
 
 
 def test_a_request_retried_after_a_long_throttle_sends_a_current_token(tenant, site):
-    from types import SimpleNamespace
-    from sharepoint_fake import response
-
     class RenewingCredential:
         """Hands out a new token whenever time passes, as a credential does near a token's expiry."""
 
@@ -308,7 +306,6 @@ def test_every_request_says_which_app_it_comes_from(make_manager, tenant, site):
     ((200, [{"SchemaVersion": "15.0.0.0", "ErrorInfo": {"ErrorMessage": "Access denied."}}]), "CSOM error"),
 ])
 def test_a_failed_metadata_write_still_leaves_the_library_its_groups_and_name(make_manager, tenant, site, failure, reason):
-    from sharepoint_fake import response
     tenant.fail("POST", r"/ProcessQuery", response(*failure))
 
     results = make_manager(add_to_navigation=True).create_libraries(
@@ -346,6 +343,55 @@ def test_create_dry_run_reports_a_new_display_name(make_manager, tenant, site):
 
     assert tenant.writes() == []
     assert "rename_library (dry run)" in actions(results) and "library_created (dry run)" not in actions(results)
+
+
+def test_renaming_a_library_keeps_group_names_and_updates_descriptions(make_manager, tenant, site):
+    make_manager().create_libraries(libraries_df(site, "MATH", library_display_name="Maths", manual_read=True))
+    names = sorted(g["displayName"] for g in tenant.groups.values())
+
+    results = make_manager().create_libraries(
+        libraries_df(site, "MATH", library_display_name="Mathematics", manual_read=True),
+    )
+
+    assert sorted(g["displayName"] for g in tenant.groups.values()) == names
+    assert len(rows(results, "group_description_updated")) == 3
+    assert all("'Mathematics' (MATH)" in g["description"] for g in tenant.groups.values())
+    assert "NOT synced" in tenant.group_named("BAA-Sharepoint-MATH-Manual-Read")["description"]
+
+    tenant.calls.clear()
+    make_manager().create_libraries(libraries_df(site, "MATH", library_display_name="Mathematics", manual_read=True))
+    assert created(tenant, "/v1.0/groups/", method="PATCH") == []
+
+
+def test_a_rename_dry_run_reports_the_descriptions_it_would_update(make_manager, tenant, site):
+    make_manager().create_libraries(libraries_df(site, "MATH", library_display_name="Maths", manual_read=True))
+    tenant.calls.clear()
+
+    renamed = make_manager(dry_run=True).create_libraries(
+        libraries_df(site, "MATH", library_display_name="Mathematics", manual_read=True),
+    )
+    unchanged = make_manager(dry_run=True).create_libraries(
+        libraries_df(site, "MATH", library_display_name="Maths", manual_read=True),
+    )
+
+    assert tenant.writes() == []
+    assert sorted(rows(renamed, "group_description_updated (dry run)")["group"]) == [
+        "BAA-Sharepoint-MATH-Auto-Contribute", "BAA-Sharepoint-MATH-Auto-Read", "BAA-Sharepoint-MATH-Manual-Read",
+    ]
+    assert "group_description_updated (dry run)" not in actions(unchanged)
+
+
+def test_descriptions_of_groups_people_own_are_left_alone(make_manager, tenant, site):
+    head = tenant.add_user("head@contoso.com")
+    slt_read = tenant.add_group("BAA-Sharepoint-SLT-Manual-Read", owners={head["id"]})
+    slt_read["description"] = "Curated by the headteacher"
+    df = libraries_df(site, "SLT", library_display_name="Senior Leadership", auto_groups=False,
+                      manual_read=True, app_owned=False)
+
+    results = make_manager().create_libraries(df)
+
+    assert "group_description_updated" not in actions(results)
+    assert slt_read["description"] == "Curated by the headteacher"
 
 
 @pytest.mark.parametrize("dry_run", [False, True])
@@ -492,6 +538,47 @@ def test_colliding_codes_are_skipped_and_others_proceed(make_manager, tenant, si
     assert [lst["slug"] for lst in site.lists.values()] == ["ENG"]
 
 
+def test_new_code_colliding_with_an_existing_library_is_skipped(make_manager, tenant, site):
+    make_manager().create_libraries(libraries_df(site, "PE-KS3"))
+    tenant.add_user("jo@contoso.com")
+
+    results = make_manager().create_libraries(libraries_df(site, "PEKS3"))
+
+    [row] = results.itertuples()
+    assert (row.action, row.document_library) == ("group_name_collision", "PEKS3")
+    assert site.list_by_slug("PEKS3") is None
+
+    results = make_manager().update_memberships(memberships_df(site, [("PEKS3", "jo@contoso.com", "contribute")]))
+
+    assert actions(results) == ["group_name_collision"]
+    assert tenant.member_upns("BAA-Sharepoint-PEKS3-Auto-Contribute") == []
+
+
+def test_code_matching_another_librarys_title_is_never_adopted(make_manager, tenant, site):
+    artd = site.add_list("Art", slug="ARTD", unique=True)
+    tenant.add_user("jo@contoso.com")
+
+    results = make_manager().create_libraries(libraries_df(site, "ART", library_display_name="Art & Design"))
+
+    assert actions(results) == ["library_name_conflict"]
+    assert artd["displayName"] == "Art" and artd["role_assignments"] == {}
+
+    results = make_manager().update_memberships(memberships_df(site, [("ART", "jo@contoso.com", "contribute")]))
+
+    assert actions(results) == ["library_not_found"]
+    assert artd["role_assignments"] == {}
+
+
+def test_an_ordinary_list_with_the_code_as_its_url_is_not_adopted(make_manager, tenant, site):
+    tasks = site.add_list("English tasks", slug="ENG", template="genericList", unique=False)
+
+    make_manager().create_libraries(libraries_df(site, "ENG", library_display_name="English"))
+
+    assert tasks["displayName"] == "English tasks" and tasks["unique"] is False
+    library = site.list_by_slug("ENG")
+    assert library["template"] == "documentLibrary" and library["displayName"] == "English"
+
+
 def test_duplicate_rows_create_one_library(make_manager, site):
     df = pd.concat([libraries_df(site, "MATH"), libraries_df(site, "MATH", library_display_name="Other")])
 
@@ -502,7 +589,6 @@ def test_duplicate_rows_create_one_library(make_manager, site):
 
 
 def test_a_failing_library_is_logged_and_the_rest_proceed(make_manager, tenant, site):
-    from sharepoint_fake import graph_error
     tenant.fail("POST", r"/lists$", graph_error(403, "accessDenied"))
 
     results = make_manager(max_workers=1).create_libraries(libraries_df(site, "ART", "ENG"))
@@ -575,21 +661,16 @@ def test_get_metadata_of_a_library_with_none_set_is_ok(make_manager, site):
 
 
 def _fail_site_read(tenant, monkeypatch):
-    from sharepoint_fake import graph_error
     tenant.fail("GET", r":/sites/BAA$", graph_error(403, "accessDenied", "Access denied"))
 
 
 def _fail_properties_read(tenant, monkeypatch):
-    from sharepoint_fake import response
     tenant.fail("GET", r"/rootfolder/properties$", response(403, {"error": {
         "code": "-2147024891, System.UnauthorizedAccessException", "message": {"value": "Access denied."},
     }}))
 
 
 def _drop_properties_connection(tenant, monkeypatch):
-    import requests
-    from alt_fabric_m365.sharepoint import _http
-
     def request(method, url, **kwargs):
         if "/sites/BAA/" in url and url.endswith("/rootfolder/properties"):
             raise requests.ConnectionError("Connection reset by peer")
@@ -741,7 +822,6 @@ def test_unlink_empties_auto_groups_keeps_manual_and_removes_the_link(make_manag
 
 
 def test_unlink_empties_the_rest_of_a_group_when_one_member_cant_be_removed(make_manager, tenant, site):
-    from sharepoint_fake import graph_error
     make_manager().create_libraries(libraries_df(site, "MATH"))
     group = tenant.group_named("BAA-Sharepoint-MATH-Auto-Contribute")
     jo, sam, ali = (tenant.add_user(f"{name}@contoso.com") for name in ("jo", "sam", "ali"))
@@ -768,6 +848,18 @@ def test_unlinking_a_library_deleted_by_hand_removes_its_navigation_link(make_ma
     assert site.nav[0]["Children"] == []
     # The removal is reported by its own row, once it's done
     assert "navigation" not in rows(results, "library_not_found")["status"].iloc[0]
+
+
+def test_unlinking_a_library_that_never_existed_is_a_warning(make_manager, tenant, site):
+    jo = tenant.add_user("jo@contoso.com")
+    group = tenant.add_group("BAA-Sharepoint-MATH-Auto-Contribute")
+    group["members"][jo["id"]] = jo
+
+    results = make_manager().unlink_libraries(libraries_df(site, "MATH"))
+
+    assert actions(results) == ["group_emptied", "group_owner_added", "library_not_found", "manual_groups_preserved"]
+    assert not set(results["action"]) & FATAL_ACTIONS
+    assert group["members"] == {}
 
 
 def test_unlink_dry_run_makes_no_writes(make_manager, tenant, site):
@@ -804,7 +896,6 @@ def test_unlinking_codes_whose_groups_collide_leaves_both(make_manager, tenant, 
 
 
 def test_unlink_skips_a_site_whose_prefetch_fails(make_manager, tenant, site):
-    from sharepoint_fake import graph_error
     tenant.fail("GET", r"/lists\?", graph_error(403, "accessDenied"))
 
     results = make_manager().unlink_libraries(libraries_df(site, "MATH"))
@@ -828,6 +919,60 @@ def test_retire_renames_and_removes_group_access_but_keeps_membership(make_manag
     assert lib["displayName"] == "MATH_MOVED"
     assert lib["role_assignments"] == {}
     assert tenant.member_upns("BAA-Sharepoint-MATH-Auto-Contribute") == ["jo@contoso.com"]
+
+
+def test_retire_waits_for_the_library_on_the_new_site(make_manager, tenant, site):
+    new_site = tenant.add_site("/sites/BAANew")
+    make_manager().create_libraries(libraries_df(site, "MATH"))
+    df = libraries_df(site, "MATH").assign(new_site_url=new_site.url)
+
+    results = make_manager().retire_moved_libraries(df)
+
+    assert actions(results) == ["retire_deferred"]
+    assert "retire_deferred" in WARNING_ACTIONS
+    assert site.list_by_slug("MATH")["displayName"] == "MATH Faculty"  # left working
+
+    make_manager().create_libraries(libraries_df(new_site, "MATH"))
+    results = make_manager().retire_moved_libraries(df)
+
+    assert "library_retired" in actions(results)
+    assert site.list_by_slug("MATH")["displayName"] == "MATH_MOVED"
+
+
+@pytest.mark.parametrize("replacement", ["still inherits", "move-back leftover", "limited access", "duplicate group"])
+def test_retire_waits_for_a_working_replacement(make_manager, tenant, site, replacement):
+    new_site = tenant.add_site("/sites/BAANew")
+    make_manager().create_libraries(libraries_df(site, "MATH"))
+    contribute = tenant.group_named("BAA-Sharepoint-MATH-Auto-Contribute")
+    if replacement == "still inherits":
+        new_site.add_list("MATH")  # its create failed after the library was made
+    elif replacement == "move-back leftover":
+        new_site.add_list("MATH_MOVED", slug="MATH", unique=True)  # retired by an earlier move, no group access
+    else:
+        new_library = new_site.add_list("MATH", unique=True)
+        new_site.principals[f"c:0t.c|tenant|{contribute['id']}"] = 77
+        if replacement == "limited access":
+            # Only from a folder inside it with its own permissions, so no access to the library
+            new_library["role_assignments"][77] = {ROLE_DEFINITIONS["Limited Access"]}
+        else:
+            new_library["role_assignments"][77] = {CONTRIBUTE}
+            tenant.add_group("BAA-Sharepoint-MATH-Auto-Read")  # a second group with the library's group name
+    tenant.calls.clear()
+
+    results = make_manager().retire_moved_libraries(libraries_df(site, "MATH").assign(new_site_url=new_site.url))
+
+    assert actions(results) == ["retire_deferred"]
+    assert tenant.writes() == []
+    library = site.list_by_slug("MATH")
+    assert (library["displayName"], len(library["role_assignments"])) == ("MATH Faculty", 2)
+
+
+def test_retire_without_a_new_site_retires_anyway(make_manager, tenant, site):
+    make_manager().create_libraries(libraries_df(site, "MATH"))
+
+    results = make_manager().retire_moved_libraries(libraries_df(site, "MATH").assign(new_site_url=None))
+
+    assert "library_retired" in actions(results)
 
 
 @pytest.mark.parametrize("operation, done", [
@@ -870,7 +1015,6 @@ def test_retire_skips_a_site_or_library_that_is_gone(make_manager, tenant, site)
 # Under Sites.Selected, a site whose grant has been removed gives 403; only a deleted site gives 404
 @pytest.mark.parametrize("dry_run", [False, True])
 def test_retire_reports_an_old_site_it_cant_read_as_an_error(make_manager, tenant, site, dry_run):
-    from sharepoint_fake import graph_error
     make_manager().create_libraries(libraries_df(site, "MATH"))
     tenant.calls.clear()
     tenant.fail("GET", r":/sites/BAA$", graph_error(403, "accessDenied", "Access denied"))
@@ -888,7 +1032,6 @@ def test_retire_reports_an_old_site_it_cant_read_as_an_error(make_manager, tenan
     ("404", "retire_deferred"),  # doesn't exist yet: retired once the library works there
 ])
 def test_retire_keeps_a_library_whose_new_site_it_cant_read(make_manager, tenant, site, failure, action):
-    from sharepoint_fake import graph_error
     make_manager().create_libraries(libraries_df(site, "MATH"))
     new_site = tenant.add_site("/sites/BAA2")
     tenant.calls.clear()
@@ -924,6 +1067,19 @@ def test_retire_leaves_a_library_whose_new_site_is_the_same_site(make_manager, t
     assert tenant.writes() == []
     library = site.list_by_slug("MATH")
     assert (library["displayName"], len(library["role_assignments"])) == ("MATH Faculty", 2)
+
+
+def test_retire_dry_run_makes_no_writes(make_manager, tenant, site):
+    make_manager().create_libraries(libraries_df(site, "MATH"))
+    tenant.calls.clear()
+
+    results = make_manager(dry_run=True, add_to_navigation=True).retire_moved_libraries(libraries_df(site, "MATH"))
+
+    assert tenant.writes() == []
+    assert actions(results) == sorted([
+        "retire_library (dry run)", "remove_group_access (dry run)", "remove_group_access (dry run)",
+        "remove_navigation_link (dry run)",
+    ])
 
 
 # Bringing a library back: restored after an unlink, moved back to its first site, or deleted by hand
@@ -988,6 +1144,8 @@ def test_a_library_deleted_by_hand_is_created_again_with_one_link(make_manager, 
     # Its link was left behind, so the new library's link is the same one rather than a second
     assert [(c["Title"], c["Url"]) for c in site.nav[0]["Children"]] == [("MATH Faculty", "/sites/BAA/MATH")]
 
+
+# update_memberships
 
 @pytest.fixture
 def library(make_manager, site):
@@ -1248,7 +1406,6 @@ def test_a_member_row_missing_its_user_or_permission_is_a_row_not_a_failed_sync(
 def test_a_numeric_permission_beside_a_missing_one_is_skipped_on_every_pandas(
     make_manager, tenant, site, library, monkeypatch, pandas_1_5,
 ):
-    from alt_fabric_m365.sharepoint import _common
     if pandas_1_5:
         # pandas 1.5, which older Fabric runtimes have, counts any object column as strings
         monkeypatch.setattr(
@@ -1298,6 +1455,19 @@ def test_nested_groups_are_added_and_unresolvable_ones_reported(make_manager, te
     assert "removals_skipped" in actions(results)
 
 
+def test_nested_group_with_an_ampersand_in_its_name(make_manager, tenant, site, library):
+    staff = tenant.add_group("Maths & Science Staff")
+    nested = pd.DataFrame({
+        "site_url": [site.url], "library_code": ["MATH"], "group_prefix": [PREFIX],
+        "member_group": ["Maths & Science Staff"], "permission": ["read"],
+    })
+
+    results = make_manager().update_memberships(memberships_df(site, []), nested_groups_df=nested)
+
+    assert rows(results, "error").empty
+    assert staff["id"] in tenant.group_named("BAA-Sharepoint-MATH-Auto-Read")["members"]
+
+
 def test_onedrive_shortcut_once_per_new_user(make_manager, tenant, site, library):
     jo = tenant.add_user("jo@contoso.com")
 
@@ -1314,7 +1484,6 @@ def test_onedrive_shortcut_once_per_new_user(make_manager, tenant, site, library
 
 
 def test_onedrive_shortcut_failure_does_not_block_the_sync(make_manager, tenant, site, library):
-    from sharepoint_fake import graph_error
     tenant.add_user("jo@contoso.com")
     tenant.fail("POST", r"/drive/root/children$", graph_error(403, "accessDenied"))
 
@@ -1391,6 +1560,26 @@ def test_memberships_dry_run_makes_no_writes(make_manager, tenant, site, library
     assert "add_to_group (dry run)" in actions(results)
 
 
+def test_memberships_dry_run_lists_new_groups_shortcuts_and_nested_groups(make_manager, tenant, site, library):
+    tenant.add_user("jo@contoso.com")
+    tenant.add_group("BAA All Staff")
+    nested = pd.DataFrame({
+        "site_url": [site.url], "library_code": ["MATH"], "group_prefix": [PREFIX],
+        "member_group": ["BAA All Staff"], "permission": ["read"],
+    })
+    tenant.calls.clear()
+
+    results = make_manager(dry_run=True, create_onedrive_shortcuts=True).update_memberships(
+        memberships_df(site, [("MATH", "jo@contoso.com", "owner")]), nested_groups_df=nested,
+    )
+
+    assert tenant.writes() == []
+    assert actions(results) == sorted([
+        "ensure_group (dry run)", "add_to_group (dry run)", "onedrive_shortcut (dry run)",  # owner, a new group
+        "already_assigned", "add_to_group (dry run)",  # read, nested group
+    ])  # contribute exists, but has no members to remove
+
+
 def test_memberships_in_parallel(make_manager, tenant, site):
     codes = [f"F{i}" for i in range(6)]
     make_manager().create_libraries(libraries_df(site, *codes))
@@ -1402,6 +1591,20 @@ def test_memberships_in_parallel(make_manager, tenant, site):
 
     assert len(rows(results, "added_to_group")) == 24
     assert rows(results, "error").empty
+
+
+def test_each_user_is_resolved_once_per_sync(make_manager, tenant, site):
+    make_manager().create_libraries(libraries_df(site, "MATH", "ENG", "ART"))
+    tenant.add_user("jo.smith@contoso.onmicrosoft.com", mail="jo@contoso.com")
+    tenant.calls.clear()
+
+    make_manager().update_memberships(memberships_df(site, [
+        (code, "jo@contoso.com", "contribute") for code in ("MATH", "ENG", "ART")
+    ]))
+
+    lookups = [url for method, url, _ in tenant.calls if "/v1.0/users" in url and method == "GET"]
+    assert len(lookups) == 2  # UPN miss, then mail match — once, not once per library
+    assert tenant.member_upns("BAA-Sharepoint-ART-Auto-Contribute") == ["jo.smith@contoso.onmicrosoft.com"]
 
 
 # ensure_onedrive_shortcuts
@@ -1598,6 +1801,16 @@ def test_grant_dry_run_reports_what_a_live_run_does(make_manager, tenant, site, 
     ])
 
 
+def test_grant_skips_a_site_whose_prefetch_fails(make_manager, tenant, site, library, slt_groups):
+    tenant.fail("GET", r"/roledefinitions", response(503), times=99)
+
+    results = make_manager().grant_group_access(
+        grants_df(site, [("MATH", "BAA-Sharepoint-SLT-Manual-Read", "read")]),
+    )
+
+    assert actions(results) == ["error"]
+
+
 def test_a_grant_run_again_makes_no_writes(make_manager, tenant, site, library, slt_groups):
     df = grants_df(site, [("MATH", "BAA-Sharepoint-SLT-Manual-Read", "read")])
     make_manager().grant_group_access(df)
@@ -1621,6 +1834,36 @@ def test_a_group_is_registered_once_per_site_for_all_its_libraries(make_manager,
     assert actions(results) == ["group_access_granted"] * 3
     assert len(created(tenant, "/web/ensureuser")) == 1
     assert len(created(tenant, "addroleassignment")) == 3
+
+
+def test_one_unresolvable_group_does_not_skip_the_sites_other_grants(make_manager, tenant, site, library, slt_groups):
+    read_group = tenant.group_named("BAA-Sharepoint-SLT-Manual-Read")
+    tenant.fail("POST", r"/web/ensureuser$", response(400), times=1)  # the first group looked up
+    df = grants_df(site, [
+        ("MATH", "BAA-Sharepoint-SLT-Manual-Read", "read"),
+        ("MATH", "BAA-Sharepoint-SLT-Manual-Contribute", "contribute"),
+    ])
+    site.principals.pop(f"c:0t.c|tenant|{read_group['id']}", None)
+
+    results = make_manager().grant_group_access(df)
+
+    assert sorted(actions(results)) == ["error", "group_access_granted"]
+
+
+def test_a_group_that_cant_be_registered_on_a_site_is_tried_once_for_all_its_libraries(
+    make_manager, tenant, site, library, slt_groups,
+):
+    make_manager().create_libraries(libraries_df(site, "ENG"))
+    tenant.fail("POST", r"/web/ensureuser$", response(400), times=1)
+    tenant.calls.clear()
+
+    results = make_manager().grant_group_access(grants_df(site, [
+        (code, "BAA-Sharepoint-SLT-Manual-Read", "read") for code in ("MATH", "ENG")
+    ]))
+
+    # Each library still gets its own error row, without registering the group again
+    assert rows(results, "error")["document_library"].tolist() == ["MATH", "ENG"]
+    assert len(created(tenant, "/web/ensureuser")) == 1
 
 
 # enforce_site_sharing_lockdown
@@ -1704,10 +1947,9 @@ def test_get_navigation_link(make_manager, site):
     assert manager.get_navigation_link(site.url, "MATH", navigation_label="Other") is None
 
 
-# Failure paths and remaining dry runs
+# Failure paths
 
 def test_navigation_label_failure_does_not_block_permissions(make_manager, tenant, site):
-    from sharepoint_fake import response
     tenant.fail("GET", r"/navigation/quicklaunch", response(403))
 
     results = make_manager(add_to_navigation=True).create_libraries(libraries_df(site, "MATH"))
@@ -1717,7 +1959,6 @@ def test_navigation_label_failure_does_not_block_permissions(make_manager, tenan
 
 
 def test_a_navigation_link_is_not_posted_again_after_a_server_error(make_manager, tenant, site):
-    from sharepoint_fake import response
     # A 5xx may come after SharePoint created the link, so posting it again could duplicate it
     tenant.fail("POST", r"/GetNodeById\(\d+\)/Children$", response(503))
 
@@ -1735,8 +1976,19 @@ def test_a_navigation_link_is_not_posted_again_after_a_server_error(make_manager
     assert [child["Title"] for child in label["Children"]] == ["MATH Faculty"]
 
 
+def test_a_onedrive_shortcut_is_not_repeated_after_a_server_error(make_manager, tenant, site, library):
+    tenant.add_user("jo@contoso.com")
+    tenant.fail("POST", r"/drive/root/children$", response(503))
+
+    results = make_manager(create_onedrive_shortcuts=True).update_memberships(
+        memberships_df(site, [("MATH", "jo@contoso.com", "contribute")]),
+    )
+
+    assert len(created(tenant, "/drive/root/children")) == 1
+    assert "onedrive_shortcut_failed" in actions(results)
+
+
 def test_failure_rows_give_graphs_error_code_and_message(make_manager, tenant, site, library):
-    from sharepoint_fake import graph_error
     tenant.add_user("jo@contoso.com")
     tenant.fail("POST", r"/members/\$ref$", graph_error(
         403, "Authorization_RequestDenied", "Insufficient privileges to complete the operation."))
@@ -1749,7 +2001,6 @@ def test_failure_rows_give_graphs_error_code_and_message(make_manager, tenant, s
 
 
 def test_error_rows_give_sharepoints_error_message(make_manager, tenant, site):
-    from sharepoint_fake import response
     tenant.fail("POST", r"/addroleassignment", response(403, {"error": {
         "code": "-2147024891, System.UnauthorizedAccessException", "message": {"lang": "en-US", "value": "Access denied."},
     }}))
@@ -1761,8 +2012,27 @@ def test_error_rows_give_sharepoints_error_message(make_manager, tenant, site):
     ]
 
 
+@pytest.mark.parametrize("operation", ["create", "update"])
+def test_one_unreadable_site_does_not_stop_the_others(make_manager, tenant, site, operation):
+    tenant.add_user("jo@contoso.com")
+    gone = "https://contoso.sharepoint.com/sites/Typo"
+    manager = make_manager()
+    if operation == "create":
+        df = pd.concat([libraries_df(site, "MATH"), libraries_df(site, "ENG").assign(site_url=gone)])
+        results = manager.create_libraries(df)
+        assert site.list_by_slug("MATH") is not None
+    else:
+        manager.create_libraries(libraries_df(site, "MATH"))
+        df = memberships_df(site, [("MATH", "jo@contoso.com", "contribute"), ("ENG", "jo@contoso.com", "read")])
+        df.loc[1, "site_url"] = gone
+        results = manager.update_memberships(df)
+        assert tenant.member_upns("BAA-Sharepoint-MATH-Auto-Contribute") == ["jo@contoso.com"]
+
+    [error] = rows(results, "error").itertuples()
+    assert error.site_url == gone
+
+
 def test_a_member_already_removed_by_a_retried_request_is_not_a_failure(make_manager, tenant, site, library):
-    from sharepoint_fake import graph_error
     left = tenant.add_user("left@contoso.com")
     tenant.group_named("BAA-Sharepoint-MATH-Auto-Contribute")["members"][left["id"]] = left
     # The first DELETE removed the member, but its response was lost, so the retry finds them gone
@@ -1779,8 +2049,6 @@ def test_a_member_already_removed_by_a_retried_request_is_not_a_failure(make_man
 def test_one_worker_makes_every_request_in_turn_including_user_lookups(
     make_manager, tenant, site, library, monkeypatch, operation,
 ):
-    import threading
-    from alt_fabric_m365.sharepoint import _http
     for name in ("jo", "sam", "ali"):
         tenant.add_user(f"{name}@contoso.com")
     threads = set()
@@ -1798,7 +2066,6 @@ def test_one_worker_makes_every_request_in_turn_including_user_lookups(
 
 
 def test_add_and_remove_failures_are_fatal_rows(make_manager, tenant, site, library):
-    from sharepoint_fake import graph_error
     tenant.add_user("jo@contoso.com")
     stale = tenant.add_user("left@contoso.com")
     tenant.group_named("BAA-Sharepoint-MATH-Auto-Contribute")["members"][stale["id"]] = stale
@@ -1814,8 +2081,6 @@ def test_add_and_remove_failures_are_fatal_rows(make_manager, tenant, site, libr
 def test_a_removal_that_cannot_reach_graph_is_logged_against_its_group_and_member(
     make_manager, tenant, site, library, monkeypatch,
 ):
-    import requests
-    from alt_fabric_m365.sharepoint import _http
     stale = tenant.add_user("left@contoso.com")
     tenant.group_named("BAA-Sharepoint-MATH-Auto-Contribute")["members"][stale["id"]] = stale
 
@@ -1865,7 +2130,6 @@ def test_an_unhandled_error_is_logged_against_its_site_and_library(
 
 
 def test_a_user_lookup_graph_fails_fails_the_library_without_removing_anyone(make_manager, tenant, site, library):
-    from sharepoint_fake import graph_error
     tenant.add_user("jo@contoso.com")
     stale = tenant.add_user("left@contoso.com")
     tenant.group_named("BAA-Sharepoint-MATH-Auto-Contribute")["members"][stale["id"]] = stale
@@ -1885,7 +2149,6 @@ def test_a_user_lookup_graph_fails_fails_the_library_without_removing_anyone(mak
 def test_a_nested_group_lookup_graph_fails_is_an_error_and_keeps_nested_groups(
     make_manager, tenant, site, library,
 ):
-    from sharepoint_fake import graph_error
     tenant.add_group("BAA All Staff")
     old_nested = tenant.add_group("Old Nested")
     read_group = tenant.group_named("BAA-Sharepoint-MATH-Auto-Read")
@@ -1905,7 +2168,6 @@ def test_a_nested_group_lookup_graph_fails_is_an_error_and_keeps_nested_groups(
 
 
 def test_nested_group_add_failure_is_fatal(make_manager, tenant, site, library):
-    from sharepoint_fake import graph_error
     tenant.add_group("BAA All Staff")
     tenant.fail("POST", r"/members/\$ref$", graph_error(400, "Request_BadRequest", "cannot nest"))
     nested = pd.DataFrame({
@@ -1917,50 +2179,6 @@ def test_nested_group_add_failure_is_fatal(make_manager, tenant, site, library):
 
     [failed] = rows(results, "add_failed").itertuples()
     assert "nested group 'BAA All Staff'" in failed.status
-
-
-def test_memberships_dry_run_lists_new_groups_shortcuts_and_nested_groups(make_manager, tenant, site, library):
-    tenant.add_user("jo@contoso.com")
-    tenant.add_group("BAA All Staff")
-    nested = pd.DataFrame({
-        "site_url": [site.url], "library_code": ["MATH"], "group_prefix": [PREFIX],
-        "member_group": ["BAA All Staff"], "permission": ["read"],
-    })
-    tenant.calls.clear()
-
-    results = make_manager(dry_run=True, create_onedrive_shortcuts=True).update_memberships(
-        memberships_df(site, [("MATH", "jo@contoso.com", "owner")]), nested_groups_df=nested,
-    )
-
-    assert tenant.writes() == []
-    assert actions(results) == sorted([
-        "ensure_group (dry run)", "add_to_group (dry run)", "onedrive_shortcut (dry run)",  # owner, a new group
-        "already_assigned", "add_to_group (dry run)",  # read, nested group
-    ])  # contribute exists, but has no members to remove
-
-
-def test_retire_dry_run_makes_no_writes(make_manager, tenant, site):
-    make_manager().create_libraries(libraries_df(site, "MATH"))
-    tenant.calls.clear()
-
-    results = make_manager(dry_run=True, add_to_navigation=True).retire_moved_libraries(libraries_df(site, "MATH"))
-
-    assert tenant.writes() == []
-    assert actions(results) == sorted([
-        "retire_library (dry run)", "remove_group_access (dry run)", "remove_group_access (dry run)",
-        "remove_navigation_link (dry run)",
-    ])
-
-
-def test_grant_skips_a_site_whose_prefetch_fails(make_manager, tenant, site, library, slt_groups):
-    from sharepoint_fake import response
-    tenant.fail("GET", r"/roledefinitions", response(503), times=99)
-
-    results = make_manager().grant_group_access(
-        grants_df(site, [("MATH", "BAA-Sharepoint-SLT-Manual-Read", "read")]),
-    )
-
-    assert actions(results) == ["error"]
 
 
 # Each site takes several reads before the per-library work, so they run in parallel with max_workers above 1
@@ -1988,8 +2206,6 @@ TWO_SITE_OPERATIONS = {
 
 def overlap_site_reads(monkeypatch, first, second):
     """Makes the first site's read end only after the second's, so the two must overlap and finish out of order."""
-    import threading
-    from alt_fabric_m365.sharepoint import manager as manager_module
     real_get_site_id, second_read = manager_module._get_site_id, threading.Event()
 
     def get_site_id(token, site_url):
@@ -2005,7 +2221,6 @@ def overlap_site_reads(monkeypatch, first, second):
 
 @pytest.mark.parametrize("operation", TWO_SITE_OPERATIONS)
 def test_sites_are_read_in_parallel_and_their_errors_logged_in_order(make_manager, tenant, monkeypatch, operation):
-    from sharepoint_fake import graph_error
     tenant.add_user("jo@contoso.com")
     tenant.add_group("Staff")
     first, second = tenant.add_site("/sites/A"), tenant.add_site("/sites/B")
@@ -2021,7 +2236,6 @@ def test_sites_are_read_in_parallel_and_their_errors_logged_in_order(make_manage
 def test_retire_reads_the_new_sites_in_parallel_and_keeps_libraries_it_cant_check(
     make_manager, tenant, site, monkeypatch,
 ):
-    from sharepoint_fake import graph_error
     make_manager().create_libraries(libraries_df(site, "MATH", "ENG"))
     first, second = tenant.add_site("/sites/A"), tenant.add_site("/sites/B")
     tenant.fail("GET", r":/sites/[AB]$", graph_error(403, "accessDenied", "Access denied"), times=2)
@@ -2040,9 +2254,6 @@ def test_retire_reads_the_new_sites_in_parallel_and_keeps_libraries_it_cant_chec
 
 
 def test_cancelling_during_the_site_reads_starts_no_more_of_them(make_manager, tenant, monkeypatch):
-    import threading
-    from concurrent.futures import ThreadPoolExecutor
-    from alt_fabric_m365.sharepoint import manager as manager_module
     sites = [tenant.add_site(f"/sites/{name}") for name in "ABCD"]
     real_get_site_id, started, lock = manager_module._get_site_id, [], threading.Lock()
     first_two_running = threading.Barrier(3, timeout=5)  # the two workers and the cancelled cell
@@ -2073,19 +2284,7 @@ def test_cancelling_during_the_site_reads_starts_no_more_of_them(make_manager, t
     assert tenant.writes() == []
 
 
-# Regression tests
-
-def test_nested_group_with_an_ampersand_in_its_name(make_manager, tenant, site, library):
-    staff = tenant.add_group("Maths & Science Staff")
-    nested = pd.DataFrame({
-        "site_url": [site.url], "library_code": ["MATH"], "group_prefix": [PREFIX],
-        "member_group": ["Maths & Science Staff"], "permission": ["read"],
-    })
-
-    results = make_manager().update_memberships(memberships_df(site, []), nested_groups_df=nested)
-
-    assert rows(results, "error").empty
-    assert staff["id"] in tenant.group_named("BAA-Sharepoint-MATH-Auto-Read")["members"]
+# Inputs are checked before any request
 
 
 def nested_df(site_url, member_group="Staff"):
@@ -2169,11 +2368,10 @@ def test_library_codes_sharepoint_would_change_are_refused_before_anything_chang
     assert tenant.calls == []
 
 
+# Creating groups: never twice, even while Graph's name lookups miss a new one
+
 def fail_group_creates(tenant, monkeypatch, failure, times=1):
     """Makes the next *times* group creates fail with *failure*, after Graph may or may not have made the group."""
-    import requests
-    from alt_fabric_m365.sharepoint import _http
-    from sharepoint_fake import graph_error, response
 
     failures = {
         "503": lambda: graph_error(503, "serviceNotAvailable"),
@@ -2265,9 +2463,20 @@ def test_a_group_whose_create_certainly_failed_is_created_on_the_next_try(
     assert tenant.member_upns("BAA-Sharepoint-MATH-Auto-Read") == ["jo@contoso.com"]
 
 
+def test_group_creation_is_not_repeated_after_a_server_error(make_manager, tenant, site):
+    tenant.fail("POST", r"/v1.0/groups$", response(504))
+
+    results = make_manager().create_libraries(libraries_df(site, "MATH"))
+
+    assert actions(results) == ["error", "library_created"]
+    assert len(created(tenant, "/v1.0/groups")) == 1  # not retried, so no duplicate can be created
+    # The failure stopped the first run before it set the display name, so the re-run sets it
+    assert actions(make_manager().create_libraries(libraries_df(site, "MATH"))) == [
+        "group_assigned", "group_assigned", "library_renamed",
+    ]
+
+
 def test_a_group_is_created_on_the_next_try_after_its_token_couldnt_be_got(make_manager, tenant, site, monkeypatch):
-    import requests
-    from alt_fabric_m365.sharepoint import manager as manager_module
     tenant.add_user("jo@contoso.com")
     manager = make_manager()
     # The credential can't be reached for the token the first group create needs, so nothing is sent
@@ -2341,7 +2550,6 @@ def test_a_group_made_earlier_in_the_run_follows_a_rename_once_found_by_name(mak
 def test_a_group_made_earlier_without_the_app_as_owner_is_checked_while_it_replicates(
     make_manager, tenant, site, operation, owners, action,
 ):
-    from sharepoint_fake import graph_error
     manager = make_manager()
     manager.create_libraries(libraries_df(site, "MATH", app_owned=False))
     group = tenant.group_named("BAA-Sharepoint-MATH-Auto-Contribute")
@@ -2370,7 +2578,6 @@ def test_a_group_made_earlier_without_the_app_as_owner_is_checked_while_it_repli
 def test_a_group_made_earlier_in_the_run_is_synced_from_its_members_while_it_replicates(
     make_manager, tenant, site, second_run, contribute, read,
 ):
-    from sharepoint_fake import graph_error
     manager = make_manager()
     manager.create_libraries(libraries_df(site, "MATH"))
     tenant.replicating.update(tenant.groups)
@@ -2396,75 +2603,6 @@ def test_a_group_made_earlier_in_the_run_is_synced_from_its_members_while_it_rep
     assert len(tenant.writes()) == writes
 
 
-def test_group_differing_only_in_case_is_reused_not_duplicated(make_manager, tenant, site, library):
-    tenant.group_named("BAA-Sharepoint-MATH-Auto-Contribute")["displayName"] = "baa-sharepoint-MATH-Auto-Contribute"
-    tenant.add_user("jo@contoso.com")
-
-    make_manager().update_memberships(memberships_df(site, [("MATH", "jo@contoso.com", "contribute")]))
-
-    assert len([g for g in tenant.groups.values() if g["displayName"].lower().endswith("-math-auto-contribute")]) == 1
-
-
-
-# Code review fixes
-
-def test_group_creation_is_not_repeated_after_a_server_error(make_manager, tenant, site):
-    from sharepoint_fake import response
-    tenant.fail("POST", r"/v1.0/groups$", response(504))
-
-    results = make_manager().create_libraries(libraries_df(site, "MATH"))
-
-    assert actions(results) == ["error", "library_created"]
-    assert len(created(tenant, "/v1.0/groups")) == 1  # not retried, so no duplicate can be created
-    # The failure stopped the first run before it set the display name, so the re-run sets it
-    assert actions(make_manager().create_libraries(libraries_df(site, "MATH"))) == [
-        "group_assigned", "group_assigned", "library_renamed",
-    ]
-
-
-def test_unlinking_a_library_that_never_existed_is_a_warning(make_manager, tenant, site):
-    jo = tenant.add_user("jo@contoso.com")
-    group = tenant.add_group("BAA-Sharepoint-MATH-Auto-Contribute")
-    group["members"][jo["id"]] = jo
-
-    results = make_manager().unlink_libraries(libraries_df(site, "MATH"))
-
-    assert actions(results) == ["group_emptied", "group_owner_added", "library_not_found", "manual_groups_preserved"]
-    assert not set(results["action"]) & FATAL_ACTIONS
-    assert group["members"] == {}
-
-
-def test_new_code_colliding_with_an_existing_library_is_skipped(make_manager, tenant, site):
-    make_manager().create_libraries(libraries_df(site, "PE-KS3"))
-    tenant.add_user("jo@contoso.com")
-
-    results = make_manager().create_libraries(libraries_df(site, "PEKS3"))
-
-    [row] = results.itertuples()
-    assert (row.action, row.document_library) == ("group_name_collision", "PEKS3")
-    assert site.list_by_slug("PEKS3") is None
-
-    results = make_manager().update_memberships(memberships_df(site, [("PEKS3", "jo@contoso.com", "contribute")]))
-
-    assert actions(results) == ["group_name_collision"]
-    assert tenant.member_upns("BAA-Sharepoint-PEKS3-Auto-Contribute") == []
-
-
-def test_code_matching_another_librarys_title_is_never_adopted(make_manager, tenant, site):
-    artd = site.add_list("Art", slug="ARTD", unique=True)
-    tenant.add_user("jo@contoso.com")
-
-    results = make_manager().create_libraries(libraries_df(site, "ART", library_display_name="Art & Design"))
-
-    assert actions(results) == ["library_name_conflict"]
-    assert artd["displayName"] == "Art" and artd["role_assignments"] == {}
-
-    results = make_manager().update_memberships(memberships_df(site, [("ART", "jo@contoso.com", "contribute")]))
-
-    assert actions(results) == ["library_not_found"]
-    assert artd["role_assignments"] == {}
-
-
 def test_members_of_a_new_group_are_not_read(make_manager, tenant, site, library):
     tenant.add_user("head@contoso.com")
 
@@ -2474,70 +2612,13 @@ def test_members_of_a_new_group_are_not_read(make_manager, tenant, site, library
     assert not any(f"/groups/{owner['id']}/members?" in url for method, url, _ in tenant.calls if method == "GET")
 
 
-@pytest.mark.parametrize("operation", ["create", "update"])
-def test_one_unreadable_site_does_not_stop_the_others(make_manager, tenant, site, operation):
+def test_group_differing_only_in_case_is_reused_not_duplicated(make_manager, tenant, site, library):
+    tenant.group_named("BAA-Sharepoint-MATH-Auto-Contribute")["displayName"] = "baa-sharepoint-MATH-Auto-Contribute"
     tenant.add_user("jo@contoso.com")
-    gone = "https://contoso.sharepoint.com/sites/Typo"
-    manager = make_manager()
-    if operation == "create":
-        df = pd.concat([libraries_df(site, "MATH"), libraries_df(site, "ENG").assign(site_url=gone)])
-        results = manager.create_libraries(df)
-        assert site.list_by_slug("MATH") is not None
-    else:
-        manager.create_libraries(libraries_df(site, "MATH"))
-        df = memberships_df(site, [("MATH", "jo@contoso.com", "contribute"), ("ENG", "jo@contoso.com", "read")])
-        df.loc[1, "site_url"] = gone
-        results = manager.update_memberships(df)
-        assert tenant.member_upns("BAA-Sharepoint-MATH-Auto-Contribute") == ["jo@contoso.com"]
 
-    [error] = rows(results, "error").itertuples()
-    assert error.site_url == gone
+    make_manager().update_memberships(memberships_df(site, [("MATH", "jo@contoso.com", "contribute")]))
 
-
-def test_one_unresolvable_group_does_not_skip_the_sites_other_grants(make_manager, tenant, site, library, slt_groups):
-    from sharepoint_fake import response
-    read_group = tenant.group_named("BAA-Sharepoint-SLT-Manual-Read")
-    tenant.fail("POST", r"/web/ensureuser$", response(400), times=1)  # the first group looked up
-    df = grants_df(site, [
-        ("MATH", "BAA-Sharepoint-SLT-Manual-Read", "read"),
-        ("MATH", "BAA-Sharepoint-SLT-Manual-Contribute", "contribute"),
-    ])
-    site.principals.pop(f"c:0t.c|tenant|{read_group['id']}", None)
-
-    results = make_manager().grant_group_access(df)
-
-    assert sorted(actions(results)) == ["error", "group_access_granted"]
-
-
-def test_a_group_that_cant_be_registered_on_a_site_is_tried_once_for_all_its_libraries(
-    make_manager, tenant, site, library, slt_groups,
-):
-    from sharepoint_fake import response
-    make_manager().create_libraries(libraries_df(site, "ENG"))
-    tenant.fail("POST", r"/web/ensureuser$", response(400), times=1)
-    tenant.calls.clear()
-
-    results = make_manager().grant_group_access(grants_df(site, [
-        (code, "BAA-Sharepoint-SLT-Manual-Read", "read") for code in ("MATH", "ENG")
-    ]))
-
-    # Each library still gets its own error row, without registering the group again
-    assert rows(results, "error")["document_library"].tolist() == ["MATH", "ENG"]
-    assert len(created(tenant, "/web/ensureuser")) == 1
-
-
-def test_each_user_is_resolved_once_per_sync(make_manager, tenant, site):
-    make_manager().create_libraries(libraries_df(site, "MATH", "ENG", "ART"))
-    tenant.add_user("jo.smith@contoso.onmicrosoft.com", mail="jo@contoso.com")
-    tenant.calls.clear()
-
-    make_manager().update_memberships(memberships_df(site, [
-        (code, "jo@contoso.com", "contribute") for code in ("MATH", "ENG", "ART")
-    ]))
-
-    lookups = [url for method, url, _ in tenant.calls if "/v1.0/users" in url and method == "GET"]
-    assert len(lookups) == 2  # UPN miss, then mail match — once, not once per library
-    assert tenant.member_upns("BAA-Sharepoint-ART-Auto-Contribute") == ["jo.smith@contoso.onmicrosoft.com"]
+    assert len([g for g in tenant.groups.values() if g["displayName"].lower().endswith("-math-auto-contribute")]) == 1
 
 
 # Group ownership
@@ -2608,6 +2689,19 @@ def test_membership_sync_never_empties_a_group_the_app_doesnt_own(make_manager, 
     for dry_run in (True, False):
         results = make_manager(dry_run=dry_run).update_memberships(empty, libraries_df=libraries)
         assert actions(results) == ["group_not_owned"]
+
+    assert set(theirs["members"]) == {member["id"]}
+
+
+def test_unlink_never_empties_a_group_the_app_doesnt_own(make_manager, tenant, site):
+    owner = tenant.add_user("someone@contoso.com")
+    member = tenant.add_user("member@contoso.com")
+    theirs = tenant.add_group("BAA-Sharepoint-MATH-Auto-Read", owners={owner["id"]})
+    theirs["members"][member["id"]] = member
+
+    for dry_run in (True, False):
+        results = make_manager(dry_run=dry_run).unlink_libraries(libraries_df(site, "MATH"))
+        assert "group_not_owned" in actions(results)
 
     assert set(theirs["members"]) == {member["id"]}
 
@@ -2704,145 +2798,3 @@ def test_dry_run_reports_adopting_a_group_it_would_empty(make_manager, tenant, s
     assert tenant.writes() == []
     assert legacy["owners"] == set()
     assert results["action"].tolist() == ["group_owner_added (dry run)", "remove_from_group (dry run)"]
-
-
-def test_renaming_a_library_keeps_group_names_and_updates_descriptions(make_manager, tenant, site):
-    make_manager().create_libraries(libraries_df(site, "MATH", library_display_name="Maths", manual_read=True))
-    names = sorted(g["displayName"] for g in tenant.groups.values())
-
-    results = make_manager().create_libraries(
-        libraries_df(site, "MATH", library_display_name="Mathematics", manual_read=True),
-    )
-
-    assert sorted(g["displayName"] for g in tenant.groups.values()) == names
-    assert len(rows(results, "group_description_updated")) == 3
-    assert all("'Mathematics' (MATH)" in g["description"] for g in tenant.groups.values())
-    assert "NOT synced" in tenant.group_named("BAA-Sharepoint-MATH-Manual-Read")["description"]
-
-    tenant.calls.clear()
-    make_manager().create_libraries(libraries_df(site, "MATH", library_display_name="Mathematics", manual_read=True))
-    assert created(tenant, "/v1.0/groups/", method="PATCH") == []
-
-
-def test_a_rename_dry_run_reports_the_descriptions_it_would_update(make_manager, tenant, site):
-    make_manager().create_libraries(libraries_df(site, "MATH", library_display_name="Maths", manual_read=True))
-    tenant.calls.clear()
-
-    renamed = make_manager(dry_run=True).create_libraries(
-        libraries_df(site, "MATH", library_display_name="Mathematics", manual_read=True),
-    )
-    unchanged = make_manager(dry_run=True).create_libraries(
-        libraries_df(site, "MATH", library_display_name="Maths", manual_read=True),
-    )
-
-    assert tenant.writes() == []
-    assert sorted(rows(renamed, "group_description_updated (dry run)")["group"]) == [
-        "BAA-Sharepoint-MATH-Auto-Contribute", "BAA-Sharepoint-MATH-Auto-Read", "BAA-Sharepoint-MATH-Manual-Read",
-    ]
-    assert "group_description_updated (dry run)" not in actions(unchanged)
-
-
-def test_descriptions_of_groups_people_own_are_left_alone(make_manager, tenant, site):
-    head = tenant.add_user("head@contoso.com")
-    slt_read = tenant.add_group("BAA-Sharepoint-SLT-Manual-Read", owners={head["id"]})
-    slt_read["description"] = "Curated by the headteacher"
-    df = libraries_df(site, "SLT", library_display_name="Senior Leadership", auto_groups=False,
-                      manual_read=True, app_owned=False)
-
-    results = make_manager().create_libraries(df)
-
-    assert "group_description_updated" not in actions(results)
-    assert slt_read["description"] == "Curated by the headteacher"
-
-
-
-# Copilot re-review fixes
-
-def test_an_ordinary_list_with_the_code_as_its_url_is_not_adopted(make_manager, tenant, site):
-    tasks = site.add_list("English tasks", slug="ENG", template="genericList", unique=False)
-
-    make_manager().create_libraries(libraries_df(site, "ENG", library_display_name="English"))
-
-    assert tasks["displayName"] == "English tasks" and tasks["unique"] is False
-    library = site.list_by_slug("ENG")
-    assert library["template"] == "documentLibrary" and library["displayName"] == "English"
-
-
-def test_a_onedrive_shortcut_is_not_repeated_after_a_server_error(make_manager, tenant, site, library):
-    from sharepoint_fake import response
-    tenant.add_user("jo@contoso.com")
-    tenant.fail("POST", r"/drive/root/children$", response(503))
-
-    results = make_manager(create_onedrive_shortcuts=True).update_memberships(
-        memberships_df(site, [("MATH", "jo@contoso.com", "contribute")]),
-    )
-
-    assert len(created(tenant, "/drive/root/children")) == 1
-    assert "onedrive_shortcut_failed" in actions(results)
-
-
-def test_unlink_never_empties_a_group_the_app_doesnt_own(make_manager, tenant, site):
-    owner = tenant.add_user("someone@contoso.com")
-    member = tenant.add_user("member@contoso.com")
-    theirs = tenant.add_group("BAA-Sharepoint-MATH-Auto-Read", owners={owner["id"]})
-    theirs["members"][member["id"]] = member
-
-    for dry_run in (True, False):
-        results = make_manager(dry_run=dry_run).unlink_libraries(libraries_df(site, "MATH"))
-        assert "group_not_owned" in actions(results)
-
-    assert set(theirs["members"]) == {member["id"]}
-
-
-def test_retire_waits_for_the_library_on_the_new_site(make_manager, tenant, site):
-    new_site = tenant.add_site("/sites/BAANew")
-    make_manager().create_libraries(libraries_df(site, "MATH"))
-    df = libraries_df(site, "MATH").assign(new_site_url=new_site.url)
-
-    results = make_manager().retire_moved_libraries(df)
-
-    assert actions(results) == ["retire_deferred"]
-    assert "retire_deferred" in WARNING_ACTIONS
-    assert site.list_by_slug("MATH")["displayName"] == "MATH Faculty"  # left working
-
-    make_manager().create_libraries(libraries_df(new_site, "MATH"))
-    results = make_manager().retire_moved_libraries(df)
-
-    assert "library_retired" in actions(results)
-    assert site.list_by_slug("MATH")["displayName"] == "MATH_MOVED"
-
-
-@pytest.mark.parametrize("replacement", ["still inherits", "move-back leftover", "limited access", "duplicate group"])
-def test_retire_waits_for_a_working_replacement(make_manager, tenant, site, replacement):
-    new_site = tenant.add_site("/sites/BAANew")
-    make_manager().create_libraries(libraries_df(site, "MATH"))
-    contribute = tenant.group_named("BAA-Sharepoint-MATH-Auto-Contribute")
-    if replacement == "still inherits":
-        new_site.add_list("MATH")  # its create failed after the library was made
-    elif replacement == "move-back leftover":
-        new_site.add_list("MATH_MOVED", slug="MATH", unique=True)  # retired by an earlier move, no group access
-    else:
-        new_library = new_site.add_list("MATH", unique=True)
-        new_site.principals[f"c:0t.c|tenant|{contribute['id']}"] = 77
-        if replacement == "limited access":
-            # Only from a folder inside it with its own permissions, so no access to the library
-            new_library["role_assignments"][77] = {ROLE_DEFINITIONS["Limited Access"]}
-        else:
-            new_library["role_assignments"][77] = {CONTRIBUTE}
-            tenant.add_group("BAA-Sharepoint-MATH-Auto-Read")  # a second group with the library's group name
-    tenant.calls.clear()
-
-    results = make_manager().retire_moved_libraries(libraries_df(site, "MATH").assign(new_site_url=new_site.url))
-
-    assert actions(results) == ["retire_deferred"]
-    assert tenant.writes() == []
-    library = site.list_by_slug("MATH")
-    assert (library["displayName"], len(library["role_assignments"])) == ("MATH Faculty", 2)
-
-
-def test_retire_without_a_new_site_retires_anyway(make_manager, tenant, site):
-    make_manager().create_libraries(libraries_df(site, "MATH"))
-
-    results = make_manager().retire_moved_libraries(libraries_df(site, "MATH").assign(new_site_url=None))
-
-    assert "library_retired" in actions(results)
