@@ -57,16 +57,26 @@ The package is published on PyPI as [`alt-fabric-m365`](https://pypi.org/project
 **In a Fabric environment** (use this for scheduled notebooks and pipelines):
 
 1. Open the environment your notebooks use.
-2. Under **Public libraries**, select **Add from PyPI**, enter `alt-fabric-m365` and choose a version, for example `1.0.2`.
+2. Under **Public libraries**, select **Add from PyPI**, enter `alt-fabric-m365` and choose a version, for example `1.1.0`.
 3. Select **Publish**. Notebooks pick up the new version when their next session starts.
 
 **In a single notebook session** (useful for testing a new version):
 
 ```python
-%pip install alt-fabric-m365==1.0.2
+%pip install alt-fabric-m365==1.1.0
 ```
 
-Always pin a version. 1.0.0 removes the old names that 0.x versions kept working with a warning, see [Upgrading to 1.0.0](#upgrading-to-100). 1.0.1 only updates the documentation. 1.0.2 stops `update_memberships` emptying an Auto group the app doesn't own, adopts ownerless Auto groups it has no members to add to, and makes dry runs of `create_libraries` report group ownership. From 1.0.0, only a new major version (2.0.0) can break existing notebooks, see [Versioning](#versioning). The history of the 0.x versions is in the [0.7.2 README](https://github.com/ArchwayTrust/Insights-Fabric-M365/blob/v0.7.2/README.md#installation).
+Always pin a version. 1.0.0 removes the old names that 0.x versions kept working with a warning, see [Upgrading to 1.0.0](#upgrading-to-100). 1.0.1 only updates the documentation. 1.0.2 stops `update_memberships` emptying an Auto group the app doesn't own, adopts ownerless Auto groups it has no members to add to, and makes dry runs of `create_libraries` report group ownership. 1.1.0 fixes problems found in a review of 1.0.2:
+
+- A site, redirect or Key Vault URL with a backslash or a user name before its host is refused, as it could send a token to another host.
+- Taking over an existing library keeps the permissions of its folders and files (`inheritance_broken` is logged), and a library gets its own permissions and groups before its display name is set.
+- `retire_moved_libraries` leaves a library whose new site is the same site, spelt differently, and `unlink_libraries` skips a code whose groups are another library's (`group_name_collision`).
+- A dry run of `update_memberships` reads each group's members, so it shows removals (`remove_from_group (dry run)`), `removals_skipped` and the guardrail. `reconcile_group (dry run)` is gone.
+- A membership row with an unknown permission no longer removes anyone, and `skip` is now in `WARNING_ACTIONS`.
+- Options must be of their documented type: a String pipeline parameter such as `"False"` raises `TypeError` rather than counting as true, so give those parameters the type Bool or Int. Blanks in `create_libraries`' flag columns take their defaults.
+- `rename_libraries` no longer accepts `old_library_code`, and raises `ValueError` if given one. It never worked (the library was looked up by its new code), so no notebook could rely on it, and it's removed in a minor version.
+
+From 1.0.0, only a new major version (2.0.0) can break existing notebooks, see [Versioning](#versioning). The history of the 0.x versions is in the [0.7.2 README](https://github.com/ArchwayTrust/Insights-Fabric-M365/blob/v0.7.2/README.md#installation).
 
 ## Quick start
 
@@ -1325,7 +1335,7 @@ The tests can't show that the real services accept the requests, so test a new v
 
 ### Versioning
 
-The version number is only set in `alt_fabric_m365/__init__.py`, as `__version__="1.0.2"`. `setup.py` reads it from there, so there's nothing else to keep in sync. Check it with `python setup.py --version`.
+The version number is only set in `alt_fabric_m365/__init__.py`, as `__version__="1.1.0"`. `setup.py` reads it from there, so there's nothing else to keep in sync. Check it with `python setup.py --version`.
 
 Versions follow [semantic versioning](https://semver.org/):
 
@@ -1350,8 +1360,8 @@ python -m twine check dist/*
 
 This creates two files in `dist/`:
 
-- `alt_fabric_m365-1.0.2-py3-none-any.whl`, the wheel
-- `alt_fabric_m365-1.0.2.tar.gz`, the source distribution
+- `alt_fabric_m365-1.1.0-py3-none-any.whl`, the wheel
+- `alt_fabric_m365-1.1.0.tar.gz`, the source distribution
 
 `twine check` confirms the package metadata and this README will render on PyPI. Clearing `dist/` first stops old versions being uploaded by mistake.
 
@@ -1368,7 +1378,7 @@ trusted-host = files.pythonhosted.org
 Upload the `.whl` file to a lakehouse's `Files` folder, then in a notebook attached to that lakehouse:
 
 ```python
-%pip install /lakehouse/default/Files/alt_fabric_m365-1.0.2-py3-none-any.whl
+%pip install /lakehouse/default/Files/alt_fabric_m365-1.1.0-py3-none-any.whl
 ```
 
 Or add it to an environment under **Custom libraries** > **Upload**.
@@ -1378,7 +1388,7 @@ Or add it to an environment under **Custom libraries** > **Upload**.
 This is the normal route. Merging to `main` never publishes anything; only publishing a GitHub release does. The [Release workflow](.github/workflows/release.yml) then:
 
 1. Runs the tests.
-2. Checks the release tag matches `__version__` (tag `v1.0.2` for `__version__="1.0.2"`), and stops if it doesn't.
+2. Checks the release tag matches `__version__` (tag `v1.1.0` for `__version__="1.1.0"`), and stops if it doesn't.
 3. Builds the package and runs `twine check`.
 4. Publishes it to PyPI.
 5. Attaches the wheel and source distribution to the GitHub release.
@@ -1387,7 +1397,7 @@ To release:
 
 1. Update `__version__` in `alt_fabric_m365/__init__.py`, merge it into `main` through a pull request.
 2. On GitHub, go to **Releases** > **Draft a new release**.
-3. Create a tag matching the version, for example `v1.0.2`, targeting `main`.
+3. Create a tag matching the version, for example `v1.1.0`, targeting `main`.
 4. Add release notes, then select **Publish release**.
 5. Check the workflow run under **Actions**, and that the new version appears on [PyPI](https://pypi.org/project/alt-fabric-m365/).
 
@@ -1425,7 +1435,7 @@ python -m twine upload --repository testpypi dist/*
 ```
 
 ```python
-%pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ alt-fabric-m365==1.0.2
+%pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ alt-fabric-m365==1.1.0
 ```
 
 ### After publishing
