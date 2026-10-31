@@ -1305,6 +1305,22 @@ def test_lockdown_turns_sharing_off_once_per_site(make_manager, tenant, site):
     assert actions(manager.enforce_site_sharing_lockdown([site.url])) == ["site_sharing_check"]
 
 
+@pytest.mark.parametrize("max_workers", [1, 4])
+def test_lockdown_checks_a_site_spelt_differently_once(make_manager, tenant, site, max_workers):
+    spellings = [site.url, f"{site.url}/", site.url.upper()]
+
+    results = make_manager(max_workers=max_workers).enforce_site_sharing_lockdown(spellings)
+
+    assert results[["site_url", "action"]].values.tolist() == [[site.url, "site_sharing_disabled"]]
+
+
+def test_lockdown_of_one_url_given_as_a_string_raises_before_any_request(make_manager, tenant, site):
+    with pytest.raises(TypeError, match=r"pass \[site_url\]"):
+        make_manager().enforce_site_sharing_lockdown(site.url)
+
+    assert tenant.calls == []
+
+
 def test_lockdown_dry_run_makes_no_writes(make_manager, tenant, site):
     results = make_manager(dry_run=True).enforce_site_sharing_lockdown([site.url])
 

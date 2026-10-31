@@ -2934,19 +2934,34 @@ class SharePointLibraryManager:
         logged as an ``error`` row.
 
         Args:
-            site_urls:   Iterable of full SharePoint site URLs — duplicates
-                         are ignored.
+            site_urls:   Iterable of full SharePoint site URLs.  A site listed
+                         more than once, including spelt differently (in
+                         case, or with a trailing slash), is checked once,
+                         under its first spelling.
             dry_run:     Override instance default.
             max_workers: Override instance default.
 
         Returns:
             Action-log DataFrame (``document_library`` is empty for these
             site-level rows).
+
+        Raises:
+            TypeError: If site_urls is a single URL rather than a list of them.
         """
         dry_run_, max_workers_ = self._resolve_config(dry_run=dry_run, max_workers=max_workers)
 
-        unique_urls = sorted(set(site_urls))
-        _validate_site_urls(unique_urls, self.sharepoint_hostname)
+        # A string is an iterable of characters, each of which would fail as a URL
+        if isinstance(site_urls, str):
+            raise TypeError("site_urls is a list of site URLs: for one site, pass [site_url]")
+        site_urls = list(site_urls)
+        _validate_site_urls(site_urls, self.sharepoint_hostname)
+        # Graph finds a site ignoring case and a trailing slash, so each
+        # spelling would be checked and written separately, at the same time
+        # with max_workers above 1
+        spellings: dict[str, str] = {}
+        for site_url in site_urls:
+            spellings.setdefault(site_url.rstrip("/").lower(), site_url)
+        unique_urls = sorted(spellings.values())
 
         action_log = _ThreadSafeLog()
         items = [(site_url, dry_run_) for site_url in unique_urls]
