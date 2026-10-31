@@ -3,13 +3,13 @@ Runs the example "Manage Faculty Sharepoint Libraries" notebook end to end, outs
 
 Each code cell is executed in order, as Fabric runs it, with:
     - spark backed by SQLite, holding small curated faculty tables. The notebook's Spark SQL is translated just
-      enough to run (four-part table names, TIMESTAMP literals, regexp_replace, MERGE).
+      enough to run (four-part table names, TIMESTAMP literals, regexp_replace, MERGE, ALTER TABLE ADD COLUMNS).
     - notebookutils and the variable library replaced with fakes.
     - the real KeyVaultCertificateCredential, with Entra ID and Key Vault replaced with FakeAzure.
     - Graph and SharePoint replaced with the in-memory FakeTenant.
 
-This checks the notebook's own logic (scope filters, SLT checks, the watermark, the error gate) against the
-package, which unit tests of the package alone can't.
+This checks the notebook's own logic (scope filters, SLT checks, the watermark, the run lease, the error gate)
+against the package, which unit tests of the package alone can't.
 """
 import re
 import sqlite3
@@ -31,6 +31,7 @@ NOTEBOOK = (Path(__file__).resolve().parent.parent / "examples" / "Manage Facult
             / "notebook-content.py")
 HUB = f"https://{HOST}/sites/BAA"
 OLD_HUB = f"https://{HOST}/sites/BAAOld"
+LEASE_PROCESS = "faculty_sharepoint_sync|lease"
 NCA_HUB = f"https://{HOST}/sites/NCA"
 
 FACULTY_COLUMNS = [
@@ -75,6 +76,7 @@ class FakeSpark:
         pd.DataFrame(faculties, columns=FACULTY_COLUMNS).to_sql("sharepoint_faculty_list", self.db, index=False)
         pd.DataFrame(memberships, columns=["faculty_unique_id", "member_email"]).to_sql(
             "sharepoint_faculty_membership", self.db, index=False)
+        # As a table made before the lease existed, without its columns
         self.db.execute("CREATE TABLE sharepoint_sync_state (process TEXT, last_processed_ts TEXT, updated_at TEXT)")
         self.saved = {}  # table name -> list of DataFrames appended
         self.settings = {}
@@ -87,11 +89,36 @@ class FakeSpark:
         query = _translate(query)
         if re.match(r"\s*CREATE (SCHEMA|TABLE)", query):
             return None
+        alter = re.fullmatch(r"\s*ALTER TABLE (\w+)\s+ADD COLUMNS \((.*)\)\s*", query, re.S)
+        if alter:
+            for column in alter.group(2).split(","):
+                self.db.execute(f"ALTER TABLE {alter.group(1)} ADD COLUMN {column.split()[0]} TEXT")
+            return None
+        if re.match(r"\s*UPDATE ", query):
+            self.db.execute(query)
+            return None
+        # The lease's MERGE: the WHEN MATCHED condition and the values are the notebook's own SQL, run by SQLite
+        lease = re.fullmatch(
+            r"\s*MERGE INTO (\w+) AS t\s+USING \(SELECT '([^']+)' AS process\) AS s\s+ON t\.process = s\.process\s+"
+            r"WHEN MATCHED AND \((.*?)\) THEN UPDATE SET(.*?)WHEN NOT MATCHED THEN INSERT \(([^)]*)\)\s*"
+            r"VALUES \((.*)\)\s*", query, re.S,
+        )
+        if lease:
+            table, process, condition, assignments, columns, values = lease.groups()
+            if self.db.execute(f"SELECT 1 FROM {table} WHERE process = ?", (process,)).fetchone():
+                assignments = re.sub(r"\bt\.(\w+)\s*=", r"\1 =", assignments)
+                self.db.execute(f"UPDATE {table} AS t SET {assignments} WHERE t.process = ? AND ({condition})", (process,))
+            else:
+                self.db.execute(f"INSERT INTO {table} ({columns}) VALUES ({values.replace('s.process', '?')})", (process,))
+            return None
         merge = re.match(r"\s*MERGE INTO .*?'((?:[^']|'')+)' AS process,\s*'([^']+)' AS last_processed_ts", query, re.S)
         if merge:
             process = merge.group(1).replace("''", "'")
             self.db.execute("DELETE FROM sharepoint_sync_state WHERE process = ?", (process,))
-            self.db.execute("INSERT INTO sharepoint_sync_state VALUES (?, ?, datetime('now'))", (process, merge.group(2)))
+            self.db.execute(
+                "INSERT INTO sharepoint_sync_state (process, last_processed_ts, updated_at) VALUES (?, ?, datetime('now'))",
+                (process, merge.group(2)),
+            )
             return None
         frame = FakeSparkFrame(pd.read_sql_query(query, self.db))
         if self.after_query:
@@ -105,9 +132,33 @@ class FakeSpark:
     def createDataFrame(self, pdf):
         return types.SimpleNamespace(write=FakeWriter(self, pdf.copy()))
 
+    def table(self, name):
+        columns = [row[1] for row in self.db.execute(f"PRAGMA table_info({_translate(name)})")]
+        return types.SimpleNamespace(columns=columns)
+
     def watermark(self):
-        rows = self.db.execute("SELECT process, last_processed_ts FROM sharepoint_sync_state").fetchall()
+        rows = self.db.execute(
+            "SELECT process, last_processed_ts FROM sharepoint_sync_state WHERE process <> ?", (LEASE_PROCESS,),
+        ).fetchall()
         return dict(rows)
+
+    def lease(self):
+        """The lease row's holder and expiry, or None if no run has taken the lease."""
+        return self.db.execute(
+            "SELECT lease_holder, lease_expires_at FROM sharepoint_sync_state WHERE process = ?", (LEASE_PROCESS,),
+        ).fetchone()
+
+    def hold_lease(self, holder, expires):
+        """Makes the lease another run's, as that run's MERGE would, adding its columns as the notebook would."""
+        existing = [row[1] for row in self.db.execute("PRAGMA table_info(sharepoint_sync_state)")]
+        for column in ("lease_holder", "lease_expires_at"):
+            if column not in existing:
+                self.db.execute(f"ALTER TABLE sharepoint_sync_state ADD COLUMN {column} TEXT")
+        self.db.execute("DELETE FROM sharepoint_sync_state WHERE process = ?", (LEASE_PROCESS,))
+        self.db.execute(
+            "INSERT INTO sharepoint_sync_state (process, lease_holder, lease_expires_at) VALUES (?, ?, ?)",
+            (LEASE_PROCESS, holder, expires),
+        )
 
 
 class FakeSparkFrame:
@@ -465,3 +516,83 @@ def test_a_moved_faculty_keeps_its_old_library_until_the_new_one_exists(tenant, 
     assert old_hub.list_by_slug("MATHMOVED")["displayName"] == "MATHMOVED"  # not retired
     assert old_hub.list_by_slug("MATHMOVED")["role_assignments"]  # still has its access
     assert spark.watermark() == {}
+
+
+# The run lease: only one live run changes the tenant at a time
+
+FAR_FUTURE = "2999-01-01 00:00:00.000000"
+
+
+def test_a_live_run_holds_the_lease_while_it_runs_and_then_releases_it(tenant, run_notebook, spark):
+    holders = []
+    spark.after_query = lambda query: holders.append(spark.lease()[0])
+
+    ns = run_notebook(spark)
+
+    assert set(holders) == {ns["RUN_ID"]}
+    assert spark.lease() == (None, None)
+
+
+def test_a_live_run_changes_nothing_while_another_run_holds_the_lease(tenant, run_notebook, spark):
+    seed_existing_libraries(tenant)
+    spark.hold_lease("other-run", FAR_FUTURE)
+
+    with pytest.raises(RuntimeError, match="Run other-run holds the lease .* so this run changes nothing"):
+        run_notebook(spark)
+
+    assert tenant.writes() == []
+    assert spark.watermark() == {}
+    assert spark.lease() == ("other-run", FAR_FUTURE)
+
+
+def test_a_lease_left_by_a_crashed_run_is_taken_once_it_expires(tenant, run_notebook, spark):
+    spark.hold_lease("crashed-run", "2000-01-01 00:00:00.000000")
+
+    run_notebook(spark)
+
+    assert spark.watermark() == {"faculty_sharepoint_sync|BAA|MATH%": "2026-10-01 09:00:00.000000"}
+    assert spark.lease() == (None, None)
+
+
+def test_a_dry_run_takes_no_lease_so_it_can_run_alongside_a_live_run(tenant, run_notebook, spark):
+    spark.hold_lease("live-run", FAR_FUTURE)
+
+    run_notebook(spark, DRY_RUN=True)
+
+    assert tenant.writes() == []
+    assert spark.lease() == ("live-run", FAR_FUTURE)
+
+
+def test_a_run_with_failed_actions_releases_the_lease_for_the_next_run(tenant, run_notebook, spark):
+    from sharepoint_fake import graph_error
+    tenant.fail("POST", r"/members/\$ref$", graph_error(403, "Authorization_RequestDenied"), times=99)
+
+    with pytest.raises(RuntimeError, match=r"failed action\(s\) this run"):
+        run_notebook(spark)
+
+    assert spark.lease() == (None, None)
+
+
+# Another run can only take the lease once it has expired, as a pass ran longer than LEASE_MINUTES
+def test_a_run_whose_lease_was_taken_stops_after_its_next_pass(tenant, run_notebook, spark):
+    def take_lease_mid_run(query):
+        if "MAX(last_changed_ts)" in query:
+            spark.hold_lease("other-run", FAR_FUTURE)
+    spark.after_query = take_lease_mid_run
+
+    with pytest.raises(RuntimeError, match="its own lease expired before it was renewed"):
+        run_notebook(spark)
+
+    assert tenant.sites[HUB.lower()].list_by_slug("MATH") is None  # the create pass never ran
+    assert spark.watermark() == {}
+    assert spark.lease() == ("other-run", FAR_FUTURE)
+
+
+@pytest.mark.parametrize("minutes", ["120", 0, True, 1.5])
+def test_a_lease_length_that_isnt_a_whole_number_of_minutes_stops_the_run_before_anything_runs(
+    tenant, run_notebook, spark, minutes,
+):
+    with pytest.raises(TypeError, match="LEASE_MINUTES must be a whole number of minutes above 0"):
+        run_notebook(spark, LEASE_MINUTES=minutes)
+
+    assert tenant.calls == []
