@@ -198,6 +198,16 @@ def test_a_library_shortcut_is_found_by_list_id_or_url():
     ) is None
 
 
+@pytest.mark.parametrize("remote", [
+    {"sharepointIds": {"listId": "abc-1", "listItemId": "3"}},
+    {"sharepointIds": {"listId": "abc-1"}, "webUrl": "https://contoso.sharepoint.com/sites/maths/Year%207/Homework"},
+], ids=["list item", "url below the library"])
+def test_a_shortcut_to_a_folder_in_the_library_is_not_the_library_shortcut(remote):
+    library = {"id": "ABC-1", "webUrl": "https://contoso.sharepoint.com/sites/maths/Year%207"}
+
+    assert _graph._find_library_shortcut([{"name": "Homework", "remoteItem": remote}], library) is None
+
+
 # Groups and members
 
 def test_duplicate_group_names_are_refused(tenant):

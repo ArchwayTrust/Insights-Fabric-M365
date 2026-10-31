@@ -215,6 +215,22 @@ class FakeTenant:
 
     # Microsoft Graph
 
+    def _listed_shortcut(self, index, body):
+        """A shortcut as a OneDrive's root lists it: its target in remoteItem, with the target's URL.
+
+        A shortcut made to a library's root (listItemUniqueId "root") lists the library's URL and no list item, as
+        the root folder isn't one. Other shortcuts, such as to a folder, are listed as stored.
+        """
+        remote = dict(body["remoteItem"])
+        ids = dict(remote.get("sharepointIds") or {})
+        if ids.get("listItemUniqueId") == "root":
+            del ids["listItemUniqueId"]
+            for site in self.sites.values():
+                if ids["listId"] in site.lists:
+                    remote["webUrl"] = site.web_url(site.lists[ids["listId"]])
+        remote["sharepointIds"] = ids
+        return {"id": f"shortcut-{index}", "name": body["name"], "remoteItem": remote}
+
     def _graph(self, method, path, query, body, url):
         m = re.fullmatch(r"/sites/([^:/]+):(/.*)", path)
         if m and method == "GET":
@@ -315,10 +331,9 @@ class FakeTenant:
             self.shortcuts.append((m.group(1), body))
             return response(201, {"id": "shortcut"})
         if m and method == "GET":
-            # Shortcuts list their target in remoteItem
             return response(200, {"value": [
-                {"id": f"shortcut-{i}", "name": body["name"], "remoteItem": dict(body["remoteItem"])}
-                for i, (user_id, body) in enumerate(self.shortcuts) if user_id == m.group(1)
+                self._listed_shortcut(i, body) for i, (user_id, body) in enumerate(self.shortcuts)
+                if user_id == m.group(1)
             ]})
 
         m = re.fullmatch(r"/users/(.+)", path)

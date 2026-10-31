@@ -274,8 +274,10 @@ def _get_onedrive_root_items(graph_token: str, user_object_id: str) -> list[dict
 def _find_library_shortcut(items: list[dict], library: dict) -> dict | None:
     """Return the shortcut among a OneDrive's root items that points to *library*, if any.
 
-    Matched on the library's list ID, or failing that its URL, as people can
-    rename a shortcut.
+    Matched on the library's URL or list ID rather than the shortcut's name,
+    as people can rename a shortcut.  A shortcut to a folder in the library
+    has the library's list ID too, so it only counts if it isn't a list item
+    (the root folder isn't one) and its URL isn't below the library's.
 
     Args:
         items: Drive items, from _get_onedrive_root_items.
@@ -291,8 +293,13 @@ def _find_library_shortcut(items: list[dict], library: dict) -> dict | None:
     web_url = normalise(library.get("webUrl") or "")
     for item in items:
         remote = item.get("remoteItem") or {}
-        if ((remote.get("sharepointIds") or {}).get("listId") or "").lower() == list_id:
+        remote_url = normalise(remote.get("webUrl") or "")
+        if web_url and remote_url == web_url:
             return item
-        if web_url and normalise(remote.get("webUrl") or "") == web_url:
+        ids = remote.get("sharepointIds") or {}
+        if (
+            (ids.get("listId") or "").lower() == list_id and not ids.get("listItemId")
+            and not (web_url and remote_url.startswith(f"{web_url}/"))
+        ):
             return item
     return None

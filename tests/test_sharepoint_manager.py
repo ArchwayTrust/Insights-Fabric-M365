@@ -976,6 +976,37 @@ def test_ensure_onedrive_shortcuts_reports_missing_libraries_and_users(make_mana
     assert tenant.shortcuts == []
 
 
+def test_ensure_onedrive_shortcuts_does_not_count_a_shortcut_to_a_folder_in_the_library(
+    make_manager, tenant, site, library,
+):
+    jo = tenant.add_user("jo@contoso.com")
+    tenant.shortcuts.append((jo["id"], {"name": "Homework", "remoteItem": {
+        "sharepointIds": {"listId": library["id"], "listItemId": "3"}, "webUrl": f"{site.web_url(library)}/Homework",
+    }}))
+    df = memberships_df(site, [("MATH", "jo@contoso.com", "read")])
+
+    results = make_manager().ensure_onedrive_shortcuts(df)
+    again = make_manager().ensure_onedrive_shortcuts(df)
+
+    assert (actions(results), actions(again)) == (["onedrive_shortcut_created"], ["onedrive_shortcut_exists"])
+    assert [body["name"] for _, body in tenant.shortcuts] == ["Homework", "MATH Faculty"]
+
+
+def test_ensure_onedrive_shortcuts_handles_each_library_once_however_the_rows_name_it(
+    make_manager, tenant, site, library,
+):
+    tenant.add_user("jo@contoso.com")
+    df = pd.DataFrame(
+        [(site.url, "MATH", "jo@contoso.com"), (f"{site.url}/", "math", "Jo@contoso.com")],
+        columns=["site_url", "library_code", "user_principal_name"],
+    )
+
+    results = make_manager(max_workers=4).ensure_onedrive_shortcuts(df)
+
+    assert actions(results) == ["onedrive_shortcut_created"]
+    assert len(tenant.shortcuts) == 1
+
+
 # grant_group_access
 
 @pytest.fixture

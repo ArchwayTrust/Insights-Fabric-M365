@@ -2377,13 +2377,21 @@ class SharePointLibraryManager:
         df = df[df["site_url"].isin(list(sites))]
         user_refs = self._resolve_users(df["user_principal_name"])
 
-        items = []
+        # Rows can name one library differently, as MATH and math, or its site
+        # with and without a trailing slash.  Each library is one work item,
+        # so two workers can't both find a user has no shortcut and both make
+        # one.
+        libraries: dict[tuple[str, str], tuple[str, str, str, dict]] = {}
+        library_upns: dict[tuple[str, str], set[str]] = {}
         for (site_url, library_code), library_df in df.groupby(["site_url", "library_code"]):
-            upns = sorted({upn.strip().lower() for upn in library_df["user_principal_name"]})
-            items.append((
-                site_url, sites[site_url]["site_id"], library_code, sites[site_url]["lists"],
-                upns, user_refs, dry_run_,
-            ))
+            site = sites[site_url]
+            library = site["lists"].get(library_code.lower())
+            key = (site["site_id"], library["id"] if library is not None else library_code.lower())
+            libraries.setdefault(key, (site_url, site["site_id"], library_code, site["lists"]))
+            library_upns.setdefault(key, set()).update(
+                upn.strip().lower() for upn in library_df["user_principal_name"]
+            )
+        items = [(*libraries[key], sorted(library_upns[key]), user_refs, dry_run_) for key in libraries]
 
         _run_parallel(self._process_ensure_shortcuts, items, max_workers_, action_log)
         return _action_log_to_dataframe(action_log)
