@@ -7,13 +7,16 @@ See the alt_fabric_m365.auth package docstring for how scopes, notebookutils tok
 import requests
 import json
 import base64
+import email.utils
 import hashlib
+import math
 import random
 import re
 import threading
 import time
 import uuid
 from collections.abc import Callable
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 from azure.core.credentials import AccessToken
 
@@ -21,6 +24,32 @@ from azure.core.credentials import AccessToken
 def _base64url(data: bytes) -> str:
     """Encodes bytes as unpadded base64url, as used in JWTs."""
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def _retry_after_seconds(value: str | None) -> float | None:
+    """Returns the wait a Retry-After header asks for, in seconds, or None if it's missing or can't be read.
+
+    Args:
+        value: The header's value: a number of seconds, or an HTTP date to wait until.
+
+    Returns:
+        The wait, at least 0, or None.
+    """
+    if not value:
+        return None
+    try:
+        delay = float(value)
+    except ValueError:
+        try:
+            retry_at = email.utils.parsedate_to_datetime(value)
+        except (TypeError, ValueError):
+            return None
+        # A date without a zone, or with -0000, is read as naive; HTTP dates are GMT
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=timezone.utc)
+        delay = (retry_at - datetime.now(timezone.utc)).total_seconds()
+    # float() also reads "nan" and "inf", which time.sleep can't take
+    return max(delay, 0.0) if math.isfinite(delay) else None
 
 
 def _describe_error(response: requests.Response) -> str:
@@ -169,22 +198,24 @@ class KeyVaultCertificateCredential:
         Raises:
             requests.ConnectionError: If the last attempt couldn't connect, or a certificate didn't verify.
             requests.Timeout: If the last attempt timed out.
+            requests.exceptions.ChunkedEncodingError: If the last attempt's response was cut off.
         """
         for attempt in range(1, cls.MAX_ATTEMPTS + 1):
             delay = min(cls.RETRY_BASE_DELAY_SECONDS * 2 ** (attempt - 1), cls.RETRY_MAX_DELAY_SECONDS)
             delay += delay * random.uniform(0, 0.25)
             try:
                 response = send()
-            except (requests.ConnectionError, requests.Timeout) as e:
+            # A connection dropped while the response is read raises ChunkedEncodingError
+            except (requests.ConnectionError, requests.Timeout, requests.exceptions.ChunkedEncodingError) as e:
                 # A certificate that doesn't verify won't on a retry either
                 if isinstance(e, requests.exceptions.SSLError) or attempt == cls.MAX_ATTEMPTS:
                     raise
             else:
                 if response.status_code not in cls.RETRY_STATUS_CODES or attempt == cls.MAX_ATTEMPTS:
                     return response
-                retry_after = response.headers.get("Retry-After", "")
-                if retry_after.isdigit():
-                    delay = min(int(retry_after), cls.RETRY_MAX_DELAY_SECONDS)
+                retry_after = _retry_after_seconds(response.headers.get("Retry-After"))
+                if retry_after is not None:
+                    delay = min(retry_after, cls.RETRY_MAX_DELAY_SECONDS)
             time.sleep(delay)
 
         raise AssertionError("unreachable: the last attempt always returns or raises")

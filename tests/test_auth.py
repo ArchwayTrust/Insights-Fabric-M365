@@ -1,8 +1,10 @@
 import base64
+import email.utils
 import hashlib
 import json
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 import pytest
@@ -389,6 +391,7 @@ def test_throttling_is_waited_out_for_as_long_as_retry_after_says(fake_notebooku
     throttled(500),
     requests.ConnectionError("Connection reset by peer"),
     requests.Timeout("Read timed out"),
+    requests.exceptions.ChunkedEncodingError("Connection broken: IncompleteRead"),
 ])
 def test_server_errors_and_dropped_connections_are_retried(fake_notebookutils, sleeps, call, failure):
     fake = FakeAzure()
@@ -442,6 +445,40 @@ def test_client_errors_and_certificate_failures_are_not_retried(fake_notebookuti
             make_credential().get_token("a")
 
     assert len(fake.certificate_calls) == 1 and sleeps == []
+
+
+def in_seconds(seconds):
+    """An HTTP date that many seconds from now, as a Retry-After header can give."""
+    return email.utils.format_datetime(datetime.now(timezone.utc) + timedelta(seconds=seconds), usegmt=True)
+
+
+@pytest.mark.parametrize("retry_after, expected, tolerance", [
+    ("7", 7, 0),
+    ("2.5", 2.5, 0),
+    ("-5", 0, 0),
+    # An HTTP date has whole seconds, so up to a second of the wait is lost
+    (in_seconds(7), 6.5, 0.5),
+    ("Mon, 01 Jan 2001 00:00:00 GMT", 0, 0),  # in the past
+])
+def test_retry_after_in_seconds_or_as_a_date_is_waited_out(
+    fake_notebookutils, sleeps, retry_after, expected, tolerance,
+):
+    fake = FakeAzure()
+    with fail_first(fake, "token", throttled(retry_after=retry_after)):
+        make_credential().get_token("a")
+
+    [slept] = sleeps
+    assert slept == pytest.approx(expected, abs=tolerance)
+
+
+@pytest.mark.parametrize("retry_after", ["soon", "nan", "inf", ""])
+def test_an_unreadable_retry_after_falls_back_to_backoff(fake_notebookutils, sleeps, retry_after):
+    fake = FakeAzure()
+    with fail_first(fake, "token", throttled(retry_after=retry_after)):
+        make_credential().get_token("a")
+
+    [slept] = sleeps
+    assert 1 <= slept <= 1.25
 
 
 def test_a_long_retry_after_is_capped(fake_notebookutils, sleeps):
