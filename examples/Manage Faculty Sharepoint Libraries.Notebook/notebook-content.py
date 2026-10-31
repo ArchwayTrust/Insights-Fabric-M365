@@ -209,6 +209,19 @@ logging.basicConfig(level=logging.INFO)
 
 # CELL ********************
 
+# The manager checks its own options' types, but these flags are only the
+# notebook's. A pipeline parameter of type String reaches them as text, and
+# the string "False" counts as true, so check them before anything runs.
+for flag_name, flag_value in {
+    "RUN_SMOKE_TEST": RUN_SMOKE_TEST,
+    "ENFORCE_SITE_SHARING_LOCKDOWN": ENFORCE_SITE_SHARING_LOCKDOWN,
+    "MANAGE_SLT_LIBRARY": MANAGE_SLT_LIBRARY,
+}.items():
+    if not isinstance(flag_value, bool):
+        raise TypeError(
+            f"{flag_name} must be True or False, not {flag_value!r}: give its pipeline parameter the type Bool"
+        )
+
 # No scope: the manager requests Graph and SharePoint tokens as it needs them.
 credential = KeyVaultCertificateCredential(
     tenant_id=TENANT_ID,

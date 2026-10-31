@@ -152,6 +152,10 @@ class SharePointLibraryManager:
         # for a while after it's created, and creating it again would make a
         # duplicate that blocks its library.
         self._created_groups: dict[str, tuple[dict, bool]] = {}
+        # Groups whose create failed in a way that may have created them
+        # anyway (a 5xx or a dropped connection): not created again in this
+        # manager's lifetime, as Graph's name lookups can miss a new group.
+        self._maybe_created_groups: dict[str, str] = {}
         self._created_groups_lock = threading.Lock()
 
         # Tokens are requested per use via the properties below, and again
@@ -191,6 +195,64 @@ class SharePointLibraryManager:
         """
         with self._created_groups_lock:
             self._created_groups[name.lower()] = (group, app_owned)
+
+    def _refuse_if_maybe_created(self, name: str) -> None:
+        """Raise if an earlier create of the group *name* failed in a way that may have made it (see _create_group).
+
+        Dry runs check this too, so they report the error a live run would.
+
+        Args:
+            name: The group's display name.
+
+        Raises:
+            ValueError: If an earlier create of this group may have succeeded.
+        """
+        with self._created_groups_lock:
+            earlier_failure = self._maybe_created_groups.get(name.lower())
+        if earlier_failure is not None:
+            raise ValueError(
+                f"group '{name}' may have been created by an earlier request this run that failed "
+                f"({earlier_failure}), so it isn't created again; re-run once it can be found"
+            )
+
+    def _create_group(self, name: str, description: str, *, app_owned: bool) -> dict:
+        """Create a security group and remember it (see _remember_created_group).
+
+        A create that fails other than with a 4xx or a connect timeout, such
+        as with a 5xx or a dropped connection, may still have made the group,
+        and Graph's name lookups can miss it for a while, so it isn't tried
+        again by this manager: a second one would be a duplicate that blocks
+        the library until removed by hand.
+
+        Args:
+            name: The group's display name.
+            description: The group's description.
+            app_owned: Whether to make the app the group's owner.
+
+        Returns:
+            The group resource Graph returned.
+
+        Raises:
+            ValueError: If an earlier create of this group may have succeeded.
+            requests.RequestException: If Graph refuses the create or can't be reached.
+        """
+        self._refuse_if_maybe_created(name)
+        # Got first, so failing to get a token isn't taken for a create that may have succeeded
+        token = self._graph_token
+        try:
+            group = _create_security_group(
+                token, name, description, self.service_principal_id if app_owned else None,
+            )
+        except requests.RequestException as exc:
+            status = exc.response.status_code if exc.response is not None else None
+            # Only a refusal (4xx) or a connect timeout certainly didn't make the group. Anything else may have,
+            # including a redirect that isn't followed, such as a 303 to the new group.
+            if not isinstance(exc, requests.ConnectTimeout) and not (status is not None and 400 <= status < 500):
+                with self._created_groups_lock:
+                    self._maybe_created_groups[name.lower()] = str(exc)
+            raise
+        self._remember_created_group(name, group, app_owned=app_owned)
+        return group
 
     def _created_group(self, name: str) -> tuple[dict, bool] | None:
         """Return the group this manager created with *name*, if any (see _remember_created_group).
@@ -496,6 +558,8 @@ class SharePointLibraryManager:
                     # live run would refuse or adopt.  Groups people own are
                     # looked up too, as a duplicated name fails a live run.
                     existing_group = _find_group_by_name(self._graph_token, group_display_name)
+                    if existing_group is None:
+                        self._refuse_if_maybe_created(group_display_name)
                     if existing_group and app_owned and not self._check_group_owner(
                         existing_group["id"], group_display_name, site_url, library_code, role_key, action_log,
                         dry_run=True,
@@ -530,11 +594,7 @@ class SharePointLibraryManager:
                         ):
                             continue
                     elif group is None:
-                        group = _create_security_group(
-                            self._graph_token, group_display_name, group_description,
-                            self.service_principal_id if app_owned else None,
-                        )
-                        self._remember_created_group(group_display_name, group, app_owned=app_owned)
+                        group = self._create_group(group_display_name, group_description, app_owned=app_owned)
                         is_new = True
                     else:
                         logger.info("Security group '%s' already exists (id=%s)", group_display_name, group["id"])
@@ -2052,6 +2112,7 @@ class SharePointLibraryManager:
                     if existing_group:
                         group_id, is_new_group = existing_group["id"], replicating
                     elif dry_run:
+                        self._refuse_if_maybe_created(group_display_name)
                         logger.info("[DRY RUN] Would create group '%s'", group_display_name)
                         _append_log(
                             action_log, site_url, library_code,
@@ -2061,11 +2122,7 @@ class SharePointLibraryManager:
                         )
                         group_id, is_new_group = None, True
                     else:
-                        group = _create_security_group(
-                            self._graph_token, group_display_name, group_description,
-                            self.service_principal_id,
-                        )
-                        self._remember_created_group(group_display_name, group, app_owned=True)
+                        group = self._create_group(group_display_name, group_description, app_owned=True)
                         group_id, is_new_group = group["id"], True
                         created_here.add(group_id)
                     created_role_groups.append(

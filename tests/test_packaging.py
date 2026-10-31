@@ -1,13 +1,16 @@
 """
-Checks on the package itself: the version is set in one place, the public names, and that the README's examples are
-valid Python.
+Checks on the package itself: the version is set in one place, the public names, what the source distribution ships
+and its licence metadata, and that the README's examples are valid Python.
 """
 import ast
+import email.parser
 import importlib
+import os
 import re
 import shutil
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -65,19 +68,26 @@ def test_public_names_are_exported(module_name):
         assert getattr(module, name) is not None
 
 
-def test_source_distribution_has_what_its_tests_need(tmp_path, monkeypatch):
-    import tarfile
+@pytest.fixture(scope="module")
+def sdist(tmp_path_factory):
+    """Builds the source distribution once for this module's tests, and returns its path."""
     from setuptools import build_meta
 
     # Build from a clean copy, as setuptools adds the files listed by an earlier build's egg-info
+    tmp_path = tmp_path_factory.mktemp("sdist")
     source = tmp_path / "source"
     shutil.copytree(ROOT, source, ignore=shutil.ignore_patterns(
         ".git", "*.egg-info", "build", "dist", "__pycache__", ".pytest_cache",
     ))
-    monkeypatch.chdir(source)
+    cwd = os.getcwd()
+    os.chdir(source)
+    try:
+        return tmp_path / build_meta.build_sdist(str(tmp_path))
+    finally:
+        os.chdir(cwd)
 
-    sdist = tmp_path / build_meta.build_sdist(str(tmp_path))
 
+def test_source_distribution_has_what_its_tests_need(sdist):
     with tarfile.open(sdist) as tar:
         shipped = {name.split("/", 1)[1] for name in tar.getnames() if "/" in name}
     # Every test module, fixture and fake, and the example notebook test_faculty_notebook runs
@@ -88,6 +98,17 @@ def test_source_distribution_has_what_its_tests_need(tmp_path, monkeypatch):
         if path.is_file() and "__pycache__" not in path.parts and path.suffix not in (".pyc", ".pyo")
     }
     assert needed - shipped == set()
+
+
+def test_licence_metadata_is_an_spdx_expression(sdist):
+    with tarfile.open(sdist) as tar:
+        pkg_info = next(name for name in tar.getnames() if name.count("/") == 1 and name.endswith("/PKG-INFO"))
+        metadata = email.parser.HeaderParser().parsestr(tar.extractfile(pkg_info).read().decode("utf-8"))
+
+    assert metadata["License-Expression"] == "BSD-3-Clause"
+    assert sorted(metadata.get_all("License-File")) == ["LICENSE", "NOTICE"]
+    # PEP 639 deprecates License in favour of License-Expression
+    assert metadata["License"] is None
 
 
 # Where the README shows the current version: installing it, the files a build makes and the release tag

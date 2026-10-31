@@ -89,7 +89,7 @@ No test calls a real service. `requests` is mocked and `notebookutils` and Spark
 | `test_sharepoint_manager.py` | Each `SharePointLibraryManager` operation end to end |
 | `test_readme_flow.py` | Runs the README's recommended flow |
 | `test_faculty_notebook.py` | Runs the example notebook cell by cell |
-| `test_packaging.py` | The version, public names, that removed names stay removed, and that every README Python example parses |
+| `test_packaging.py` | The version, public names, that removed names stay removed, what the source distribution ships and its licence metadata, and that every README Python example parses |
 
 Expectations for a change:
 
@@ -105,7 +105,7 @@ Expectations for a change:
 ## Documentation and versions
 
 - `README.md` is the user documentation and the PyPI description. Update it in the same change as the behaviour it describes. Python examples in it must parse (`test_packaging.py`), and the recommended-flow example must keep running (`test_readme_flow.py`).
-- The version is set only in `alt_fabric_m365/__init__.py` (`__version__`); `setup.py` reads it from there. Follow the README's [Versioning](README.md#versioning) section: bump the major version for breaking changes (a public name removed or renamed, a changed signature or return value, changed action-log columns), the minor version for new features, and the patch version for fixes and documentation. A release also updates the version shown in the README's install, wheel and TestPyPI examples and its version history paragraph under Installation, plus an upgrading section for a major version.
+- The version is set only in `alt_fabric_m365/__init__.py` (`__version__`); `setup.py` reads it from there. Follow the README's [Versioning](README.md#versioning) section: bump the major version for breaking changes (a public name removed or renamed, a changed signature or return value, changed action-log columns, an action renamed or removed, or moved into or out of `FATAL_ACTIONS` or `WARNING_ACTIONS`), the minor version for new features (including new actions), and the patch version for fixes and documentation. A release also updates the version shown in the README's install, wheel and TestPyPI examples and its version history paragraph under Installation, plus an upgrading section for a major version.
 - Releases are published by a GitHub release tagged `v<version>`; see [Release checklist](README.md#release-checklist). Merging to `main` publishes nothing.
 
 ## Pull requests
