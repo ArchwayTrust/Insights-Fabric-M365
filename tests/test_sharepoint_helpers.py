@@ -110,10 +110,17 @@ def test_library_codes_sharepoint_keeps_in_a_url_are_accepted(code):
 
 @pytest.mark.parametrize("code", [
     "D&T", "KS3/4", "a:b", "Q?", 'say "hi"', "A#B", "x\ty", "MATH ", " MATH", "", "Y7.", ".Y7", "_vti_bin",
+    "A_VTI_B",
 ])
 def test_library_codes_sharepoint_would_change_are_refused(code):
     with pytest.raises(ValueError, match=re.escape(repr(code))):
         _common._validate_library_codes(["MATH", code])
+
+
+def test_the_error_for_a_refused_library_code_names_every_rule():
+    # A_VTI_B only breaks the reserved-name rule, so the message must name it
+    with pytest.raises(ValueError, match="can't contain '_vti_' in any case"):
+        _common._validate_library_codes(["A_VTI_B"])
 
 
 def test_many_refused_library_codes_are_summarised():

@@ -148,7 +148,8 @@ def _validate_library_codes(codes: Iterable[str]) -> None:
         more = f" and {len(invalid) - 10} more" if len(invalid) > 10 else ""
         raise ValueError(
             f"library_code values SharePoint can't use as a library's URL: {shown}{more}. A code can only contain "
-            f"letters, digits, spaces, '-', '_' and '.', and can't start or end with a space or '.'"
+            f"letters, digits, spaces, '-', '_' and '.', can't start or end with a space or '.', and can't contain "
+            f"'_vti_' in any case, which SharePoint reserves"
         )
 
 
