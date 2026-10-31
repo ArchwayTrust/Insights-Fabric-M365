@@ -67,11 +67,10 @@ class SharePointLibraryManager:
     The app registration needs these application permissions, with admin
     consent: Microsoft Graph ``Sites.FullControl.All`` (or
     ``Sites.Selected`` with full control on each site),
-    ``Group.ReadWrite.All``, ``GroupMember.ReadWrite.All`` and
-    ``User.Read.All``; SharePoint ``Sites.FullControl.All`` (or
-    ``Sites.Selected``).  OneDrive shortcuts also need Graph
-    ``Files.ReadWrite.All``.  SharePoint only accepts app-only tokens
-    obtained with a certificate, not a client secret.
+    ``Group.ReadWrite.All`` and ``User.Read.All``; SharePoint
+    ``Sites.FullControl.All`` (or ``Sites.Selected``).  OneDrive shortcuts
+    also need Graph ``Files.ReadWrite.All``.  SharePoint only accepts
+    app-only tokens obtained with a certificate, not a client secret.
 
     Args:
         credential:           Credential with a ``get_token(*scopes)`` method,

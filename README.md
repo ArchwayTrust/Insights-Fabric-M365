@@ -165,7 +165,7 @@ This package's `Emails` and `SharePointLibraryManager` call Microsoft Graph and 
 - **The permissions stay separate from the workspace identity's.** Mailbox and SharePoint access are powerful, so it's better held by an app registration that does only this job, where it can be reviewed and revoked on its own. How far it reaches depends on what you grant:
   - Mail access is limited to the mailboxes in its Exchange role assignment (see [Giving the app access to a mailbox](#giving-the-app-access-to-a-mailbox)).
   - SharePoint access is limited to chosen sites only with `Sites.Selected` (see [Limiting the app to chosen sites with Sites.Selected](#limiting-the-app-to-chosen-sites-with-sitesselected)). `Sites.FullControl.All` covers every site.
-  - `SharePointLibraryManager` also needs `Group.ReadWrite.All`, `GroupMember.ReadWrite.All` and `User.Read.All`, which apply to the whole tenant (see [Giving the app access](#giving-the-app-access)).
+  - `SharePointLibraryManager` also needs `Group.ReadWrite.All` and `User.Read.All`, which apply to the whole tenant (see [Giving the app access](#giving-the-app-access)).
 
   **Sign** on the key in Key Vault controls who can use the certificate this package signs with. It doesn't cover any other certificate or client secret on the app registration, which can also authenticate as the app, so remove those you don't need.
 
@@ -749,12 +749,14 @@ The app registration needs these application permissions, with admin consent:
 | API | Permission | Used for |
 | --- | --- | --- |
 | Microsoft Graph | `Sites.Selected` with full control on each site (recommended), or `Sites.FullControl.All` | Finding sites, creating and renaming libraries |
-| Microsoft Graph | `Group.ReadWrite.All` and `GroupMember.ReadWrite.All` | Creating and renaming groups, syncing membership |
+| Microsoft Graph | `Group.ReadWrite.All` | Creating and renaming groups, making the app their owner, syncing membership |
 | Microsoft Graph | `User.Read.All` | Resolving users by UPN, mail or proxy address |
 | Microsoft Graph | `Files.ReadWrite.All` | Only for OneDrive shortcuts (`create_onedrive_shortcuts=True`, or `ensure_onedrive_shortcuts`) |
 | SharePoint | `Sites.Selected` with full control on each site (recommended), or `Sites.FullControl.All` | Permissions, property bag, navigation and sharing settings |
 
 `Sites.FullControl.All` gives the app full control of every site in the tenant, including every user's OneDrive. Use `Sites.Selected` instead, so the app can only touch the sites it manages, see [Limiting the app to chosen sites with Sites.Selected](#limiting-the-app-to-chosen-sites-with-sitesselected). The group and user permissions have no per-site equivalent and always apply to the whole tenant. So does `Files.ReadWrite.All`, which reaches files on every site as well as every OneDrive, so turning on OneDrive shortcuts gives up per-site isolation for files.
+
+This README used to list `GroupMember.ReadWrite.All` as well. It isn't needed: Microsoft's [permissions reference](https://learn.microsoft.com/en-us/graph/permissions-reference#groupreadwriteall) says `Group.ReadWrite.All` lets the app update group memberships, and adding an owner needs `Group.ReadWrite.All` whatever else is granted. To remove it from an existing app registration, take it off under **API permissions**, then run the faculty notebook's smoke test live, which adds and removes members. If a member change then fails with `403`, add it back.
 
 SharePoint only accepts app-only tokens obtained with a certificate, so use `KeyVaultCertificateCredential`, not a client secret. Set up the certificate as in [Setting up a certificate](#setting-up-a-certificate), uploading it to this app registration. The identity running the notebook (for a pipeline, whatever the notebook activity runs as) needs **Get** on the certificate and **Sign** on its key.
 
@@ -888,7 +890,7 @@ To block every site, revoke the admin consent for `Sites.Selected` on both APIs,
 - **Keep the old site's grant until retiring is done.** `retire_moved_libraries` can't retire a library on a site the app can no longer read: a 403 from the old site, or from the new one, is an `error` row, and the old library is left as it is. Only remove the grant after the old libraries have been retired. An old site that no longer exists (404) is `retire_skipped`, as there's nothing left to retire; a new site that doesn't exist yet defers the retire (`retire_deferred`), so the old library keeps its access.
 - **A grant covers the whole site collection**, including any subsites, and doesn't change who else can use the site. It doesn't break permission inheritance on anything.
 - **The app can't find sites it hasn't been granted.** It can only work with the site URLs you give it, which is all `SharePointLibraryManager` needs.
-- **Other permissions still reach the whole tenant.** `Group.ReadWrite.All`, `GroupMember.ReadWrite.All` and `User.Read.All` aren't limited by `Sites.Selected`. Nor is `Files.ReadWrite.All`: as an application permission it can read and write files in every document library on every site, as well as every user's OneDrive. Adding it for `create_onedrive_shortcuts=True` therefore gives the app file access to sites it hasn't been granted, so only add it if you use shortcuts and accept that.
+- **Other permissions still reach the whole tenant.** `Group.ReadWrite.All` and `User.Read.All` aren't limited by `Sites.Selected`. Nor is `Files.ReadWrite.All`: as an application permission it can read and write files in every document library on every site, as well as every user's OneDrive. Adding it for `create_onedrive_shortcuts=True` therefore gives the app file access to sites it hasn't been granted, so only add it if you use shortcuts and accept that.
 - **Lists, libraries and files can be granted too**, with `Lists.SelectedOperations.Selected`, `ListItems.SelectedOperations.Selected` and `Files.SelectedOperations.Selected`. `SharePointLibraryManager` creates libraries, so it needs a grant on the site. See Microsoft's [overview of Selected permissions](https://learn.microsoft.com/en-us/graph/permissions-selected-overview).
 
 ### Creating a SharePointLibraryManager
