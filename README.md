@@ -62,13 +62,13 @@ The package is published on PyPI as [`alt-fabric-m365`](https://pypi.org/project
 **In a Fabric environment** (use this for scheduled notebooks and pipelines):
 
 1. Open the environment your notebooks use.
-2. In the **External repositories** tab, select **Add library** > **Add library from public repository**, choose **PyPI**, enter `alt-fabric-m365` and choose a version, for example `1.2.0`. Choose **Full** publish mode, which Microsoft recommends for pipelines and production notebooks.
+2. In the **External repositories** tab, select **Add library** > **Add library from public repository**, choose **PyPI**, enter `alt-fabric-m365` and choose a version, for example `1.3.0`. Choose **Full** publish mode, which Microsoft recommends for pipelines and production notebooks.
 3. Save and publish the environment. Notebooks pick up the new version when their next session starts.
 
 **In a single notebook session** (useful for testing a new version):
 
 ```python
-%pip install alt-fabric-m365==1.2.0
+%pip install alt-fabric-m365==1.3.0
 ```
 
 Always pin a version. 1.0.0 removes the old names that 0.x versions kept working with a warning, see [Upgrading to 1.0.0](#upgrading-to-100). 1.0.1 only updates the documentation. 1.0.2 stops `update_memberships` emptying an Auto group the app doesn't own, adopts ownerless Auto groups it has no members to add to, and makes dry runs of `create_libraries` report group ownership. 1.1.0 fixes problems found in a review of 1.0.2:
@@ -91,6 +91,31 @@ Always pin a version. 1.0.0 removes the old names that 0.x versions kept working
 - A 503 with `Retry-After` is waited out like a 429, and each attempt of a request gets a current token, so a long throttle doesn't end in a 401.
 - A group created moments ago isn't created again while Graph's name lookups still miss it, and Graph's 400 for a new group is waited out like its 404.
 - Cancelling a cell stops a parallel run starting queued libraries.
+
+1.3.0 adds a `status` column to `get_library_metadata`, names the package in every request's User-Agent, and reads sites in parallel. It also fixes the rest of the problems from the review of 1.0.2:
+
+- `get_library_metadata` returns a `status` column: `ok`, `library_not_found` or `error: <reason>`. A library it couldn't read no longer looks like one with no metadata.
+- Every Graph and SharePoint request's User-Agent starts `NONISV|ArchwayTrust|alt-fabric-m365/<version>`, which is what SharePoint's throttling guidance asks for. `SharePointLibraryManager` and `Emails` take `organisation` to name another organisation.
+- With `max_workers` above 1, each operation reads its sites in parallel too, not only its libraries.
+- A group whose create may have succeeded (a 5xx, a dropped connection or an unfollowed redirect) isn't created again later in the same run. The library gets an `error` row instead, in a dry run too, and the next run finds the group.
+- A run that changes nothing writes nothing:
+  - `grant_group_access` only registers a group on a site when a library needs a new grant;
+  - metadata and display names are only written when they've changed;
+  - running `unlink_libraries` or `retire_moved_libraries` again skips what's already done.
+- `unlink_libraries` removes a deleted library's navigation link, and empties the rest of a group when one member can't be removed.
+- Removing a member that's already gone, such as after a retried request, counts as removed rather than failed.
+- `retire_moved_libraries` logs a site it can't read (403) as an `error`, not as gone or deferred.
+- A membership row with no user is logged as `user_not_found`, and one with no permission as `skip`; before, either failed the whole sync. Whole-number codes and IDs from float or Decimal columns are written without a `.0`.
+- `enforce_site_sharing_lockdown` checks a site spelt two ways only once, and refuses a single URL given as a string.
+- A dry run of `create_libraries` reports the group descriptions a live run would update.
+- Failure rows give the service's error code and message. A response cut off part way through is retried, but a TLS error isn't, and following a redirect no longer sends the query string twice.
+- `Emails`:
+  - retries throttled and failed requests;
+  - quotes the mailbox and IDs in URLs;
+  - gives Graph's error in every error;
+  - lists attachments without downloading them, and searches 1,000 messages at a time;
+  - lets `send_email` take one address as a string.
+- `KeyVaultCertificateCredential` retries throttled and failed requests to Key Vault and Entra ID, and quotes the certificate name, version and tenant in URLs.
 
 From 1.0.0, only a new major version (2.0.0) can break existing notebooks, see [Versioning](#versioning). The history of the 0.x versions is in the [0.7.2 README](https://github.com/ArchwayTrust/Insights-Fabric-M365/blob/v0.7.2/README.md#installation).
 
@@ -1561,7 +1586,7 @@ The tests can't show that the real services accept the requests, so test a new v
 
 ### Versioning
 
-The version number is set in `alt_fabric_m365/__init__.py`, as `__version__="1.2.0"`, and `setup.py` reads it from there. Check it with `python setup.py --version`. This README's examples show it too: installing from PyPI, TestPyPI or a wheel, the names of the files a build makes, and the release tag. `test_packaging.py` fails until they match `__version__`, so update them in the same change.
+The version number is set in `alt_fabric_m365/__init__.py`, as `__version__="1.3.0"`, and `setup.py` reads it from there. Check it with `python setup.py --version`. This README's examples show it too: installing from PyPI, TestPyPI or a wheel, the names of the files a build makes, and the release tag. `test_packaging.py` fails until they match `__version__`, so update them in the same change.
 
 Versions follow [semantic versioning](https://semver.org/):
 
@@ -1586,8 +1611,8 @@ python -m twine check --strict dist/*
 
 This creates two files in `dist/`:
 
-- `alt_fabric_m365-1.2.0-py3-none-any.whl`, the wheel
-- `alt_fabric_m365-1.2.0.tar.gz`, the source distribution, which also has the tests and what they need ([`MANIFEST.in`](https://github.com/ArchwayTrust/Insights-Fabric-M365/blob/main/MANIFEST.in)), so they run from it
+- `alt_fabric_m365-1.3.0-py3-none-any.whl`, the wheel
+- `alt_fabric_m365-1.3.0.tar.gz`, the source distribution, which also has the tests and what they need ([`MANIFEST.in`](https://github.com/ArchwayTrust/Insights-Fabric-M365/blob/main/MANIFEST.in)), so they run from it
 
 `twine check` confirms the package metadata and this README will render on PyPI. Clearing `dist/` first stops old versions being uploaded by mistake.
 
@@ -1604,7 +1629,7 @@ trusted-host = files.pythonhosted.org
 Upload the `.whl` file to a lakehouse's `Files` folder, then in a notebook attached to that lakehouse:
 
 ```python
-%pip install /lakehouse/default/Files/alt_fabric_m365-1.2.0-py3-none-any.whl
+%pip install /lakehouse/default/Files/alt_fabric_m365-1.3.0-py3-none-any.whl
 ```
 
 Or add it to an environment: on its **Custom** libraries page, select **Upload**.
@@ -1615,7 +1640,7 @@ This is the normal route. Merging to `main` never publishes anything; only publi
 
 1. Runs the tests.
 2. Checks the tagged commit is on `main`, and stops if it isn't, so an unmerged commit isn't released by mistake. The workflow runs as it is at the tagged commit, so this doesn't stop someone who removes the check on purpose: the tag ruleset and reviewers under [Trusted Publishing setup](#trusted-publishing-setup) do.
-3. Checks the release tag matches `__version__` (tag `v1.2.0` for `__version__="1.2.0"`), and stops if it doesn't.
+3. Checks the release tag matches `__version__` (tag `v1.3.0` for `__version__="1.3.0"`), and stops if it doesn't.
 4. Builds the package and runs `twine check`.
 5. Publishes it to PyPI.
 6. Attaches the wheel and source distribution to the GitHub release.
@@ -1624,7 +1649,7 @@ To release:
 
 1. Update `__version__` in `alt_fabric_m365/__init__.py`, merge it into `main` through a pull request.
 2. On GitHub, go to **Releases** > **Draft a new release**.
-3. Create a tag matching the version, for example `v1.2.0`, targeting `main`.
+3. Create a tag matching the version, for example `v1.3.0`, targeting `main`.
 4. Add release notes, then select **Publish release**.
 5. Check the workflow run under **Actions**, and that the new version appears on [PyPI](https://pypi.org/project/alt-fabric-m365/).
 
@@ -1662,7 +1687,7 @@ python -m twine upload --repository testpypi dist/*
 ```
 
 ```python
-%pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ alt-fabric-m365==1.2.0
+%pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ alt-fabric-m365==1.3.0
 ```
 
 ### After publishing

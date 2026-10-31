@@ -812,3 +812,53 @@ def test_object_id_is_read_from_the_token():
 def test_unreadable_object_id_is_an_error(token):
     with pytest.raises(ValueError, match="object ID"):
         _groups._token_object_id(token)
+
+
+# The fake tenant: every request reaches it, and one it doesn't serve fails the test
+
+def test_requests_get_and_sessions_reach_the_fake(tenant):
+    site = tenant.add_site("/sites/maths")
+    url, headers = f"{GRAPH}/sites/{HOST}:/sites/maths", {"Authorization": f"Bearer {GRAPH_TOKEN}"}
+
+    with requests.Session() as session:
+        assert session.get(url, headers=headers).json() == {"id": site.id}
+    assert requests.get(url, headers=headers).json() == {"id": site.id}
+    assert [(method, called) for method, called, _ in tenant.calls] == [("GET", url), ("GET", url)]
+
+
+@pytest.mark.parametrize("max_workers", [1, 2])
+def test_a_request_the_fake_doesnt_serve_escapes_an_operations_error_handling(tenant, max_workers):
+    from sharepoint_fake import UnexpectedRequest
+
+    def work(action_log):
+        _http._request_with_retry("GET", f"{GRAPH}/unknownResource", headers={"Authorization": f"Bearer {GRAPH_TOKEN}"})
+
+    # An operation logs an Exception from its work as an error row, which a test could take for what it checks
+    with pytest.raises(UnexpectedRequest, match="unknownResource"):
+        _common._run_parallel(work, [()], max_workers, _common._ThreadSafeLog())
+
+
+@pytest.mark.parametrize("method, path, body", [
+    ("GET", "/groups/missing/owners", None),
+    ("GET", "/groups/missing/members", None),
+    ("POST", "/groups/missing/members/$ref", {"@odata.id": f"{GRAPH}/directoryObjects/x"}),
+    ("DELETE", "/groups/missing/members/x/$ref", None),
+    ("GET", "/sites/missing/lists", None),
+    ("POST", "/users/missing/drive/root/children", {}),
+])
+def test_ids_that_dont_exist_get_graphs_404(tenant, method, path, body):
+    headers = {"Authorization": f"Bearer {GRAPH_TOKEN}"}
+
+    assert _http._request_with_retry(method, f"{GRAPH}{path}", headers=headers, json=body).status_code == 404
+
+
+def test_adding_a_member_that_doesnt_exist_gets_graphs_404(tenant):
+    group = tenant.add_group("SP-ENG-Auto-Read")
+
+    resp = _http._request_with_retry(
+        "POST", f"{GRAPH}/groups/{group['id']}/members/$ref", headers={"Authorization": f"Bearer {GRAPH_TOKEN}"},
+        json={"@odata.id": f"{GRAPH}/directoryObjects/missing"},
+    )
+
+    assert resp.status_code == 404
+    assert group["members"] == {}
