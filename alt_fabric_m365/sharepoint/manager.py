@@ -22,7 +22,7 @@ from ._graph import (
     _get_library_display_name, _get_list_id, _get_onedrive_root_items,
     _get_site_id, _list_existing_lists, _set_library_display_name,
 )
-from ._http import _RenewableToken
+from ._http import DEFAULT_ORGANISATION, _RenewableToken, _user_agent
 from ._groups import (
     GroupResolutionError, UserResolutionError, _add_group_member, _create_security_group, _empty_group_members,
     _ensure_app_owns_group, _find_existing_library_collisions, _find_group_by_name,
@@ -61,8 +61,8 @@ class SharePointLibraryManager:
     """Manage SharePoint document library permissions via Entra ID security groups.
 
     Authenticate once in the constructor, then call any operation method.
-    Every option but ``service_principal_id`` is a default that the
-    operations taking it can override per call.
+    Every option but ``service_principal_id`` and ``organisation`` is a
+    default that the operations taking it can override per call.
 
     The app registration needs these application permissions, with admin
     consent: Microsoft Graph ``Sites.FullControl.All`` (or
@@ -120,6 +120,12 @@ class SharePointLibraryManager:
             Optional. Object ID of the app's service principal, which is made
             owner of the groups the manager creates.  Defaults to the Graph
             token's ``oid`` claim.
+        organisation:
+            Optional. The organisation named in every request's User-Agent,
+            ``NONISV|<organisation>|alt-fabric-m365/<version>``, the form
+            SharePoint's throttling guidance asks for.  Letters, digits,
+            spaces, ``.``, ``-`` and ``_``.  Defaults to ``"ArchwayTrust"``,
+            the package's publisher.
 
     Attributes:
         credential (TokenCredential): The credential tokens are requested from.
@@ -134,10 +140,12 @@ class SharePointLibraryManager:
         allow_mass_removal (bool): Default for ``update_memberships``.
         add_to_navigation (bool): Default for the operations that take it.
         navigation_label (str): Default for the operations that take it.
+        organisation (str): The organisation named in every request's User-Agent.
 
     Raises:
         TypeError: If an option isn't of its type, such as the string 'False'
             for dry_run.
+        ValueError: If organisation has a character a User-Agent can't hold.
         Exception: Whatever the credential raises if it can't get a Graph or
             SharePoint token, as both are requested straight away.
     """
@@ -157,6 +165,7 @@ class SharePointLibraryManager:
         add_to_navigation: bool = False,
         navigation_label: str = "Document Libraries",
         service_principal_id: str | None = None,
+        organisation: str = DEFAULT_ORGANISATION,
     ) -> None:
         self.dry_run = _check_option("dry_run", dry_run)
         self.max_workers = _check_option("max_workers", max_workers)
@@ -168,6 +177,8 @@ class SharePointLibraryManager:
         self.add_to_navigation = _check_option("add_to_navigation", add_to_navigation)
         self.navigation_label = _check_option("navigation_label", navigation_label)
         self._service_principal_id = service_principal_id
+        _user_agent(organisation)  # checked before any request
+        self.organisation = organisation
         # Groups this manager has created, by lower-case name, with whether
         # the app was made their owner: Graph's name lookups can miss a group
         # for a while after it's created, and creating it again would make a
@@ -329,11 +340,15 @@ class SharePointLibraryManager:
 
     @property
     def _graph_token(self) -> str:
-        return _RenewableToken(lambda: self.credential.get_token(self._graph_scope).token)
+        return _RenewableToken(
+            lambda: self.credential.get_token(self._graph_scope).token, user_agent=_user_agent(self.organisation),
+        )
 
     @property
     def _sp_token(self) -> str:
-        return _RenewableToken(lambda: self.credential.get_token(self._sp_scope).token)
+        return _RenewableToken(
+            lambda: self.credential.get_token(self._sp_scope).token, user_agent=_user_agent(self.organisation),
+        )
 
     def _resolve_config(self, **overrides: Any) -> tuple:
         """Resolve per-call overrides against instance defaults.

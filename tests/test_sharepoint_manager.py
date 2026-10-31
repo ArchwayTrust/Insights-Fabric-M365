@@ -302,6 +302,30 @@ def test_every_request_says_which_app_it_comes_from(make_manager, tenant, site):
     assert created(tenant, "ProcessQuery")  # the CSOM call that sets metadata is covered too
 
 
+def test_every_request_names_the_organisation_the_manager_is_given(make_manager, tenant, site):
+    tenant.add_user("jo@contoso.com")
+    manager = make_manager(add_to_navigation=True, organisation="Contoso Academy Trust")
+
+    manager.create_libraries(libraries_df(site, "MATH", source_system="Arbor"))
+    manager.update_memberships(memberships_df(site, [("MATH", "jo@contoso.com", "read")]))
+
+    assert {kwargs["headers"]["User-Agent"].split(" python-requests/")[0] for _, _, kwargs in tenant.calls} == {
+        f"NONISV|Contoso Academy Trust|alt-fabric-m365/{alt_fabric_m365.__version__}"
+    }
+
+
+@pytest.mark.parametrize("organisation, error", [
+    ("Contoso|Evil", ValueError), ("Contoso\r\nX-Injected: 1", ValueError), ("", ValueError), (None, TypeError),
+])
+def test_an_organisation_a_user_agent_cant_hold_is_refused_before_any_request(
+    make_manager, tenant, organisation, error,
+):
+    with pytest.raises(error, match="organisation"):
+        make_manager(organisation=organisation)
+
+    assert tenant.calls == []
+
+
 # CSOM refuses with an HTTP error, or with an ErrorInfo in a 200 response
 @pytest.mark.parametrize("failure, reason", [
     ((403, {"error": {"code": "-2147024891", "message": {"value": "Denied."}}}), "Status code: 403"),
