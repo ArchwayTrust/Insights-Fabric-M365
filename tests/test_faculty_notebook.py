@@ -179,7 +179,11 @@ def run_notebook(monkeypatch, azure):
         namespace = {"spark": spark, "notebookutils": notebookutils, "display": lambda *args: None,
                      "__name__": "__main__"}
         # Fabric runs an injected cell with the pipeline's parameters straight after the parameters cell
-        overrides = {"SHAREPOINT_HOSTNAME": HOST, "DRY_RUN": False, **parameters}
+        # The notebook's own values are placeholders, so the tenant's are passed as a pipeline would
+        overrides = {
+            "SHAREPOINT_HOSTNAME": HOST, "CLIENT_ID": "client-id", "CERTIFICATE_NAME": "SharePoint-Library-Cert",
+            "DRY_RUN": False, **parameters,
+        }
         for code, is_parameters in cells(NOTEBOOK):
             exec(compile(code, str(NOTEBOOK), "exec"), namespace)
             if is_parameters:
