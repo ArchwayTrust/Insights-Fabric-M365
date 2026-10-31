@@ -174,7 +174,7 @@ The core code moved over unchanged. A script compared every function and constan
 | A library code also matched other libraries' titles, so code `ART` could take over a library titled "Art". | Libraries are only found by URL. A code that is another library's title is reported as `library_name_conflict`. |
 | Membership sync read a just-created group's members, which can 404 while it replicates. | No longer read: a new group has none. |
 | In create and membership sync, one site that couldn't be read (e.g. a mistyped hub URL) stopped the whole operation. | Only that site's libraries are skipped, with an `error` row. |
-| `rename_libraries` could rename groups onto names already in use. | Reported as `group_name_collision` and left as is. |
+| `rename_libraries` could rename groups onto names already in use. | It no longer renames groups at all: a faculty code is the library's URL, so it never changes. The notebook doesn't call it. |
 | In grants, one group SharePoint couldn't resolve skipped every grant on its site. | Only that group's grants are skipped. |
 | `get_library_metadata` returned `NaN` instead of `None` for unset values under pandas 3. | No effect under the current runtime's pandas 2. |
 

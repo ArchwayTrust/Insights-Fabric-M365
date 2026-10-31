@@ -6,6 +6,7 @@ running it again changes nothing and that a dry run makes no writes.
 """
 import time
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -146,6 +147,41 @@ def test_missing_columns_raise_before_any_request(make_manager, tenant, site):
         make_manager().create_libraries(pd.DataFrame({"site_url": [site.url]}))
 
     assert tenant.calls == []
+
+
+# A pipeline parameter typed as String arrives as a str, and 'False' is truthy
+@pytest.mark.parametrize("option, value", [
+    ("dry_run", "False"), ("allow_mass_removal", "False"), ("include_site_name", 1), ("add_to_navigation", None),
+    ("create_onedrive_shortcuts", "True"), ("max_workers", "4"), ("max_workers", True),
+    ("max_removals_per_group", 10.5), ("navigation_label", 5),
+])
+def test_options_of_the_wrong_type_are_refused(credential, option, value):
+    with pytest.raises(TypeError, match=option):
+        SharePointLibraryManager(credential, HOST, **{option: value})
+
+
+def test_per_call_options_of_the_wrong_type_are_refused(make_manager, tenant, site):
+    with pytest.raises(TypeError, match="allow_mass_removal"):
+        make_manager().update_memberships(memberships_df(site, []), allow_mass_removal="False")
+
+    assert tenant.calls == []
+
+
+def test_options_changed_after_construction_are_checked(make_manager, tenant, site):
+    manager = make_manager()
+    manager.allow_mass_removal = "False"
+
+    with pytest.raises(TypeError, match="allow_mass_removal"):
+        manager.update_memberships(memberships_df(site, []))
+
+    assert tenant.calls == []
+
+
+def test_numpy_booleans_and_integers_are_accepted(credential):
+    manager = SharePointLibraryManager(credential, HOST, dry_run=np.bool_(True), max_workers=np.int64(2))
+
+    assert manager.dry_run is True
+    assert manager.max_workers == 2 and type(manager.max_workers) is int
 
 
 # create_libraries
@@ -322,6 +358,34 @@ def test_create_manual_only_library(make_manager, tenant, site):
     ]
 
 
+@pytest.mark.parametrize("blank", [None, float("nan"), pd.NA])
+def test_blank_flags_take_their_defaults(make_manager, tenant, site, blank):
+    flags = {flag: pd.Series([blank], dtype=object) for flag in
+             ("auto_groups", "manual_read", "manual_contribute", "app_owned")}
+
+    results = make_manager().create_libraries(libraries_df(site, "MATH", **flags))
+
+    assert rows(results, "error").empty
+    assert sorted(g["displayName"] for g in tenant.groups.values()) == [
+        "BAA-Sharepoint-MATH-Auto-Contribute", "BAA-Sharepoint-MATH-Auto-Read",
+    ]
+    assert all(g["owners"] == {APP_ID} for g in tenant.groups.values())
+
+
+def test_flags_given_as_numbers_are_accepted(make_manager, tenant, site):
+    make_manager().create_libraries(libraries_df(site, "SLT", auto_groups=0, manual_read=1.0))
+
+    assert [g["displayName"] for g in tenant.groups.values()] == ["BAA-Sharepoint-SLT-Manual-Read"]
+
+
+@pytest.mark.parametrize("value", ["False", "yes", 2])
+def test_flags_that_arent_booleans_are_refused(make_manager, tenant, site, value):
+    with pytest.raises(ValueError, match="manual_read"):
+        make_manager().create_libraries(libraries_df(site, "MATH", manual_read=value))
+
+    assert tenant.calls == []
+
+
 def test_colliding_codes_are_skipped_and_others_proceed(make_manager, tenant, site):
     results = make_manager().create_libraries(libraries_df(site, "PE-KS3", "PEKS3", "ENG"))
 
@@ -392,29 +456,39 @@ def test_set_metadata_on_a_missing_library_is_an_error_row(make_manager, site):
 
 # rename_libraries
 
-def test_rename_with_a_changed_code_renames_the_groups(make_manager, tenant, site):
-    make_manager().create_libraries(libraries_df(site, "MATHS", manual_read=True))
-    # The faculty's code changed from MATHS to MATH. The library's URL slug is set at creation and never
-    # changes, so here the library is found by the new code (as if it had been created with it).
-    site.list_by_slug("MATHS")["slug"] = "MATH"
-    df = libraries_df(site, "MATH", library_display_name="Maths", old_library_code="MATHS")
+def test_rename_sets_the_display_name_and_leaves_groups(make_manager, tenant, site):
+    make_manager().create_libraries(libraries_df(site, "MATH", manual_read=True))
+    groups = sorted(g["displayName"] for g in tenant.groups.values())
 
-    results = make_manager().rename_libraries(df)
+    results = make_manager().rename_libraries(
+        libraries_df(site, "MATH", library_display_name="Maths").drop(columns="group_prefix"),
+    )
 
-    assert actions(results) == ["group_renamed"] * 3 + ["library_renamed"]
-    assert sorted(g["displayName"] for g in tenant.groups.values()) == [
-        "BAA-Sharepoint-MATH-Auto-Contribute", "BAA-Sharepoint-MATH-Auto-Read", "BAA-Sharepoint-MATH-Manual-Read",
-    ]
+    assert actions(results) == ["library_renamed"]
     assert site.list_by_slug("MATH")["displayName"] == "Maths"
+    assert sorted(g["displayName"] for g in tenant.groups.values()) == groups
 
 
-def test_rename_of_a_missing_library_is_an_error_and_leaves_groups(make_manager, tenant, site):
-    make_manager().create_libraries(libraries_df(site, "MATHS"))
-
-    results = make_manager().rename_libraries(libraries_df(site, "MATH", old_library_code="MATHS"))
+def test_rename_of_a_missing_library_is_an_error(make_manager, site):
+    results = make_manager().rename_libraries(libraries_df(site, "MATH"))
 
     assert actions(results) == ["error"]
-    assert tenant.group_named("BAA-Sharepoint-MATHS-Auto-Read") is not None
+
+
+def test_old_library_code_is_refused(make_manager, tenant, site):
+    # A code is the library's URL, which can't change, so renaming groups to a new code never worked
+    with pytest.raises(ValueError, match="old_library_code"):
+        make_manager().rename_libraries(libraries_df(site, "MATH", old_library_code="MATHS"))
+
+    assert tenant.calls == []
+
+
+def test_an_empty_old_library_code_column_is_ignored(make_manager, site):
+    make_manager().create_libraries(libraries_df(site, "MATH"))
+
+    results = make_manager().rename_libraries(libraries_df(site, "MATH", old_library_code=None))
+
+    assert actions(results) == ["library_renamed"]
 
 
 def test_rename_syncs_the_navigation_title(make_manager, site):
@@ -468,6 +542,29 @@ def test_unlink_dry_run_makes_no_writes(make_manager, tenant, site):
     assert "empty_group (dry run)" in actions(results)
 
 
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_unlinking_a_code_that_shares_a_live_librarys_groups_leaves_them(make_manager, tenant, site, dry_run):
+    # PEKS3 was skipped by the create pass, as its group names are PE-KS3's
+    make_manager().create_libraries(libraries_df(site, "PE-KS3"))
+    jo = tenant.add_user("jo@contoso.com")
+    tenant.group_named("BAA-Sharepoint-PEKS3-Auto-Contribute")["members"][jo["id"]] = jo
+    tenant.calls.clear()
+
+    results = make_manager(dry_run=dry_run, add_to_navigation=True).unlink_libraries(libraries_df(site, "PEKS3"))
+
+    [row] = results.itertuples()
+    assert (row.action, row.document_library) == ("group_name_collision", "PEKS3")
+    assert tenant.writes() == []
+    assert tenant.member_upns("BAA-Sharepoint-PEKS3-Auto-Contribute") == ["jo@contoso.com"]
+
+
+def test_unlinking_codes_whose_groups_collide_leaves_both(make_manager, tenant, site):
+    results = make_manager().unlink_libraries(libraries_df(site, "PE-KS3", "PEKS3"))
+
+    assert actions(results) == ["group_name_collision", "group_name_collision"]
+    assert tenant.writes() == []
+
+
 def test_unlink_skips_a_site_whose_prefetch_fails(make_manager, tenant, site):
     from sharepoint_fake import graph_error
     tenant.fail("GET", r"/lists\?", graph_error(403, "accessDenied"))
@@ -509,7 +606,22 @@ def test_retire_skips_a_site_or_library_that_is_gone(make_manager, tenant, site)
     assert tenant.writes() == []
 
 
-# update_memberships
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("spelling", ["lower case", "trailing slash"])
+def test_retire_leaves_a_library_whose_new_site_is_the_same_site(make_manager, tenant, site, spelling, dry_run):
+    make_manager(add_to_navigation=True).create_libraries(libraries_df(site, "MATH"))
+    tenant.calls.clear()
+    # Graph resolves both to the same site, so the library hasn't moved
+    same_site = site.url.lower() if spelling == "lower case" else f"{site.url}/"
+
+    results = make_manager(add_to_navigation=True, dry_run=dry_run).retire_moved_libraries(
+        libraries_df(site, "MATH").assign(new_site_url=same_site))
+
+    assert actions(results) == ["retire_skipped"]
+    assert tenant.writes() == []
+    library = site.list_by_slug("MATH")
+    assert (library["displayName"], len(library["role_assignments"])) == ("MATH Faculty", 2)
+
 
 @pytest.fixture
 def library(make_manager, site):
@@ -645,7 +757,38 @@ def test_unknown_permission_is_skipped(make_manager, tenant, site, library):
 
     results = make_manager().update_memberships(memberships_df(site, [("MATH", "jo@contoso.com", "edit")]))
 
-    assert rows(results, "skip")["status"].tolist() == ["unknown permission 'edit'"]
+    assert rows(results, "skip")["status"].str.startswith("unknown permission 'edit'").tolist() == [True]
+    assert "skip" in WARNING_ACTIONS
+
+
+@pytest.mark.parametrize("role", ["read", "contribute", "owner"])
+def test_unknown_permission_never_removes_anyone(make_manager, tenant, site, library, role):
+    # The row could be meant for any role, so every role's desired members are incomplete
+    name = f"BAA-Sharepoint-MATH-Auto-{role.capitalize()}"
+    group = tenant.group_named(name) or tenant.add_group(name, owners={APP_ID})
+    stale = tenant.add_user("old@contoso.com")  # not in the input at all
+    group["members"][stale["id"]] = stale
+    tenant.add_user("jo@contoso.com")
+
+    results = make_manager().update_memberships(memberships_df(site, [("MATH", "jo@contoso.com", "Edit")]))
+
+    assert tenant.member_upns(name) == ["old@contoso.com"]
+    assert actions(results) == ["removals_skipped", "skip"]
+
+
+def test_unknown_permission_for_a_nested_group_never_removes_nested_groups(make_manager, tenant, site, library):
+    staff = tenant.add_group("BAA All Staff")
+    tenant.group_named("BAA-Sharepoint-MATH-Auto-Read")["members"][staff["id"]] = staff
+
+    nested = pd.DataFrame({
+        "site_url": [site.url], "library_code": ["MATH"], "group_prefix": [PREFIX],
+        "member_group": ["BAA All Staff"], "permission": ["edit"],
+    })
+
+    results = make_manager().update_memberships(memberships_df(site, []), nested_groups_df=nested)
+
+    assert staff["id"] in tenant.group_named("BAA-Sharepoint-MATH-Auto-Read")["members"]
+    assert actions(results) == ["removals_skipped", "skip"]
 
 
 def test_nested_groups_are_added_and_unresolvable_ones_reported(make_manager, tenant, site, library):
@@ -696,6 +839,59 @@ def test_onedrive_shortcut_failure_does_not_block_the_sync(make_manager, tenant,
 
     assert "onedrive_shortcut_failed" in actions(results)
     assert tenant.member_upns("BAA-Sharepoint-MATH-Auto-Contribute") == ["jo@contoso.com"]
+
+
+def test_memberships_dry_run_shows_the_adds_and_removals_a_live_run_makes(make_manager, tenant, site, library):
+    jo, sam, _ = (tenant.add_user(f"{name}@contoso.com") for name in ("jo", "sam", "ali"))
+    tenant.group_named("BAA-Sharepoint-MATH-Auto-Contribute")["members"].update({jo["id"]: jo, sam["id"]: sam})
+    df = memberships_df(site, [("MATH", "jo@contoso.com", "contribute"), ("MATH", "ali@contoso.com", "contribute")])
+    tenant.calls.clear()
+
+    dry = make_manager(dry_run=True).update_memberships(df)
+
+    assert tenant.writes() == []
+    assert sorted(dry[["action", "user"]].values.tolist()) == [
+        ["add_to_group (dry run)", "ali@contoso.com"], ["already_assigned", ""],
+        ["already_member", "jo@contoso.com"], ["remove_from_group (dry run)", "sam@contoso.com"],
+    ]
+
+    live = make_manager().update_memberships(df)
+
+    assert sorted(live[["action", "user"]].values.tolist()) == [
+        ["added_to_group", "ali@contoso.com"], ["already_assigned", ""],
+        ["already_member", "jo@contoso.com"], ["removed_from_group", "sam@contoso.com"],
+    ]
+
+
+@pytest.mark.parametrize("allow_mass_removal", [False, True])
+def test_memberships_dry_run_shows_the_removal_guardrail(make_manager, tenant, site, library, allow_mass_removal):
+    contribute = tenant.group_named("BAA-Sharepoint-MATH-Auto-Contribute")
+    for i in range(11):
+        user = tenant.add_user(f"user{i}@contoso.com")
+        contribute["members"][user["id"]] = user
+    tenant.calls.clear()
+
+    results = make_manager(dry_run=True, allow_mass_removal=allow_mass_removal).update_memberships(
+        memberships_df(site, []), libraries_df=libraries_df(site, "MATH"),
+    )
+
+    assert tenant.writes() == []
+    assert actions(results) == (
+        ["remove_from_group (dry run)"] * 11 if allow_mass_removal else ["removal_guardrail_triggered"]
+    )
+
+
+def test_memberships_dry_run_shows_removals_skipped_for_unresolved_users(make_manager, tenant, site, library):
+    sam = tenant.add_user("sam@contoso.com")
+    tenant.group_named("BAA-Sharepoint-MATH-Auto-Contribute")["members"][sam["id"]] = sam
+    tenant.calls.clear()
+
+    results = make_manager(dry_run=True).update_memberships(
+        memberships_df(site, [("MATH", "nobody@contoso.com", "contribute")]),
+    )
+
+    assert tenant.writes() == []
+    assert actions(results) == ["removals_skipped", "user_not_found"]
 
 
 def test_memberships_dry_run_makes_no_writes(make_manager, tenant, site, library):
@@ -878,7 +1074,7 @@ def test_nested_group_add_failure_is_fatal(make_manager, tenant, site, library):
     assert "nested group 'BAA All Staff'" in failed.status
 
 
-def test_memberships_dry_run_lists_shortcuts_nested_groups_and_reconciles(make_manager, tenant, site, library):
+def test_memberships_dry_run_lists_new_groups_shortcuts_and_nested_groups(make_manager, tenant, site, library):
     tenant.add_user("jo@contoso.com")
     tenant.add_group("BAA All Staff")
     nested = pd.DataFrame({
@@ -893,25 +1089,9 @@ def test_memberships_dry_run_lists_shortcuts_nested_groups_and_reconciles(make_m
 
     assert tenant.writes() == []
     assert actions(results) == sorted([
-        "ensure_group (dry run)", "add_to_group (dry run)", "onedrive_shortcut (dry run)",  # owner
-        "ensure_group (dry run)", "add_to_group (dry run)",  # read, nested group
-        "reconcile_group (dry run)",  # contribute exists but has no desired members
-    ])
-
-
-def test_rename_dry_run_with_a_changed_code(make_manager, tenant, site):
-    make_manager().create_libraries(libraries_df(site, "MATHS"))
-    tenant.calls.clear()
-
-    results = make_manager(dry_run=True, add_to_navigation=True).rename_libraries(
-        libraries_df(site, "MATH", old_library_code="MATHS"),
-    )
-
-    assert tenant.writes() == []
-    assert actions(results) == sorted([
-        "rename_library (dry run)", "rename_group (dry run)", "rename_group (dry run)",
-        "sync_navigation_link (dry run)",
-    ])
+        "ensure_group (dry run)", "add_to_group (dry run)", "onedrive_shortcut (dry run)",  # owner, a new group
+        "already_assigned", "add_to_group (dry run)",  # read, nested group
+    ])  # contribute exists, but has no members to remove
 
 
 def test_retire_dry_run_makes_no_writes(make_manager, tenant, site):
@@ -1097,18 +1277,6 @@ def test_one_unreadable_site_does_not_stop_the_others(make_manager, tenant, site
     assert error.site_url == gone
 
 
-def test_rename_never_renames_onto_an_existing_group(make_manager, tenant, site):
-    make_manager().create_libraries(libraries_df(site, "MATHS"))
-    site.list_by_slug("MATHS")["slug"] = "MATH"
-    tenant.add_group("BAA-Sharepoint-MATH-Auto-Read")  # already ensured for the new code
-
-    results = make_manager().rename_libraries(libraries_df(site, "MATH", old_library_code="MATHS"))
-
-    assert sorted(actions(results)) == ["group_name_collision", "group_renamed", "library_renamed"]
-    assert tenant.group_named("BAA-Sharepoint-MATHS-Auto-Read") is not None
-    assert tenant.group_named("BAA-Sharepoint-MATH-Auto-Contribute") is not None
-
-
 def test_one_unresolvable_group_does_not_skip_the_sites_other_grants(make_manager, tenant, site, library, slt_groups):
     from sharepoint_fake import response
     read_group = tenant.group_named("BAA-Sharepoint-SLT-Manual-Read")
@@ -1250,8 +1418,8 @@ def test_dry_run_reports_ownership_without_changing_it(make_manager, tenant, sit
     assert tenant.writes() == []
     assert legacy["owners"] == set()
     assert results[["document_library", "action"]].values.tolist() == [
-        ["MATH", "group_owner_added (dry run)"], ["MATH", "ensure_group (dry run)"], ["MATH", "add_to_group (dry run)"],
-        ["ENG", "group_not_owned"],
+        ["MATH", "group_owner_added (dry run)"], ["MATH", "group_assigned (dry run)"],
+        ["MATH", "add_to_group (dry run)"], ["ENG", "group_not_owned"],
     ]
 
 
@@ -1277,6 +1445,8 @@ def test_create_dry_run_reports_ownership_without_changing_it(make_manager, tena
 def test_dry_run_reports_adopting_a_group_it_would_empty(make_manager, tenant, site):
     site.add_list("MATH", unique=True)
     legacy = tenant.add_group("BAA-Sharepoint-MATH-Auto-Read")
+    jo = tenant.add_user("jo@contoso.com")
+    legacy["members"][jo["id"]] = jo
     tenant.calls.clear()
 
     results = make_manager(dry_run=True).update_memberships(
@@ -1285,7 +1455,7 @@ def test_dry_run_reports_adopting_a_group_it_would_empty(make_manager, tenant, s
 
     assert tenant.writes() == []
     assert legacy["owners"] == set()
-    assert results["action"].tolist() == ["group_owner_added (dry run)", "reconcile_group (dry run)"]
+    assert results["action"].tolist() == ["group_owner_added (dry run)", "remove_from_group (dry run)"]
 
 
 def test_renaming_a_library_keeps_group_names_and_updates_descriptions(make_manager, tenant, site):

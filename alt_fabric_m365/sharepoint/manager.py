@@ -12,8 +12,8 @@ import requests
 from ..auth import Scopes
 from ._common import (
     ALL_GROUP_SUFFIXES, AUTO_GROUP_SUFFIXES, METADATA_PROPERTY_KEYS, REPLICATION_BASE_DELAY, VALID_ROLES,
-    _action_log_to_dataframe, _append_log, _run_parallel, _ThreadSafeLog, _validate_required_columns,
-    _validate_site_urls,
+    _action_log_to_dataframe, _append_log, _check_option, _fill_flag_columns, _run_parallel, _ThreadSafeLog,
+    _validate_required_columns, _validate_site_urls,
 )
 from ._graph import (
     _create_onedrive_shortcut, _ensure_document_library, _find_title_conflict, _get_library_display_name, _get_list_id,
@@ -23,7 +23,7 @@ from ._groups import (
     GroupResolutionError, UserResolutionError, _add_group_member, _create_security_group, _empty_group_members,
     _ensure_app_owns_group, _ensure_security_group, _find_existing_library_collisions, _find_group_by_name,
     _find_group_name_collisions, _find_groups_by_name_prefix, _get_group_members, _get_unique_group,
-    _log_group_name_collisions, _remove_group_member, _rename_security_group, _resolve_nestable_group,
+    _log_group_name_collisions, _remove_group_member, _resolve_nestable_group,
     _resolve_user_with_fallback, _set_group_description, _token_object_id, build_group_name,
 )
 from ._navigation import (
@@ -106,6 +106,16 @@ class SharePointLibraryManager:
         navigation_label: str = "Document Libraries",
         service_principal_id: str | None = None,
     ):
+        self.dry_run = _check_option("dry_run", dry_run)
+        self.max_workers = _check_option("max_workers", max_workers)
+        self.include_site_name = _check_option("include_site_name", include_site_name)
+        self.create_onedrive_shortcuts = _check_option("create_onedrive_shortcuts", create_onedrive_shortcuts)
+        self.max_removals_per_group = _check_option("max_removals_per_group", max_removals_per_group)
+        self.allow_mass_removal = _check_option("allow_mass_removal", allow_mass_removal)
+        self.add_to_navigation = _check_option("add_to_navigation", add_to_navigation)
+        self.navigation_label = _check_option("navigation_label", navigation_label)
+        self._service_principal_id = service_principal_id
+
         # Tokens are requested per use via the properties below.  The
         # credential caches them and requests new ones near expiry, so runs
         # longer than a token lifetime (~60-90 min) keep working.
@@ -118,16 +128,6 @@ class SharePointLibraryManager:
         _ = self._graph_token  # fail fast on bad credentials
         _ = self._sp_token
         logger.info("Tokens acquired successfully.")
-
-        self.dry_run = dry_run
-        self.max_workers = max_workers
-        self.include_site_name = include_site_name
-        self.create_onedrive_shortcuts = create_onedrive_shortcuts
-        self.max_removals_per_group = max_removals_per_group
-        self.allow_mass_removal = allow_mass_removal
-        self.add_to_navigation = add_to_navigation
-        self.navigation_label = navigation_label
-        self._service_principal_id = service_principal_id
 
     @property
     def service_principal_id(self) -> str:
@@ -192,9 +192,13 @@ class SharePointLibraryManager:
 
         Adding a per-call override to an operation is therefore one keyword
         here, not a copied resolution block.
+
+        Each value's type is checked (see _check_option), including an
+        instance default changed after construction, so a string such as
+        'False' raises TypeError rather than counting as True.
         """
         return tuple(
-            value if value is not None else getattr(self, name)
+            _check_option(name, value if value is not None else getattr(self, name))
             for name, value in overrides.items()
         )
 
@@ -606,14 +610,9 @@ class SharePointLibraryManager:
         df = _validate_required_columns(df, required)
         _validate_site_urls(df["site_url"].unique(), self.sharepoint_hostname)
 
-        if "auto_groups" not in df.columns:
-            df["auto_groups"] = True
-        if "manual_read" not in df.columns:
-            df["manual_read"] = False
-        if "manual_contribute" not in df.columns:
-            df["manual_contribute"] = False
-        if "app_owned" not in df.columns:
-            df["app_owned"] = True
+        df = _fill_flag_columns(df, {
+            "auto_groups": True, "manual_read": False, "manual_contribute": False, "app_owned": True,
+        })
         if "source_system" not in df.columns:
             df["source_system"] = None
         if "source_id" not in df.columns:
@@ -883,10 +882,7 @@ class SharePointLibraryManager:
         site_id: str,
         library_code: str,
         new_display_name: str,
-        old_library_code: str | None,
-        group_prefix: str,
         dry_run: bool,
-        include_site_name: bool,
         add_to_navigation: bool,
         navigation_label: str,
         existing_lists: dict[str, dict],
@@ -894,17 +890,14 @@ class SharePointLibraryManager:
         *,
         action_log: _ThreadSafeLog,
     ) -> None:
-        """Rename a library's display name and (if code changed) its groups.
+        """Rename a library's display name, and its navigation link's title.
 
         *existing_lists* and *nav_label_found* are per-site prefetches from
         rename_libraries.
         """
-        code_changed = old_library_code and old_library_code != library_code
         logger.info(
-            "Renaming library code='%s' display='%s'%s on '%s' …",
-            library_code, new_display_name,
-            f" (code changed from '{old_library_code}')" if code_changed else "",
-            site_url,
+            "Renaming library code='%s' display='%s' on '%s' …",
+            library_code, new_display_name, site_url,
         )
 
         try:
@@ -932,73 +925,7 @@ class SharePointLibraryManager:
                     f"display name set to '{new_display_name}'",
                 )
 
-            # Step 2: If the library code changed, rename associated security
-            # groups.  One startswith query on the old code's prefix resolves
-            # all of them instead of a name-equality lookup per suffix.
-            if code_changed:
-                old_groups_by_name = _find_groups_by_name_prefix(
-                    self._graph_token,
-                    build_group_name(
-                        group_prefix, site_url, old_library_code, "",
-                        include_site_name=include_site_name,
-                    ),
-                )
-                # Groups already under the new code (e.g. ensured by a create
-                # run): renaming onto one would duplicate the name.
-                new_groups_by_name = _find_groups_by_name_prefix(
-                    self._graph_token,
-                    build_group_name(
-                        group_prefix, site_url, library_code, "",
-                        include_site_name=include_site_name,
-                    ),
-                )
-                for suffix in ALL_GROUP_SUFFIXES:
-                    old_group_name = build_group_name(
-                        group_prefix, site_url, old_library_code, suffix,
-                        include_site_name=include_site_name,
-                    )
-                    existing_group = _get_unique_group(old_groups_by_name, old_group_name)
-                    if not existing_group:
-                        logger.info("Group '%s' not found — skipping", old_group_name)
-                        continue
-
-                    new_group_name = build_group_name(
-                        group_prefix, site_url, library_code, suffix,
-                        include_site_name=include_site_name,
-                    )
-                    if new_groups_by_name.get(new_group_name.lower()):
-                        logger.warning(
-                            "Group '%s' not renamed: '%s' already exists", old_group_name, new_group_name,
-                        )
-                        _append_log(
-                            action_log, site_url, library_code, "group_name_collision",
-                            f"not renamed: a group named '{new_group_name}' already exists — "
-                            f"merge their members and delete one by hand",
-                            group=old_group_name,
-                        )
-                        continue
-
-                    if dry_run:
-                        logger.info(
-                            "[DRY RUN] Would rename group '%s' → '%s'",
-                            old_group_name, new_group_name,
-                        )
-                        _append_log(
-                            action_log, site_url, library_code,
-                            "rename_group (dry run)",
-                            f"would rename to '{new_group_name}'",
-                            group=old_group_name,
-                        )
-                    else:
-                        _rename_security_group(self._graph_token, existing_group["id"], new_group_name)
-                        _append_log(
-                            action_log, site_url, library_code,
-                            "group_renamed",
-                            f"renamed from '{old_group_name}'",
-                            group=new_group_name,
-                        )
-
-            # Step 3: Keep the navigation link's title in step with the new
+            # Step 2: Keep the navigation link's title in step with the new
             # display name.  Last on purpose — a navigation failure must not
             # block the rename itself.  Title-sync only: a missing link is
             # not added here (that is create_libraries' job).
@@ -1032,52 +959,58 @@ class SharePointLibraryManager:
         add_to_navigation: bool | None = None,
         navigation_label: str | None = None,
     ) -> pd.DataFrame:
-        """Rename SharePoint libraries and optionally their security groups.
+        """Rename SharePoint libraries' display names.
 
         For each row in the DataFrame:
           1. Updates the library's display name (the URL slug is unchanged).
-          2. If ``old_library_code`` is provided and differs from ``library_code``,
-             renames all associated Entra ID security groups to reflect the new
-             code.  Groups that do not exist are silently skipped.
-          3. If ``add_to_navigation`` is on, updates the library's quick-launch
+          2. If ``add_to_navigation`` is on, updates the library's quick-launch
              navigation link title to the new display name (a missing label or
              link is a no-op — links are only added by ``create_libraries``).
 
+        A library's code can't change: it is the library's URL slug, which
+        SharePoint never changes, and part of its group names.  To recode a
+        library, unlink it and create a new one under the new code.
+
         Required DataFrame columns:
           - site_url:              Full SharePoint site URL
-          - library_code:          Current library code (URL slug)
+          - library_code:          Library code (URL slug)
           - library_display_name:  New display name for the library
-          - group_prefix:          Prefix for security group names
-
-        Optional DataFrame columns:
-          - old_library_code:  Previous library code — if provided and different
-                               from ``library_code``, the Entra groups are renamed.
 
         Args:
             df:               DataFrame with the required columns.
             dry_run:          Override instance default.
             max_workers:      Override instance default.
-            include_site_name: Override instance default.
+            include_site_name: Ignored, as group names don't change.  Kept so
+                               existing calls keep working.
             add_to_navigation: Override instance default.
             navigation_label:  Override instance default.
 
         Returns:
             Action-log DataFrame.
+
+        Raises:
+            ValueError: If *df* has values in an ``old_library_code`` column.
+                Earlier versions accepted it to rename the groups after a code
+                change, but looked the library up by the new code, so it never
+                worked.
         """
-        (dry_run_, max_workers_, include_site_name_,
-         add_to_navigation_, navigation_label_) = self._resolve_config(
+        dry_run_, max_workers_, add_to_navigation_, navigation_label_ = self._resolve_config(
             dry_run=dry_run, max_workers=max_workers,
-            include_site_name=include_site_name,
             add_to_navigation=add_to_navigation,
             navigation_label=navigation_label,
         )
 
-        required = {"site_url", "library_code", "library_display_name", "group_prefix"}
+        required = {"site_url", "library_code", "library_display_name"}
         df = _validate_required_columns(df, required)
         _validate_site_urls(df["site_url"].unique(), self.sharepoint_hostname)
 
-        if "old_library_code" not in df.columns:
-            df["old_library_code"] = None
+        # Refused rather than ignored, so a caller expecting its groups to be
+        # renamed finds out
+        if "old_library_code" in df.columns and df["old_library_code"].notna().any():
+            raise ValueError(
+                "old_library_code is no longer supported: a library's code is its URL, which can't change. "
+                "To recode a library, unlink it and create a new one under the new code."
+            )
         df = df.drop_duplicates(subset=["site_url", "library_code"], keep="first")
 
         action_log = _ThreadSafeLog()
@@ -1094,17 +1027,11 @@ class SharePointLibraryManager:
             site_url = row["site_url"]
             if site_url not in sites:
                 continue  # site couldn't be read — already logged
-            old_code = row["old_library_code"]
-            if pd.isna(old_code):
-                old_code = None
             items.append((
                 site_url, sites[site_url]["site_id"],
                 row["library_code"],
                 row["library_display_name"],
-                old_code,
-                row["group_prefix"],
                 dry_run_,
-                include_site_name_,
                 add_to_navigation_,
                 navigation_label_,
                 sites[site_url]["lists"],
@@ -1283,6 +1210,11 @@ class SharePointLibraryManager:
              navigation (a missing label or link is a no-op; the label itself
              is never created or removed here).
 
+        A library whose group names would be another library's (its code
+        sanitises like that of another row, or of another library on the
+        site, such as 'PEKS3' and 'PE-KS3') is skipped with
+        ``group_name_collision``, as create_libraries skips it.
+
         Required DataFrame columns:
           - site_url:       Full SharePoint site URL
           - library_code:   Library code (URL slug) to identify the library
@@ -1324,11 +1256,22 @@ class SharePointLibraryManager:
             navigation_label=navigation_label_ if add_to_navigation_ else None,
         )
 
+        # Groups are found by name, so a code whose group names are another
+        # library's ('PEKS3' after 'PE-KS3', which create skipped) would empty
+        # that library's groups.  Skipped the same way create skips them.
+        df = df[df["site_url"].isin(list(sites))]
+        prefixes = {(r["site_url"], r["library_code"]): r["group_prefix"] for _, r in df.iterrows()}
+        collisions = _find_group_name_collisions(prefixes, include_site_name_)
+        collisions.update(_find_existing_library_collisions(
+            prefixes, {site_url: site["lists"] for site_url, site in sites.items()},
+        ))
+        _log_group_name_collisions(collisions, action_log)
+
         items = []
         for _, row in df.iterrows():
             site_url = row["site_url"]
-            if site_url not in sites:
-                continue  # site couldn't be read — already logged
+            if (site_url, row["library_code"]) in collisions:
+                continue
             items.append((
                 site_url, sites[site_url]["site_id"],
                 row["library_code"],
@@ -1506,7 +1449,11 @@ class SharePointLibraryManager:
                             ``retire_deferred`` (a warning).  Leave it null
                             for a library deleted at source, whose leftover
                             should be retired anyway.  Not checked in a dry
-                            run, where the create pass makes nothing.
+                            run, where the create pass makes nothing.  A row
+                            whose new site is the same site as site_url,
+                            spelt differently (in case, or with a trailing
+                            slash), is logged as ``retire_skipped``, dry run
+                            or not, as the library hasn't moved.
 
         Args:
             df:               DataFrame with the required columns.
@@ -1538,11 +1485,10 @@ class SharePointLibraryManager:
 
         action_log = _ThreadSafeLog()
 
-        # Libraries on the new sites, to check the move's replacement exists
-        new_sites = (
-            self._prefetch_sites(new_site_urls, _ThreadSafeLog())
-            if new_site_urls and not dry_run_ else {}
-        )
+        # The new sites: to check the move's replacement exists, and that the
+        # new site isn't the old one spelt differently.  Reads only, so dry
+        # runs read them too.
+        new_sites = self._prefetch_sites(new_site_urls, _ThreadSafeLog()) if new_site_urls else {}
 
         # Old hubs may have been deleted since the move — those are skipped
         # (nothing to retire), not errors.
@@ -1558,6 +1504,19 @@ class SharePointLibraryManager:
             if site_url not in sites:
                 continue  # site gone or couldn't be read — already logged
             new_site_url = row["new_site_url"]
+            new_site = new_sites.get(new_site_url) if pd.notna(new_site_url) else None
+            if new_site is not None and new_site["site_id"] == sites[site_url]["site_id"]:
+                # Graph finds a site ignoring case and a trailing slash, so
+                # both URLs are this site: retiring would retire the live library.
+                logger.warning(
+                    "Not retiring '%s' on '%s': its new site %s is the same site",
+                    row["library_code"], site_url, new_site_url,
+                )
+                _append_log(
+                    action_log, site_url, row["library_code"], "retire_skipped",
+                    f"its new site ({new_site_url}) is the same site, so it hasn't moved — left as it is",
+                )
+                continue
             if (
                 not dry_run_ and pd.notna(new_site_url)
                 and row["library_code"].lower() not in new_sites.get(new_site_url, {}).get("lists", {})
@@ -1645,13 +1604,18 @@ class SharePointLibraryManager:
                 )
                 return
 
-            # Resolve the SP list ID for role assignment calls
-            if not dry_run:
-                list_id = _get_list_id(self._graph_token, site_id, library_code, existing=existing_lists)
+            # Resolve the SP list ID for role assignment calls (from the
+            # prefetched lists, so dry runs can read the assignments too)
+            list_id = _get_list_id(self._graph_token, site_id, library_code, existing=existing_lists)
 
             # Build desired state grouped by permission level.  Seeding every
             # valid role keeps absent roles in the reconcile loop (desired-empty).
             desired_by_role: dict[str, set[str]] = {role: set() for role in VALID_ROLES}
+            # Roles containing a user that couldn't be resolved, or a row whose
+            # permission is unknown (it could be meant for any role): their
+            # removals are skipped, as an incomplete desired set must not drive
+            # removals.
+            failed_roles: set[str] = set()
             for _, row in group_df.iterrows():
                 upn = row["user_principal_name"].strip().lower()
                 perm = row["permission"].strip().lower()
@@ -1659,9 +1623,11 @@ class SharePointLibraryManager:
                     logger.warning("Skipping unknown permission '%s' for user '%s'", perm, upn)
                     _append_log(
                         action_log, site_url, library_code,
-                        "skip", f"unknown permission '{perm}'",
+                        "skip", f"unknown permission '{perm}' — not synced, and no users are "
+                        f"removed from this library's groups until it's fixed",
                         user=upn, permission=perm,
                     )
+                    failed_roles.update(VALID_ROLES)
                     continue
                 desired_by_role[perm].add(upn)
 
@@ -1671,9 +1637,6 @@ class SharePointLibraryManager:
             # Graph returns for existing members.
             all_upns = sorted({upn for upns in desired_by_role.values() for upn in upns})
             resolved_users: dict[str, tuple[str, str]] = {}  # input_upn -> (oid, real_upn)
-            # Roles containing a UPN that failed to resolve: their removals are
-            # skipped — an incomplete desired set must not drive removals.
-            failed_roles: set[str] = set()
             for upn in all_upns:
                 oid, real_upn, fail_reason, fatal = user_refs[upn]
                 if fatal:
@@ -1707,8 +1670,9 @@ class SharePointLibraryManager:
             # Desired nested groups per role, keyed as _get_group_members keys
             # them ("group:{object_id}") so the reconcile below treats users
             # and groups alike.  An unresolvable reference leaves that role's
-            # desired groups incomplete: its nested-group removals are skipped
-            # (user removals are unaffected — their desired set is complete).
+            # desired groups incomplete, and an unknown permission every
+            # role's: their nested-group removals are skipped (user removals
+            # are unaffected — their desired set is complete).
             desired_groups_by_role: dict[str, dict[str, str]] = {role: {} for role in VALID_ROLES}
             failed_group_roles: set[str] = set()
             for _, row in nested_df.iterrows():
@@ -1718,9 +1682,11 @@ class SharePointLibraryManager:
                     logger.warning("Skipping unknown permission '%s' for group '%s'", perm, reference)
                     _append_log(
                         action_log, site_url, library_code,
-                        "skip", f"unknown permission '{perm}'",
+                        "skip", f"unknown permission '{perm}' — not synced, and no nested groups are "
+                        f"removed from this library's groups until it's fixed",
                         user=reference, permission=perm,
                     )
+                    failed_group_roles.update(VALID_ROLES)
                     continue
                 object_id, display_name, fail_action, fail_reason = group_refs[reference]
                 if object_id is None:
@@ -1751,9 +1717,10 @@ class SharePointLibraryManager:
             # proceed for all groups in parallel instead of waiting sequentially.
             # Roles with an empty desired set only reconcile groups that already
             # exist — a group is never created just to be emptied.
-            created_role_groups: list[tuple[str, str, str, bool, set[str], dict[str, str], bool]] = []
+            created_role_groups: list[tuple[str, str, str | None, bool, set[str], dict[str, str], bool]] = []
             # Each entry: (role, group_display_name, group_id, is_new_group,
-            #              desired_upns, desired_groups, assign_needed)
+            #              desired_upns, desired_groups, assign_needed).
+            # group_id is None for a group a dry run would create.
 
             for role in VALID_ROLES:
                 desired_upns = real_desired_by_role.get(role, set())
@@ -1768,69 +1735,28 @@ class SharePointLibraryManager:
                     f"on {site_url} — managed by SharePoint Library Permissions Manager"
                 )
 
-                if dry_run:
-                    if desired_upns or desired_groups:
-                        # Ownership is only read, so the dry run shows groups
-                        # a live run would refuse or adopt.
-                        existing_group = _get_unique_group(existing_groups_by_name, group_display_name)
-                        if existing_group and not self._check_group_owner(
-                            existing_group["id"], group_display_name, site_url, library_code,
-                            role, action_log, dry_run=True,
-                        ):
-                            continue
-                        logger.info("[DRY RUN] Would ensure group '%s'", group_display_name)
+                existing_group = _get_unique_group(existing_groups_by_name, group_display_name)
+                # Auto groups are the automation's own: never add members to,
+                # grant, or empty a same-named group it doesn't own.  A dry
+                # run only reads the owners, so it shows groups a live run
+                # would refuse or adopt.
+                if existing_group and not self._check_group_owner(
+                    existing_group["id"], group_display_name, site_url, library_code,
+                    role, action_log, dry_run=dry_run,
+                ):
+                    continue
+                if desired_upns or desired_groups:
+                    if existing_group:
+                        group_id, is_new_group = existing_group["id"], False
+                    elif dry_run:
+                        logger.info("[DRY RUN] Would create group '%s'", group_display_name)
                         _append_log(
                             action_log, site_url, library_code,
                             "ensure_group (dry run)",
-                            "would ensure group exists and is assigned to library",
+                            "would create the group and assign it to the library",
                             group=group_display_name, permission=role,
                         )
-                        for upn in desired_upns:
-                            _append_log(
-                                action_log, site_url, library_code,
-                                "add_to_group (dry run)", "would add to group",
-                                group=group_display_name, user=upn, permission=role,
-                            )
-                            if create_onedrive_shortcuts:
-                                _append_log(
-                                    action_log, site_url, library_code,
-                                    "onedrive_shortcut (dry run)", "would create OneDrive shortcut",
-                                    group=group_display_name, user=upn, permission=role,
-                                )
-                        for member_key, member_name in desired_groups.items():
-                            _append_log(
-                                action_log, site_url, library_code,
-                                "add_to_group (dry run)",
-                                f"would nest group '{member_name}' in group",
-                                group=group_display_name, user=member_key, permission=role,
-                            )
-                    else:
-                        existing_group = _get_unique_group(existing_groups_by_name, group_display_name)
-                        if existing_group and self._check_group_owner(
-                            existing_group["id"], group_display_name, site_url, library_code,
-                            role, action_log, dry_run=True,
-                        ):
-                            _append_log(
-                                action_log, site_url, library_code,
-                                "reconcile_group (dry run)",
-                                "no desired members — would remove all current members "
-                                "(subject to the removal guardrail)",
-                                group=group_display_name, permission=role,
-                            )
-                    continue
-
-                existing_group = _get_unique_group(existing_groups_by_name, group_display_name)
-                if desired_upns or desired_groups:
-                    if existing_group:
-                        # Auto groups are the automation's own: never add
-                        # members to, or grant, a same-named group it
-                        # doesn't own.
-                        if not self._check_group_owner(
-                            existing_group["id"], group_display_name, site_url, library_code,
-                            role, action_log,
-                        ):
-                            continue
-                        group_id, is_new_group = existing_group["id"], False
+                        group_id, is_new_group = None, True
                     else:
                         group_id = _create_security_group(
                             self._graph_token, group_display_name, group_description,
@@ -1841,11 +1767,7 @@ class SharePointLibraryManager:
                         (role, group_display_name, group_id, is_new_group,
                          desired_upns, desired_groups, True)
                     )
-                # Emptying is destructive, so only for the app's own groups
-                elif existing_group and self._check_group_owner(
-                    existing_group["id"], group_display_name, site_url, library_code,
-                    role, action_log,
-                ):
+                elif existing_group:
                     created_role_groups.append(
                         (role, group_display_name, existing_group["id"], False,
                          desired_upns, desired_groups, False)
@@ -1875,7 +1797,17 @@ class SharePointLibraryManager:
 
             for (role, group_display_name, group_id, is_new_group,
                  desired_upns, desired_groups, assign_needed) in created_role_groups:
-                if assign_needed:
+                if assign_needed and dry_run:
+                    # A group the dry run would create was logged as ensure_group above
+                    if not is_new_group:
+                        held = role_def_ids[role] in existing_roles.get(_group_claims(group_id).lower(), set())
+                        _append_log(
+                            action_log, site_url, library_code,
+                            *(("already_assigned", "no change needed") if held
+                              else ("group_assigned (dry run)", "would assign the group to the library")),
+                            group=group_display_name, permission=role,
+                        )
+                elif assign_needed:
                     role_def_id = role_def_ids[role]
                     granted = _ensure_group_assigned_to_library(
                         self._sp_token, site_url, list_id,
@@ -1904,6 +1836,21 @@ class SharePointLibraryManager:
                                 "already_member", "no change needed",
                                 group=group_display_name, user=upn, permission=role,
                             )
+                            continue
+
+                        if dry_run:
+                            _append_log(
+                                action_log, site_url, library_code,
+                                "add_to_group (dry run)", "would add to group",
+                                group=group_display_name, user=upn, permission=role,
+                            )
+                            if create_onedrive_shortcuts and upn not in shortcuts_created:
+                                shortcuts_created.add(upn)
+                                _append_log(
+                                    action_log, site_url, library_code,
+                                    "onedrive_shortcut (dry run)", "would create OneDrive shortcut",
+                                    group=group_display_name, user=upn, permission=role,
+                                )
                             continue
 
                         _add_group_member(
@@ -1970,6 +1917,14 @@ class SharePointLibraryManager:
                                 action_log, site_url, library_code,
                                 "already_member",
                                 f"no change needed (nested group '{member_name}')",
+                                group=group_display_name, user=member_key, permission=role,
+                            )
+                            continue
+
+                        if dry_run:
+                            _append_log(
+                                action_log, site_url, library_code,
+                                "add_to_group (dry run)", f"would nest group '{member_name}' in group",
                                 group=group_display_name, user=member_key, permission=role,
                             )
                             continue
@@ -2056,6 +2011,13 @@ class SharePointLibraryManager:
                         "Removal guardrail: %d planned removals from '%s' exceed cap %d — skipped",
                         len(removal_candidates), group_display_name, max_removals_per_group,
                     )
+                elif dry_run:
+                    for member_key in removal_candidates:
+                        _append_log(
+                            action_log, site_url, library_code,
+                            "remove_from_group (dry run)", "would remove from group",
+                            group=group_display_name, user=member_key, permission=role,
+                        )
                 else:
                     for member_key, member_oid in removal_candidates.items():
                         try:
@@ -2126,6 +2088,12 @@ class SharePointLibraryManager:
 
         This method does NOT create libraries or break role inheritance — call
         ``create_libraries`` first for new libraries.
+
+        A dry run reads each group's owners, current members and library
+        assignment, so it logs the same rows a live run would (adds and
+        removals as ``add_to_group (dry run)`` and ``remove_from_group (dry
+        run)``, including ``removals_skipped`` and
+        ``removal_guardrail_triggered``), without changing anything.
 
         Required DataFrame columns:
           - site_url:             Full SharePoint site URL
