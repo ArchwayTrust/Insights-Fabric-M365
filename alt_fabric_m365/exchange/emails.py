@@ -171,7 +171,10 @@ class Emails:
 
         query_parameters = {
             '$filter': f"subject eq '{subject_literal}' and from/emailAddress/address eq '{sender_literal}'",
-            '$select': 'id,subject,from,receivedDateTime,parentFolderId,hasAttachments'
+            '$select': 'id,subject,from,receivedDateTime,parentFolderId,hasAttachments',
+            # Graph's largest page for messages. Its default of 10 would take a request for every 10 matches,
+            # which add up in a mailbox whose reports are never deleted.
+            '$top': 1000,
         }
 
         messages = []
