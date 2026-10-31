@@ -973,7 +973,34 @@ def test_grant_dry_run_makes_no_writes(make_manager, tenant, site):
     results = make_manager(dry_run=True).grant_group_access(grants_df(site, [("MATH", "G", "read")]))
 
     assert tenant.writes() == []
-    assert actions(results) == ["grant_group_access (dry run)"]
+    assert actions(results) == ["group_not_found"]
+
+
+def test_grant_dry_run_reports_what_a_live_run_does(make_manager, tenant, site, library, slt_groups):
+    tenant.add_group("Dup")
+    tenant.add_group("Dup")
+    make_manager().grant_group_access(grants_df(site, [("MATH", "BAA-Sharepoint-SLT-Manual-Read", "read")]))
+    df = grants_df(site, [
+        ("MATH", "BAA-Sharepoint-SLT-Manual-Read", "read"),  # already held
+        ("MATH", "BAA-Sharepoint-SLT-Manual-Contribute", "contribute"),
+        ("MATH", "Nobody", "read"),
+        ("ART", "BAA-Sharepoint-SLT-Manual-Read", "read"),
+        ("MATH", "Dup", "read"),
+    ])
+    tenant.calls.clear()
+
+    dry = make_manager(dry_run=True).grant_group_access(df)
+
+    assert tenant.writes() == []
+    assert actions(dry) == sorted([
+        "already_assigned", "grant_group_access (dry run)", "group_not_found", "library_not_found", "error",
+    ])
+
+    live = make_manager().grant_group_access(df)
+
+    assert actions(live) == sorted([
+        "already_assigned", "group_access_granted", "group_not_found", "library_not_found", "error",
+    ])
 
 
 # enforce_site_sharing_lockdown
