@@ -72,12 +72,27 @@ KID = "https://myvault.vault.azure.net/keys/cert/abc123"
 CERT_DER = b"certificate-der-bytes"
 
 
+def _key_vault_error(kwargs):
+    """Returns the error Key Vault gives a request without its api-version or the notebook's token, or None."""
+    if (kwargs.get("params") or {}).get("api-version") is None:
+        return make_response(400, {"error": {"code": "BadParameter", "message": "api-version is required."}})
+    scheme, _, token = (kwargs.get("headers") or {}).get("Authorization", "").partition(" ")
+    if scheme != "Bearer" or not token:
+        return make_response(401, {"error": {"code": "Unauthorized", "message": "AKV10000: Request is missing a Bearer"}})
+    return None
+
+
 class FakeAzure:
     """
     Stands in for Key Vault (certificate GET and sign POST) and the Entra ID token endpoint, recording each call.
+
+    Like the real services, Key Vault refuses a request without an api-version or the notebook's Key Vault token, and
+    Entra ID one without a client_id. certificate_status, sign_status and token_status (with their bodies) make a
+    call fail.
     """
 
-    def __init__(self, kid=KID, expires_in=3600, token_status=200, token_body=None, delay=0, object_id=None):
+    def __init__(self, kid=KID, expires_in=3600, token_status=200, token_body=None, delay=0, object_id=None,
+                 certificate_status=200, certificate_body=None, sign_status=200, sign_body=None):
         self.kid = kid
         # With object_id, access tokens are JWT-shaped with that oid claim, as Entra ID issues them
         self.object_id = object_id
@@ -85,6 +100,10 @@ class FakeAzure:
         self.expires_in = expires_in
         self.token_status = token_status
         self.token_body = token_body
+        self.certificate_status = certificate_status
+        self.certificate_body = certificate_body
+        self.sign_status = sign_status
+        self.sign_body = sign_body
         self.delay = delay
         self.certificate_calls = []
         self.sign_calls = []
@@ -94,12 +113,22 @@ class FakeAzure:
     def get(self, url, **kwargs):
         with self._lock:
             self.certificate_calls.append((url, kwargs))
+        error = _key_vault_error(kwargs)
+        if error is not None:
+            return error
+        if self.certificate_status != 200:
+            return make_response(self.certificate_status, self.certificate_body)
         return make_response(200, {"kid": self.kid, "cer": base64.b64encode(CERT_DER).decode()})
 
     def post(self, url, **kwargs):
         if url.endswith("/sign"):
             with self._lock:
                 self.sign_calls.append((url, kwargs))
+            error = _key_vault_error(kwargs)
+            if error is not None:
+                return error
+            if self.sign_status != 200:
+                return make_response(self.sign_status, self.sign_body)
             return make_response(200, {"value": "c2lnbmF0dXJl"})
 
         if self.delay:
@@ -107,6 +136,11 @@ class FakeAzure:
         with self._lock:
             self.token_calls.append((url, kwargs))
             count = len(self.token_calls)
+        if not (kwargs.get("data") or {}).get("client_id"):
+            return make_response(400, {
+                "error": "invalid_request",
+                "error_description": "AADSTS900144: The request body must contain the following parameter: 'client_id'.",
+            })
         if self.token_status != 200:
             return make_response(self.token_status, self.token_body)
         token = f"token-{count}"
