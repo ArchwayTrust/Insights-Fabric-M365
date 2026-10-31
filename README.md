@@ -999,7 +999,7 @@ Keep the desired state in a few lakehouse tables, maintained by whatever feeds t
 | --- | --- | --- | --- |
 | `library_id` | string | Yes | Stable ID from the source system. Stored on the library as `source_id`, so a library can be traced back to its record. |
 | `site_url` | string | Yes | Full URL of the site the library lives on, `https://<tenant>.sharepoint.com/sites/<site>`. |
-| `library_code` | string | Yes | Short code, used as the library's URL and in its group names (for example `MATH`). Never change it after the library is created; rename with `library_display_name` instead. To recode a library, keep its row but set `deleted` (and `last_changed_ts`), and add a new row, with a new `library_id`, for the new code: the next run unlinks the old library and creates the new one. |
+| `library_code` | string | Yes | Short code, used as the library's URL and in its group names (for example `MATH`). Letters, digits, spaces, `-`, `_` and `.` only, not starting or ending with a space or `.`, and not containing `_vti_` in any case, which SharePoint reserves: SharePoint changes other characters when it makes the URL, so any other code raises `ValueError` before anything is changed. Never change it after the library is created; rename with `library_display_name` instead. To recode a library, keep its row but set `deleted` (and `last_changed_ts`), and add a new row, with a new `library_id`, for the new code: the next run unlinks the old library and creates the new one. |
 | `library_display_name` | string | Yes | Name shown in SharePoint (for example `Mathematics`). Can change; the next create pass applies it. |
 | `group_prefix` | string | Yes | Start of the group names, for example `ACA-Sharepoint`. Use one prefix per site. |
 | `auto_groups` | boolean | No (True) | Create the synced Auto-Read and Auto-Contribute groups. |
@@ -1224,7 +1224,7 @@ The leadership library isn't in `sharepoint_libraries`, so the membership sync n
 Things to decide once, before the first live run, as changing them later orphans what was created:
 
 - **Group naming.** `group_prefix` and `include_site_name` make up every group name, and names are how the manager finds its groups. Use one prefix per site, so two sites never share a library's groups.
-- **Library codes.** A library's code is its URL and part of its group names. Treat it as permanent, and use `library_display_name` for renames. Codes that differ only in punctuation or case (`PE-KS3`, `peks3`) would share groups, so they're skipped with `group_name_collision`.
+- **Library codes.** A library's code is its URL and part of its group names. Treat it as permanent, and use `library_display_name` for renames. Codes can only contain letters, digits, spaces, `-`, `_` and `.`, with no space or `.` at either end and no `_vti_` (which SharePoint reserves), so trim padded codes (such as from a `CHAR` column) in the query that reads them. Codes that differ only in punctuation or case (`PE-KS3`, `peks3`) would share groups, so they're skipped with `group_name_collision`.
 - **Who owns the groups.** Leave `app_owned` on for groups the automation manages. Turn it off for groups a person owns and curates, and give those to `grant_group_access` rather than the membership sync.
 - **Scope.** If you roll out a few sites at a time, filter the input DataFrames and include the filter in the watermark's `process` key. Widening the scope then starts a fresh watermark, so the newly included rows are processed.
 

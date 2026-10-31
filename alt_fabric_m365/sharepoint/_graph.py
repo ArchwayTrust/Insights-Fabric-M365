@@ -62,8 +62,8 @@ def _list_existing_lists(token: str, site_id: str) -> dict[str, dict]:
 
     lists_by_key: dict[str, dict] = {}
     for lst in lists:
-        # webUrl is percent-encoded — decode so codes containing spaces or
-        # '&' match the raw library_code used for lookups.
+        # webUrl is percent-encoded — decode so codes containing spaces
+        # match the raw library_code used for lookups.
         web_url = lst.get("webUrl", "")
         if web_url:
             slug = unquote(web_url.rstrip("/").rsplit("/", 1)[-1]).lower()

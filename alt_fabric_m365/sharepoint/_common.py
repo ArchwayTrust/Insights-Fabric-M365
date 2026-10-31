@@ -2,6 +2,7 @@
 Constants, the action log and input validation shared by the SharePoint library operations.
 """
 import logging
+import re
 import threading
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -29,6 +30,12 @@ REPLICATION_BASE_DELAY = 5.0  # seconds
 AUTO_GROUP_SUFFIXES = ["Auto-Read", "Auto-Contribute", "Auto-Owner"]
 MANUAL_GROUP_SUFFIXES = ["Manual-Read", "Manual-Contribute"]
 ALL_GROUP_SUFFIXES = AUTO_GROUP_SUFFIXES + MANUAL_GROUP_SUFFIXES
+
+# A library is found by its URL, which is its code.  SharePoint trims spaces
+# from a library's URL and drops characters such as '&', '/' and ':', so a
+# code is limited to characters it keeps: letters, digits, '_', '-', and
+# spaces and '.' inside the code.
+LIBRARY_CODE_PATTERN = re.compile(r"[\w-](?:[\w .-]*[\w-])?")
 
 # Property bag keys used to store library-level provenance metadata on each
 # library's root folder.  These are invisible to end users and only accessible
@@ -118,8 +125,39 @@ def _append_log(
     })
 
 
+def _validate_library_codes(codes: Iterable[str]) -> None:
+    """Check that SharePoint can use each library code as a library's URL.
+
+    Every operation finds a library by its URL, so a code SharePoint would
+    change when making the URL, such as 'D&T' or 'MATH ' with a trailing
+    space, would make a library no later run finds.
+
+    Args:
+        codes: Library codes.
+
+    Raises:
+        ValueError: If a code is empty, has characters other than letters, digits, spaces, '-', '_' and '.', starts
+            or ends with a space or '.', or contains '_vti_', which SharePoint reserves.
+    """
+    invalid = sorted({
+        code for code in codes
+        if not LIBRARY_CODE_PATTERN.fullmatch(code) or "_vti_" in code.lower()
+    })
+    if invalid:
+        shown = ", ".join(repr(code) for code in invalid[:10])
+        more = f" and {len(invalid) - 10} more" if len(invalid) > 10 else ""
+        raise ValueError(
+            f"library_code values SharePoint can't use as a library's URL: {shown}{more}. A code can only contain "
+            f"letters, digits, spaces, '-', '_' and '.', can't start or end with a space or '.', and can't contain "
+            f"'_vti_' in any case, which SharePoint reserves"
+        )
+
+
 def _validate_required_columns(df: pd.DataFrame, required_columns: set[str]) -> pd.DataFrame:
     """Validate that *df* contains *required_columns* with no nulls.
+
+    A required library_code column is also checked with
+    _validate_library_codes.
 
     Returns a copy of *df* with required columns cast to string dtype.
     """
@@ -137,6 +175,8 @@ def _validate_required_columns(df: pd.DataFrame, required_columns: set[str]) -> 
             )
         if not pd.api.types.is_string_dtype(df[col]):
             df[col] = df[col].astype(str)
+    if "library_code" in required_columns:
+        _validate_library_codes(df["library_code"])
     return df
 
 

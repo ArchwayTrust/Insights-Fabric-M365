@@ -2,6 +2,7 @@
 The SharePoint module's helpers: naming, input validation, lookups, user and group resolution, the property bag
 and navigation URL matching. Requests go to the in-memory FakeTenant.
 """
+import re
 import threading
 import time
 
@@ -100,6 +101,31 @@ def test_required_columns_are_cast_to_strings_on_a_copy():
 
     assert list(validated["library_code"]) == ["101", "102"]
     assert list(df["library_code"]) == [101, 102]
+
+
+@pytest.mark.parametrize("code", ["MATH", "PE-KS3", "Year 7", "Y7.1", "Sci_Lab", "Français", "101"])
+def test_library_codes_sharepoint_keeps_in_a_url_are_accepted(code):
+    _common._validate_library_codes([code])
+
+
+@pytest.mark.parametrize("code", [
+    "D&T", "KS3/4", "a:b", "Q?", 'say "hi"', "A#B", "x\ty", "MATH ", " MATH", "", "Y7.", ".Y7", "_vti_bin",
+    "A_VTI_B",
+])
+def test_library_codes_sharepoint_would_change_are_refused(code):
+    with pytest.raises(ValueError, match=re.escape(repr(code))):
+        _common._validate_library_codes(["MATH", code])
+
+
+def test_the_error_for_a_refused_library_code_names_every_rule():
+    # A_VTI_B only breaks the reserved-name rule, so the message must name it
+    with pytest.raises(ValueError, match="can't contain '_vti_' in any case"):
+        _common._validate_library_codes(["A_VTI_B"])
+
+
+def test_many_refused_library_codes_are_summarised():
+    with pytest.raises(ValueError, match="and 2 more"):
+        _common._validate_library_codes([f"{n}&" for n in range(12)])
 
 
 @pytest.mark.parametrize("url", ["contoso.sharepoint.com/sites/maths", "ftp://contoso.sharepoint.com/x", "https://"])
