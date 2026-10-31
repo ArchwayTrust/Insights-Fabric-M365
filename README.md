@@ -1042,6 +1042,7 @@ A dry run logs these in place of the changes it would make. Anything it finds by
 | `ensure_navigation_link (dry run)` | `navigation_link_added`, or `navigation_link_renamed` if the link has another title, or nothing if it's already right |
 | `grant_group_access (dry run)` | `group_access_granted` |
 | `group_assigned (dry run)` | `group_assigned` |
+| `group_description_updated (dry run)` | `group_description_updated` |
 | `group_owner_added (dry run)` | `group_owner_added` |
 | `inheritance_broken (dry run)` | `inheritance_broken` |
 | `library_created (dry run)` | `library_created` |
