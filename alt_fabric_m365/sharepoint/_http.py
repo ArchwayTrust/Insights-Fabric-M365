@@ -8,6 +8,7 @@ import random
 import time
 from collections.abc import Callable
 from datetime import datetime, timezone
+from typing import Any
 from urllib.parse import urljoin, urlparse
 
 import requests
@@ -202,7 +203,7 @@ def _request_with_retry(
     base_delay: float = DEFAULT_BASE_DELAY,
     max_delay: float = DEFAULT_MAX_DELAY,
     idempotent: bool = True,
-    **kwargs,
+    **kwargs: Any,
 ) -> requests.Response:
     """Make an HTTP request with automatic retry on transient failures.
 

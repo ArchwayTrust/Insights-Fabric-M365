@@ -99,7 +99,7 @@ class Emails:
     # Seconds to wait for Microsoft Graph to connect or send data before giving up, so a stalled request doesn't hang the notebook
     REQUEST_TIMEOUT_SECONDS = 30
 
-    def __init__(self, credential, mailbox: str | None = None):
+    def __init__(self, credential, mailbox: str | None = None) -> None:
         """Initialises the Emails class, optionally with a default mailbox.
 
         Args:
@@ -151,9 +151,11 @@ class Emails:
         Args:
             subject: The subject of the email to search for.
             sender_email: The email address of the sender of the email.
-            only_search_inbox: Defaults to True. Limits search to only the main inbox.
-            only_return_latest: Defaults to True. If True, returns the ID of the latest message.
+            only_search_inbox: Optional. Whether to search only the main inbox. Defaults to True.
+            only_return_latest: Optional. If True, returns the ID of the latest message rather than a list of all the
+                matches. Defaults to True.
             shared_mailbox_email: Optional. The email address of a different mailbox to search in.
+                Defaults to the mailbox given when creating Emails.
 
         Returns:
             The ID of the latest email, or a list of the emails that match the search criteria, latest first.
@@ -221,7 +223,8 @@ class Emails:
         Args:
             message_id: The ID of the email message whose attachments are to be retrieved.
             shared_mailbox_email: Optional. The email address of a different mailbox to retrieve attachments from.
-            include_inline: Defaults to False. If True, inline file attachments are also returned.
+                Defaults to the mailbox given when creating Emails.
+            include_inline: Optional. If True, inline file attachments are also returned. Defaults to False.
 
         Returns:
             A list of tuples, where each tuple contains the ID and name of a file attachment.
@@ -281,10 +284,11 @@ class Emails:
         Args:
             message_id: The ID of the message from which the attachment is to be downloaded.
             attachment_id: The ID of the attachment to be downloaded.
-            is_binary: Flag indicating whether the attachment is a binary file. Default is False.
-            encoding: The encoding used to decode the attachment's content. Ignored if is_binary is True.
-                Default is 'utf-8'.
+            is_binary: Optional. Whether the attachment is a binary file. Defaults to False.
+            encoding: Optional. The encoding used to decode the attachment's content. Ignored if is_binary is True.
+                Defaults to 'utf-8'.
             shared_mailbox_email: Optional. The email address of a different mailbox to retrieve the attachment from.
+                Defaults to the mailbox given when creating Emails.
 
         Returns:
             The content of the attachment, as bytes for binary files or a decoded string for text files.
@@ -331,6 +335,7 @@ class Emails:
         Args:
             message_id: The ID of the message to be deleted.
             shared_mailbox_email: Optional. The email address of a different mailbox to delete the email from.
+                Defaults to the mailbox given when creating Emails.
 
         Returns:
             True if the email was deleted, or was already gone (Graph's 404 ErrorItemNotFound).
@@ -367,6 +372,7 @@ class Emails:
             content: Email content, as plain text.
             email_addresses: A list of recipient email addresses, or one address as a string.
             shared_mailbox_email: Optional. The email address of a different mailbox to send from.
+                Defaults to the mailbox given when creating Emails.
 
         Raises:
             ValueError: If there are no recipients.
@@ -422,6 +428,7 @@ class Emails:
         Args:
             message_id: The ID of the message to be checked.
             shared_mailbox_email: Optional. The email address of a different mailbox to check the message in.
+                Defaults to the mailbox given when creating Emails.
 
         Returns:
             True if the message exists, False if it doesn't.
