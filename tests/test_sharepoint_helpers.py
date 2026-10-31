@@ -418,7 +418,7 @@ def test_adding_an_owner_a_group_already_has_succeeds(tenant):
     group = tenant.add_group("SP-ENG-Auto-Read", owners={"app"})
 
     # Graph answers 400 "already exist", which counts as success
-    _groups._add_group_owner(TOKEN, group["id"], "app")
+    _groups._add_group_owner(GRAPH_TOKEN, group["id"], "app")
 
     assert group["owners"] == {"app"}
     assert [method for method, url, _ in tenant.calls if url.endswith("/owners/$ref")] == ["POST"]
