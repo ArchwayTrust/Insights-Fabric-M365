@@ -60,6 +60,12 @@ def cells(path):
     return result
 
 
+def _translate(query):
+    """Rewrites the notebook's Spark SQL for SQLite: four-part table names to bare ones, TIMESTAMP literals to text."""
+    query = re.sub(r"\b\w+\.\w+\.it\.(\w+)", r"\1", query)
+    return re.sub(r"TIMESTAMP'([^']*)'", r"'\1'", query)
+
+
 class FakeSpark:
     """Runs the notebook's Spark SQL on SQLite, and records the Delta tables it appends to."""
 
@@ -74,12 +80,9 @@ class FakeSpark:
         self.saved = {}  # table name -> list of DataFrames appended
         self.after_query = None  # called with each SELECT, e.g. to add rows mid-run
 
-    def _translate(self, query):
-        query = re.sub(r"\b\w+\.\w+\.it\.(\w+)", r"\1", query)
-        return re.sub(r"TIMESTAMP'([^']*)'", r"'\1'", query)
 
     def sql(self, query):
-        query = self._translate(query)
+        query = _translate(query)
         if re.match(r"\s*CREATE (SCHEMA|TABLE)", query):
             return None
         merge = re.match(r"\s*MERGE INTO .*?'((?:[^']|'')+)' AS process,\s*'([^']+)' AS last_processed_ts", query, re.S)
