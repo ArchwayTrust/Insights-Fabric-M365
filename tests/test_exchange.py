@@ -152,6 +152,14 @@ def test_search_follows_pages_and_can_return_all(emails):
     assert get.call_args_list[1].kwargs["params"] is None
 
 
+def test_search_asks_for_the_largest_pages(emails):
+    with patch_request(return_value=make_response(200, {"value": [{"id": "1", "receivedDateTime": "2026-01-01"}]})) as get:
+        emails.search_message_by_subject_and_sender("s", "a@b.c")
+
+    # Graph's default page of 10 would take a request for every 10 matches
+    assert get.call_args.kwargs["params"]["$top"] == 1000
+
+
 def test_search_with_no_match_raises_message_not_found(emails):
     with patch_request(return_value=make_response(200, {"value": []})):
         with pytest.raises(MessageNotFoundError, match="^No matching messages found.$"):
