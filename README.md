@@ -1334,6 +1334,8 @@ On its own, the Tests workflow only reports a result: GitHub still lets a pull r
 
 If the Python versions in `tests.yml` change, update the required checks to match, or pull requests will wait for a check that never runs.
 
+Dependabot ([`.github/dependabot.yml`](https://github.com/ArchwayTrust/Insights-Fabric-M365/blob/main/.github/dependabot.yml)) checks each week for new versions of the actions the workflows use, and opens one pull request to update them. Review and merge it like any other, once the tests pass.
+
 What they cover:
 
 | File | Covers |
