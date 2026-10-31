@@ -409,9 +409,10 @@ class SharePointLibraryManager:
 
                 if dry_run:
                     # Ownership is only read, so the dry run shows groups a
-                    # live run would refuse or adopt.
-                    existing_group = _find_group_by_name(self._graph_token, group_display_name) if app_owned else None
-                    if existing_group and not self._check_group_owner(
+                    # live run would refuse or adopt.  Groups people own are
+                    # looked up too, as a duplicated name fails a live run.
+                    existing_group = _find_group_by_name(self._graph_token, group_display_name)
+                    if existing_group and app_owned and not self._check_group_owner(
                         existing_group["id"], group_display_name, site_url, library_code, role_key, action_log,
                         dry_run=True,
                     ):
@@ -724,9 +725,9 @@ class SharePointLibraryManager:
             return
 
         try:
-            list_id = None if dry_run else _get_list_id(
-                self._graph_token, site_id, library_code, existing=existing_lists,
-            )
+            # From the prefetched lists, so a dry run reports a missing
+            # library as a live run does
+            list_id = _get_list_id(self._graph_token, site_id, library_code, existing=existing_lists)
             _ensure_library_metadata(
                 self._sp_token, site_url, list_id, library_code,
                 source_system, source_id, action_log, dry_run=dry_run,
@@ -901,8 +902,11 @@ class SharePointLibraryManager:
         )
 
         try:
-            # Step 1: Update the SharePoint library display name
-            lib_web_url = None
+            # Step 1: Update the SharePoint library display name.  The library
+            # is found in the prefetched lists, so a dry run reports a missing
+            # library as a live run does.
+            list_id = _get_list_id(self._graph_token, site_id, library_code, existing=existing_lists)
+            lib_web_url = existing_lists[library_code.lower()].get("webUrl", "")
             if dry_run:
                 logger.info(
                     "[DRY RUN] Would set display name to '%s' on library '%s'",
@@ -914,10 +918,6 @@ class SharePointLibraryManager:
                     f"would set display name to '{new_display_name}'",
                 )
             else:
-                list_id = _get_list_id(
-                    self._graph_token, site_id, library_code, existing=existing_lists,
-                )
-                lib_web_url = existing_lists[library_code.lower()].get("webUrl", "")
                 _set_library_display_name(self._graph_token, site_id, list_id, new_display_name)
                 _append_log(
                     action_log, site_url, library_code,
