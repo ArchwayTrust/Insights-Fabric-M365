@@ -1660,6 +1660,11 @@ class SharePointLibraryManager:
             # Build desired state grouped by permission level.  Seeding every
             # valid role keeps absent roles in the reconcile loop (desired-empty).
             desired_by_role: dict[str, set[str]] = {role: set() for role in VALID_ROLES}
+            # Roles containing a user that couldn't be resolved, or a row whose
+            # permission is unknown (it could be meant for any role): their
+            # removals are skipped, as an incomplete desired set must not drive
+            # removals.
+            failed_roles: set[str] = set()
             for _, row in group_df.iterrows():
                 upn = row["user_principal_name"].strip().lower()
                 perm = row["permission"].strip().lower()
@@ -1667,9 +1672,11 @@ class SharePointLibraryManager:
                     logger.warning("Skipping unknown permission '%s' for user '%s'", perm, upn)
                     _append_log(
                         action_log, site_url, library_code,
-                        "skip", f"unknown permission '{perm}'",
+                        "skip", f"unknown permission '{perm}' — not synced, and no users are "
+                        f"removed from this library's groups until it's fixed",
                         user=upn, permission=perm,
                     )
+                    failed_roles.update(VALID_ROLES)
                     continue
                 desired_by_role[perm].add(upn)
 
@@ -1679,9 +1686,6 @@ class SharePointLibraryManager:
             # Graph returns for existing members.
             all_upns = sorted({upn for upns in desired_by_role.values() for upn in upns})
             resolved_users: dict[str, tuple[str, str]] = {}  # input_upn -> (oid, real_upn)
-            # Roles containing a UPN that failed to resolve: their removals are
-            # skipped — an incomplete desired set must not drive removals.
-            failed_roles: set[str] = set()
             for upn in all_upns:
                 oid, real_upn, fail_reason, fatal = user_refs[upn]
                 if fatal:
@@ -1715,8 +1719,9 @@ class SharePointLibraryManager:
             # Desired nested groups per role, keyed as _get_group_members keys
             # them ("group:{object_id}") so the reconcile below treats users
             # and groups alike.  An unresolvable reference leaves that role's
-            # desired groups incomplete: its nested-group removals are skipped
-            # (user removals are unaffected — their desired set is complete).
+            # desired groups incomplete, and an unknown permission every
+            # role's: their nested-group removals are skipped (user removals
+            # are unaffected — their desired set is complete).
             desired_groups_by_role: dict[str, dict[str, str]] = {role: {} for role in VALID_ROLES}
             failed_group_roles: set[str] = set()
             for _, row in nested_df.iterrows():
@@ -1726,9 +1731,11 @@ class SharePointLibraryManager:
                     logger.warning("Skipping unknown permission '%s' for group '%s'", perm, reference)
                     _append_log(
                         action_log, site_url, library_code,
-                        "skip", f"unknown permission '{perm}'",
+                        "skip", f"unknown permission '{perm}' — not synced, and no nested groups are "
+                        f"removed from this library's groups until it's fixed",
                         user=reference, permission=perm,
                     )
+                    failed_group_roles.update(VALID_ROLES)
                     continue
                 object_id, display_name, fail_action, fail_reason = group_refs[reference]
                 if object_id is None:
