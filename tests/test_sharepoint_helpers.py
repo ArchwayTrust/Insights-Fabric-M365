@@ -398,10 +398,27 @@ def test_waiting_for_a_new_group_sends_a_current_token(tenant, monkeypatch):
 
 
 @pytest.mark.parametrize("error", NOT_REPLICATED)
-def test_adding_to_an_existing_group_does_not_wait(tenant, error):
+def test_adding_to_an_existing_group_does_not_wait(tenant, monkeypatch, error):
+    sleeps = []
+    monkeypatch.setattr(time, "sleep", sleeps.append)
     tenant.fail("POST", r"/members/\$ref$", error)
+
     with pytest.raises(requests.HTTPError):
         _groups._add_group_member(TOKEN, "missing-group", "user")
+
+    # An existing group has replicated, so its "doesn't exist" errors are real, not waited out
+    assert sleeps == []
+    assert [method for method, url, _ in tenant.calls if url.endswith("/members/$ref")] == ["POST"]
+
+
+def test_adding_an_owner_a_group_already_has_succeeds(tenant):
+    group = tenant.add_group("SP-ENG-Auto-Read", owners={"app"})
+
+    # Graph answers 400 "already exist", which counts as success
+    _groups._add_group_owner(TOKEN, group["id"], "app")
+
+    assert group["owners"] == {"app"}
+    assert [method for method, url, _ in tenant.calls if url.endswith("/owners/$ref")] == ["POST"]
 
 
 @pytest.mark.parametrize("read, path", [
@@ -706,13 +723,12 @@ def test_group_names_match_case_insensitively_like_graph(tenant):
     assert _groups._get_unique_group(groups, "BAA-Sharepoint-MATH-Auto-Read")["id"] == group["id"]
 
 
-def test_prefix_lookup_sends_the_filter_as_a_parameter_on_the_first_page_only(tenant, monkeypatch):
+def test_prefix_lookup_sends_the_filter_as_a_parameter_on_the_first_page_only(monkeypatch):
     pages = [
         response(200, {"value": [], "@odata.nextLink": f"{GRAPH}/groups?$skiptoken=2"}),
         response(200, {"value": []}),
     ]
     sent = []
-    monkeypatch.setattr(_common, "GRAPH_BASE_URL", GRAPH)
     monkeypatch.setattr(requests, "request", lambda method, url, **kwargs: sent.append((url, kwargs)) or pages.pop(0))
 
     _groups._find_groups_by_name_prefix(TOKEN, "SP-")

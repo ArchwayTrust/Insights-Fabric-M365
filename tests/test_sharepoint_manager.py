@@ -265,6 +265,8 @@ def test_create_library_again_changes_nothing(make_manager, tenant, site):
     assert created(tenant, f"/sites/{site.id}/lists") == []
     assert created(tenant, "breakroleinheritance") == []
     assert len(site.lists) == 1 and len(site.nav[0]["Children"]) == 1
+    # And nothing else: the checks above name the writes a re-run could make, this catches any other
+    assert tenant.writes() == []
 
 
 @pytest.mark.parametrize("operation", ["create_libraries", "set_library_metadata"])
