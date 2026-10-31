@@ -111,6 +111,6 @@ Expectations for a change:
 ## Pull requests
 
 - Work on a branch and merge into `main` through a pull request; CI must pass.
-- `.github/CODEOWNERS` sets who reviews: `@ArchwayTrust/insights` for everything, and `@ArchwayTrust/it-approvers` for `alt_fabric_m365/sharepoint/` and its tests. When you add SharePoint files outside those paths, add them there too.
+- `.github/CODEOWNERS` sets who reviews: `@ArchwayTrust/insights` for everything, and `@ArchwayTrust/it-approvers` for `alt_fabric_m365/sharepoint/`, the example notebook and its write-up, and their tests (`tests/test_sharepoint_*.py`, `sharepoint_fake.py`, `test_faculty_notebook.py` and `test_readme_flow.py`). When you add SharePoint files outside those paths, add them there too.
 - Keep a pull request to one change. Don't reformat or restyle code it doesn't otherwise touch.
 - Titles describe the change, with the version it releases where there is one, for example `Explain scopes in app-only auth (0.7.1)`.
