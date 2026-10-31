@@ -316,7 +316,8 @@ class SharePointLibraryManager:
 
         try:
             # Step 1: Ensure the library exists (created with code, display name set in step 7)
-            if library_code.lower() not in existing_lists:
+            existing_list = existing_lists.get(library_code.lower())
+            if existing_list is None:
                 conflict = _find_title_conflict(existing_lists, library_code)
                 if conflict is not None:
                     # Creating it would fail on every run (titles are unique
@@ -336,15 +337,21 @@ class SharePointLibraryManager:
                 list_id = None
                 lib_web_url = None
                 logger.info("[DRY RUN] Would ensure library '%s' (%s)", library_display_name, library_code)
+                if existing_list is None:
+                    _append_log(
+                        action_log, site_url, library_code, "library_created (dry run)",
+                        f"would create the library, with '{library_code}' as its URL",
+                    )
             else:
                 lib = _ensure_document_library(self._graph_token, site_id, library_code, existing=existing_lists)
                 list_id = lib["id"]
                 lib_web_url = lib.get("webUrl", "")
+                if existing_list is None:
+                    _append_log(action_log, site_url, library_code, "library_created", f"created at {lib_web_url}")
 
             # Step 2: Break role inheritance.  The library's existing group
             # bindings are read here so step 6 only writes missing ones.
             existing_roles: dict[str, set[int]] = {}
-            existing_list = existing_lists.get(library_code.lower())
             if not dry_run:
                 if _has_unique_permissions(self._sp_token, site_url, list_id):
                     logger.info(
@@ -507,8 +514,20 @@ class SharePointLibraryManager:
                         f"'{library_display_name}' — the library keeps the title '{current_title}' "
                         f"until that list is renamed",
                     )
-                elif not dry_run:
+                elif dry_run:
+                    if existing_list is not None:
+                        _append_log(
+                            action_log, site_url, library_code, "rename_library (dry run)",
+                            f"would set display name to '{library_display_name}'",
+                        )
+                else:
                     _set_library_display_name(self._graph_token, site_id, list_id, library_display_name)
+                    # A new library's display name is part of its creation
+                    if existing_list is not None:
+                        _append_log(
+                            action_log, site_url, library_code, "library_renamed",
+                            f"display name set to '{library_display_name}'",
+                        )
 
             # Step 8: Ensure the library is linked in site navigation under
             # the label.  Last on purpose: a navigation failure is logged as
@@ -632,20 +651,25 @@ class SharePointLibraryManager:
         nav_by_site: dict[str, dict | None] = {}
         if add_to_navigation_:
             for site_url_key in sites:
-                if dry_run_:
-                    nav_by_site[site_url_key] = {
-                        "label": navigation_label_, "node_id": None, "children": None,
-                    }
-                    continue
                 try:
-                    node_id, children, created = _ensure_nav_label(
-                        self._sp_token, site_url_key, navigation_label_,
-                    )
-                    if created:
-                        _append_log(
-                            action_log, site_url_key, "", "navigation_label_created",
-                            f"created '{navigation_label_}' navigation label",
+                    if dry_run_:
+                        # Read only, so the dry run reports a label a live run would create
+                        found = _find_nav_label(self._sp_token, site_url_key, navigation_label_)
+                        node_id, children = None, None
+                        if found is None:
+                            _append_log(
+                                action_log, site_url_key, "", "navigation_label_created (dry run)",
+                                f"would create '{navigation_label_}' navigation label",
+                            )
+                    else:
+                        node_id, children, created = _ensure_nav_label(
+                            self._sp_token, site_url_key, navigation_label_,
                         )
+                        if created:
+                            _append_log(
+                                action_log, site_url_key, "", "navigation_label_created",
+                                f"created '{navigation_label_}' navigation label",
+                            )
                     nav_by_site[site_url_key] = {
                         "label": navigation_label_, "node_id": node_id, "children": children,
                     }
