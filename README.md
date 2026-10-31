@@ -558,6 +558,8 @@ mailbox = Emails(credential, "reports@contoso.com")
 
 A token is requested from the credential for each call, and the credential caches it, so one instance can be used for the whole notebook.
 
+Requests Graph throttles (`429`, or `503` with `Retry-After`), server errors and dropped connections are retried, honouring `Retry-After`, as the SharePoint manager's are. Sending an email is only retried when Graph certainly didn't send it, as a retry after a server error or timeout could send it twice.
+
 Every method also takes an optional `shared_mailbox_email` argument to work with a different mailbox for that call. The app needs access to that mailbox too. If you always pass `shared_mailbox_email`, you can leave out `mailbox`, as in `Emails(credential)`. A call with neither raises `ValueError`.
 
 ### Finding an email
@@ -648,7 +650,7 @@ Only file attachments can be downloaded. Passing the ID of an attached email or 
 mailbox.delete_email(message_id)
 ```
 
-Returns `True`, or raises an exception if the email couldn't be deleted. Delete emails after processing them, so the next run doesn't pick them up again.
+Returns `True`, also when the email is already gone, or raises an exception if it couldn't be deleted. Delete emails after processing them, so the next run doesn't pick them up again.
 
 ### Sending an email
 
@@ -1337,7 +1339,7 @@ What they cover:
 | File | Covers |
 | --- | --- |
 | `test_auth.py` | `KeyVaultCertificateCredential`: token requests and caching, Key Vault signing, the client assertion, error descriptions |
-| `test_exchange.py` | `Emails` and reading Graph errors |
+| `test_exchange.py` | `Emails`, its retries and reading Graph errors |
 | `test_sharepoint_http.py` | The retry wrapper: throttling, `Retry-After`, server and connection errors, redirects, a current token for each attempt |
 | `test_sharepoint_helpers.py` | Group naming and collisions, input validation, user and group resolution, the property bag, navigation URLs |
 | `test_sharepoint_manager.py` | Every `SharePointLibraryManager` operation end to end, including re-runs, dry runs, guardrails and failures, and authenticating with `KeyVaultCertificateCredential` |
