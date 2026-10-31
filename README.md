@@ -205,7 +205,7 @@ Anyone who can sign with the key can act as the app, so treat the Key Vault **Si
 
 ### Setting up a certificate
 
-These steps use the Azure CLI in Bash, for example in Azure Cloud Shell's Bash mode; step 4 uses Bash syntax, so in PowerShell adapt its variables. Each step also describes the portal equivalent.
+These steps use the Azure CLI in Bash, for example in Azure Cloud Shell's Bash mode; step 4 uses Bash syntax, so in PowerShell adapt its variables and its `\` line continuations (PowerShell uses a backtick). Each step also describes the portal equivalent.
 
 **1. Create an app registration**
 
