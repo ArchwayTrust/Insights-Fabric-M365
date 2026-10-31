@@ -1,14 +1,16 @@
 """
 An in-memory fake of the Microsoft Graph and SharePoint REST endpoints SharePointLibraryManager calls.
 
-It replaces requests.request, so the real request building, retry wrapper and response handling all run,
-and keeps state (groups, members, libraries, role assignments, navigation, sharing settings) so tests can
+It serves every request made through requests (it replaces requests.Session.request, which requests.request
+and requests.get use too), so the real request building, retry wrapper and response handling all run. It keeps
+state (groups, members, libraries, role assignments, navigation, sharing settings) so tests can
 check what an operation changed, and that running it again changes nothing.
 
 Like the real services, it parses query strings out of the URL it is given, so a value that isn't encoded
 properly (for example an '&' in a $filter) is misread here too. It answers a token issued for another audience
 (see conftest.fake_token) with a 401, and leaves out SharePoint REST's "d" wrapper unless the request asks for
-odata=verbose.
+odata=verbose. An id that doesn't exist gets Graph's 404, and a request it doesn't serve raises UnexpectedRequest,
+which fails the test.
 """
 import base64
 import json
@@ -33,6 +35,14 @@ ROLE_TYPES = {"Limited Access": 1, "Read": 2, "Contribute": 3, "Full Control": 5
 USER = "#microsoft.graph.user"
 GROUP = "#microsoft.graph.group"
 SERVICE_PRINCIPAL = "#microsoft.graph.servicePrincipal"
+
+
+class UnexpectedRequest(BaseException):
+    """A request the fake doesn't serve.
+
+    A BaseException, so an operation can't catch it and log it as an error row, which a test checking for errors
+    could take for the behaviour under test: the test fails instead, naming the request the fake has to learn.
+    """
 
 
 def response(status_code, body=None, headers=None):
@@ -161,8 +171,10 @@ class FakeTenant:
     # Setup helpers
 
     def install(self, monkeypatch):
-        from alt_fabric_m365.sharepoint import _http
-        monkeypatch.setattr(_http.requests, "request", self.request)
+        """Serves every request made through requests from this tenant, including requests.get and Sessions."""
+        monkeypatch.setattr(
+            requests.Session, "request", lambda session, method, url, **kwargs: self.request(method, url, **kwargs),
+        )
         return self
 
     def add_site(self, path):
@@ -256,7 +268,7 @@ class FakeTenant:
                     return response(404)
                 return self._sharepoint(effective, site, unquote(api_path), query, body)
 
-        raise AssertionError(f"Unexpected request: {method} {url}")
+        raise UnexpectedRequest(f"{method} {url}")
 
     def _site_for(self, path):
         return self.sites.get(f"https://{HOST}{path}".rstrip("/").lower())
@@ -287,7 +299,9 @@ class FakeTenant:
 
         m = re.fullmatch(r"/sites/([^/]+)/lists(?:/([^/]+))?", path)
         if m:
-            site = next(s for s in self.sites.values() if s.id == m.group(1))
+            site = next((s for s in self.sites.values() if s.id == m.group(1)), None)
+            if site is None or (m.group(2) is not None and m.group(2) not in site.lists):
+                return graph_error(404, "itemNotFound", "The resource could not be found.")
             if method == "GET" and m.group(2) is None:
                 values = [
                     {"id": lst["id"], "displayName": lst["displayName"], "webUrl": site.web_url(lst),
@@ -336,6 +350,11 @@ class FakeTenant:
                 group.update(body)
                 return response(204)
 
+        # Graph answers a group, member or owner that doesn't exist with a 404
+        m = re.fullmatch(r"/groups/([^/]+)/(?:owners|members).*", path)
+        if m and m.group(1) not in self.groups:
+            return graph_error(404, "Request_ResourceNotFound", f"Resource '{m.group(1)}' does not exist.")
+
         m = re.fullmatch(r"/groups/([^/]+)/owners", path)
         if m and method == "GET":
             return response(200, {"value": [{"id": owner} for owner in sorted(self.groups[m.group(1)]["owners"])]})
@@ -357,10 +376,10 @@ class FakeTenant:
 
         m = re.fullmatch(r"/groups/([^/]+)/members/\$ref", path)
         if m and method == "POST":
-            group = self.groups.get(m.group(1))
-            if group is None:
-                return graph_error(404, "Request_ResourceNotFound")
+            group = self.groups[m.group(1)]
             member_id = body["@odata.id"].rsplit("/", 1)[-1]
+            if member_id not in self.users and member_id not in self.groups:
+                return graph_error(404, "Request_ResourceNotFound", f"Resource '{member_id}' does not exist.")
             if member_id in group["members"]:
                 return graph_error(400, "Request_BadRequest", "One or more added object references already exist")
             group["members"][member_id] = self.users.get(member_id) or _public(self.groups[member_id])
@@ -373,6 +392,8 @@ class FakeTenant:
             return response(204)
 
         m = re.fullmatch(r"/users/([^/]+)/drive/root/children", path)
+        if m and m.group(1) not in self.users:
+            return graph_error(404, "Request_ResourceNotFound", f"Resource '{m.group(1)}' does not exist.")
         if m and m.group(1) in self.without_onedrive:
             return graph_error(404, "itemNotFound", "The resource could not be found.")
         if m and method == "POST":
@@ -397,7 +418,7 @@ class FakeTenant:
         if path == "/users" and method == "GET":
             return self._find_users(query["$filter"])
 
-        raise AssertionError(f"Unexpected Graph request: {method} {url}")
+        raise UnexpectedRequest(f"Graph: {method} {url}")
 
     def _find_groups(self, query):
         flt = query.get("$filter", "")
@@ -513,7 +534,7 @@ class FakeTenant:
                 siblings.remove(node)
                 return response(200)
 
-        raise AssertionError(f"Unexpected SharePoint request: {method} {site.url}/_api/{path}")
+        raise UnexpectedRequest(f"SharePoint: {method} {site.url}/_api/{path}")
 
     def _sharepoint_list(self, method, site, lst, rest, query, body):
         if rest == "" and method == "GET":
@@ -560,7 +581,7 @@ class FakeTenant:
             return response(200)
         if rest == "/rootfolder/properties" and method == "GET":
             return response(200, {"d": dict(lst["properties"])})
-        raise AssertionError(f"Unexpected SharePoint list request: {method} {rest}")
+        raise UnexpectedRequest(f"SharePoint list: {method} {rest}")
 
     def _process_query(self, site, xml):
         guid = re.search(r'<Parameter Type="Guid">\{([^}]+)\}</Parameter>', xml).group(1)
