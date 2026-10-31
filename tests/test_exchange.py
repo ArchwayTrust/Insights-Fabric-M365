@@ -227,6 +227,22 @@ def test_delete_email(emails):
     assert delete.call_args.args == ("DELETE", f"{GRAPH}/users/{MAILBOX_PATH}/messages/m")
 
 
+# The first attempt deleted it, but its response was lost, so the retry finds it gone
+def test_deleting_an_email_already_gone_is_success(emails):
+    gone = make_response(404, {"error": {"code": "ErrorItemNotFound", "message": "The specified object was not found."}})
+    with patch_request(side_effect=[requests.ReadTimeout("slow"), gone]) as request:
+        assert emails.delete_email("m") is True
+
+    assert request.call_count == 2
+
+
+def test_deleting_from_a_mailbox_that_isnt_there_still_raises(emails):
+    missing_mailbox = make_response(404, {"error": {"code": "ErrorInvalidUser", "message": "The user is invalid."}})
+    with patch_request(return_value=missing_mailbox):
+        with pytest.raises(Exception, match="ErrorInvalidUser"):
+            emails.delete_email("m")
+
+
 def test_delete_failure_raises(emails):
     with patch_request(return_value=make_response(403)):
         with pytest.raises(Exception, match="Status code: 403"):

@@ -650,7 +650,7 @@ Only file attachments can be downloaded. Passing the ID of an attached email or 
 mailbox.delete_email(message_id)
 ```
 
-Returns `True`, or raises an exception if the email couldn't be deleted. Delete emails after processing them, so the next run doesn't pick them up again.
+Returns `True`, also when the email is already gone, or raises an exception if it couldn't be deleted. Delete emails after processing them, so the next run doesn't pick them up again.
 
 ### Sending an email
 

@@ -322,7 +322,7 @@ class Emails:
             shared_mailbox_email: Optional. The email address of a different mailbox to delete the email from.
 
         Returns:
-            True if the email was successfully deleted.
+            True if the email was deleted, or was already gone (Graph's 404 ErrorItemNotFound).
 
         Raises:
             Exception: If Graph doesn't delete it. The message includes Graph's error code.
@@ -337,8 +337,12 @@ class Emails:
         if response.status_code == 204:
             print("Email deleted successfully.")
             return True
-        else:
-            raise Exception(_error_message("Failed to delete email", response))
+        # A retry after a timeout or server error finds the email the first attempt deleted gone. Either way it's
+        # not in the mailbox, as asked.
+        if response.status_code == 404 and _graph_error(response)[0] == 'ErrorItemNotFound':
+            print("Email already deleted.")
+            return True
+        raise Exception(_error_message("Failed to delete email", response))
 
     def send_email(
         self, subject: str, content: str, email_addresses: list[str] | str, shared_mailbox_email: str | None = None,
