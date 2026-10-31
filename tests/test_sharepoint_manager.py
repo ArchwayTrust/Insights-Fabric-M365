@@ -284,16 +284,21 @@ def test_only_metadata_that_changed_is_written(make_manager, tenant, site, opera
     assert len(created(tenant, "ProcessQuery")) == (0 if dry_run else 1)
 
 
-def test_a_failed_metadata_write_still_leaves_the_library_its_groups_and_name(make_manager, tenant, site):
+# CSOM refuses with an HTTP error, or with an ErrorInfo in a 200 response
+@pytest.mark.parametrize("failure, reason", [
+    ((403, {"error": {"code": "-2147024891", "message": {"value": "Denied."}}}), "Status code: 403"),
+    ((200, [{"SchemaVersion": "15.0.0.0", "ErrorInfo": {"ErrorMessage": "Access denied."}}]), "CSOM error"),
+])
+def test_a_failed_metadata_write_still_leaves_the_library_its_groups_and_name(make_manager, tenant, site, failure, reason):
     from sharepoint_fake import response
-    tenant.fail("POST", r"/ProcessQuery", response(403, {"error": {"code": "-2147024891", "message": {"value": "Denied."}}}))
+    tenant.fail("POST", r"/ProcessQuery", response(*failure))
 
     results = make_manager(add_to_navigation=True).create_libraries(
         libraries_df(site, "MATH", library_display_name="Maths", source_system="Arbor", source_id="F1"),
     )
 
     [error] = rows(results, "error")["status"]
-    assert error.startswith("metadata not set: Status code: 403")
+    assert error.startswith(f"metadata not set: {reason}")
     assert actions(results).count("group_assigned") == 2
     assert {"library_created", "navigation_link_added"} <= set(actions(results))
     library = site.list_by_slug("MATH")

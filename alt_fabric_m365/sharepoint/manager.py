@@ -613,7 +613,8 @@ class SharePointLibraryManager:
                         list_id if list_id is not None else (existing_list or {}).get("id"),
                         library_code, source_system, source_id, action_log, dry_run=dry_run,
                     )
-                except requests.RequestException as exc:
+                except (requests.RequestException, ValueError) as exc:
+                    # ValueError: ProcessQuery can refuse with an ErrorInfo in a 200 response
                     logger.error("Metadata not set on '%s' on '%s': %s", library_code, site_url, exc)
                     _append_log(action_log, site_url, library_code, "error", f"metadata not set: {exc}")
 
