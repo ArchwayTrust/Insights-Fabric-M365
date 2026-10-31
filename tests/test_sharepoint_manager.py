@@ -391,6 +391,29 @@ def test_unlink_dry_run_makes_no_writes(make_manager, tenant, site):
     assert "empty_group (dry run)" in actions(results)
 
 
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_unlinking_a_code_that_shares_a_live_librarys_groups_leaves_them(make_manager, tenant, site, dry_run):
+    # PEKS3 was skipped by the create pass, as its group names are PE-KS3's
+    make_manager().create_libraries(libraries_df(site, "PE-KS3"))
+    jo = tenant.add_user("jo@contoso.com")
+    tenant.group_named("BAA-Sharepoint-PEKS3-Auto-Contribute")["members"][jo["id"]] = jo
+    tenant.calls.clear()
+
+    results = make_manager(dry_run=dry_run, add_to_navigation=True).unlink_libraries(libraries_df(site, "PEKS3"))
+
+    [row] = results.itertuples()
+    assert (row.action, row.document_library) == ("group_name_collision", "PEKS3")
+    assert tenant.writes() == []
+    assert tenant.member_upns("BAA-Sharepoint-PEKS3-Auto-Contribute") == ["jo@contoso.com"]
+
+
+def test_unlinking_codes_whose_groups_collide_leaves_both(make_manager, tenant, site):
+    results = make_manager().unlink_libraries(libraries_df(site, "PE-KS3", "PEKS3"))
+
+    assert actions(results) == ["group_name_collision", "group_name_collision"]
+    assert tenant.writes() == []
+
+
 def test_unlink_skips_a_site_whose_prefetch_fails(make_manager, tenant, site):
     from sharepoint_fake import graph_error
     tenant.fail("GET", r"/lists\?", graph_error(403, "accessDenied"))

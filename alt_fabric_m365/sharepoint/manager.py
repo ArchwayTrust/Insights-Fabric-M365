@@ -1243,6 +1243,11 @@ class SharePointLibraryManager:
              navigation (a missing label or link is a no-op; the label itself
              is never created or removed here).
 
+        A library whose group names would be another library's (its code
+        sanitises like that of another row, or of another library on the
+        site, such as 'PEKS3' and 'PE-KS3') is skipped with
+        ``group_name_collision``, as create_libraries skips it.
+
         Required DataFrame columns:
           - site_url:       Full SharePoint site URL
           - library_code:   Library code (URL slug) to identify the library
@@ -1284,11 +1289,22 @@ class SharePointLibraryManager:
             navigation_label=navigation_label_ if add_to_navigation_ else None,
         )
 
+        # Groups are found by name, so a code whose group names are another
+        # library's ('PEKS3' after 'PE-KS3', which create skipped) would empty
+        # that library's groups.  Skipped the same way create skips them.
+        df = df[df["site_url"].isin(list(sites))]
+        prefixes = {(r["site_url"], r["library_code"]): r["group_prefix"] for _, r in df.iterrows()}
+        collisions = _find_group_name_collisions(prefixes, include_site_name_)
+        collisions.update(_find_existing_library_collisions(
+            prefixes, {site_url: site["lists"] for site_url, site in sites.items()},
+        ))
+        _log_group_name_collisions(collisions, action_log)
+
         items = []
         for _, row in df.iterrows():
             site_url = row["site_url"]
-            if site_url not in sites:
-                continue  # site couldn't be read — already logged
+            if (site_url, row["library_code"]) in collisions:
+                continue
             items.append((
                 site_url, sites[site_url]["site_id"],
                 row["library_code"],
