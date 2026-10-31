@@ -202,6 +202,32 @@ def _validate_required_columns(df: pd.DataFrame, required_columns: set[str]) -> 
     return df
 
 
+def _blank_nulls(df: pd.DataFrame, columns: tuple[str, ...]) -> pd.DataFrame:
+    """Return a copy of *df* with nulls in *columns* made blank.
+
+    A membership row missing its user, group or permission is a problem
+    with that row, not the whole sync.  Blank, it's logged like any user,
+    group or permission that can't be resolved (user_not_found,
+    group_not_found or skip), and the library's removals for it are held
+    back, where a null would fail _validate_required_columns for every
+    library.
+
+    Args:
+        df: A membership DataFrame.
+        columns: The columns to blank, where present.
+
+    Returns:
+        The copy, with those columns as text. Converting them here matters on
+        pandas 1.5, which counts any object column as strings, so
+        _validate_required_columns wouldn't convert them.
+    """
+    df = df.copy()
+    for column in columns:
+        if column in df.columns:
+            df[column] = df[column].map(lambda value: "" if pd.isna(value) else str(value))
+    return df
+
+
 def _check_option(name: str, value: object) -> bool | int | str:
     """Return a manager option's value, after checking its type.
 

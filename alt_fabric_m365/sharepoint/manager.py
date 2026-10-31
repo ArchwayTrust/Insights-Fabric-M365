@@ -13,7 +13,7 @@ import requests
 from ..auth import Scopes
 from ._common import (
     ALL_GROUP_SUFFIXES, AUTO_GROUP_SUFFIXES, METADATA_PROPERTY_KEYS, REPLICATION_BASE_DELAY, VALID_ROLES,
-    _action_log_to_dataframe, _append_log, _check_option, _fill_flag_columns, _run_parallel, _ThreadSafeLog,
+    _action_log_to_dataframe, _append_log, _blank_nulls, _check_option, _fill_flag_columns, _run_parallel, _ThreadSafeLog,
     _validate_required_columns, _validate_site_urls,
 )
 from ._graph import (
@@ -2356,7 +2356,7 @@ class SharePointLibraryManager:
             "site_url", "library_code", "user_principal_name",
             "permission", "group_prefix",
         }
-        df = _validate_required_columns(df, required)
+        df = _validate_required_columns(_blank_nulls(df, ("user_principal_name", "permission")), required)
         _validate_site_urls(df["site_url"].unique(), self.sharepoint_hostname)
 
         if libraries_df is not None:
@@ -2371,7 +2371,9 @@ class SharePointLibraryManager:
         nested_required = {"site_url", "library_code", "member_group", "permission", "group_prefix"}
         if nested_groups_df is None:
             nested_groups_df = pd.DataFrame(columns=sorted(nested_required))
-        nested_groups_df = _validate_required_columns(nested_groups_df, nested_required)
+        nested_groups_df = _validate_required_columns(
+            _blank_nulls(nested_groups_df, ("member_group", "permission")), nested_required,
+        )
         _validate_site_urls(nested_groups_df["site_url"].unique(), self.sharepoint_hostname)
         nested_groups_df["member_group"] = nested_groups_df["member_group"].str.strip()
 
