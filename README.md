@@ -1362,7 +1362,7 @@ The SharePoint tests run against `tests/sharepoint_fake.py`, an in-memory fake o
 
 Code style, when to use a function rather than a method, and what a change's tests should check are in [CLAUDE.md](https://github.com/ArchwayTrust/Insights-Fabric-M365/blob/main/CLAUDE.md).
 
-The tests can't show that the real services accept the requests, so test a new version in Fabric before releasing it (see [Testing a wheel in Fabric](#testing-a-wheel-in-fabric-before-publishing)). Get a token, find a known email and list its attachments. For the SharePoint manager, run the example notebook with `RUN_SMOKE_TEST = True`, first with `DRY_RUN = True`.
+The tests can't show that the real services accept the requests, so test a new version in Fabric before releasing it (see [Testing a wheel in Fabric](#testing-a-wheel-in-fabric-before-publishing)). Get a token, find a known email and list its attachments. For the SharePoint manager, run the example notebook with `RUN_SMOKE_TEST = True`, first with `DRY_RUN = True`, which only checks reads, then with `DRY_RUN = False` to check writes. A live run also runs the notebook's Real Data passes, so only do it once the dry run's action log looks right.
 
 ### Versioning
 

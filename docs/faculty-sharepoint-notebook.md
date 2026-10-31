@@ -2,7 +2,7 @@
 
 The **Manage Faculty Sharepoint Libraries** notebook gives each faculty its own SharePoint document library on its academy's hub site, and keeps the library's permissions in line with the curated faculty tables. It used to carry about 4,100 lines of core code in one cell. That code now lives in this package, as [`alt_fabric_m365.sharepoint`](../alt_fabric_m365/sharepoint), and the notebook imports it.
 
-The notebook's final state is [`examples/Manage Faculty Sharepoint Libraries.Notebook/notebook-content.py`](../examples/Manage%20Faculty%20Sharepoint%20Libraries.Notebook/notebook-content.py), in the format Fabric's Git integration uses. It is 1,160 lines, down from 5,341.
+The notebook's final state is [`examples/Manage Faculty Sharepoint Libraries.Notebook/notebook-content.py`](../examples/Manage%20Faculty%20Sharepoint%20Libraries.Notebook/notebook-content.py), in the format Fabric's Git integration uses. It is about 1,200 lines, down from 5,341.
 
 - [Moving the notebook over](#moving-the-notebook-over)
 - [Final state of the notebook](#final-state-of-the-notebook)
@@ -212,14 +212,14 @@ The old core cell said it was an inlined copy of `SharePointLibraryPermissions` 
 
 All tests run without credentials or a Fabric workspace: [`tests/sharepoint_fake.py`](../tests/sharepoint_fake.py) is an in-memory fake of the Graph and SharePoint REST endpoints the manager calls. It replaces `requests.request`, so the real request building, retries and response handling all run, and it keeps state (groups, members, libraries, role assignments, navigation, sharing settings), so tests check what an operation actually changed and that running it again changes nothing. Like the real services, it parses query strings out of the URL, which is how the `&` bug above was caught.
 
-The suite went from 102 to 323 tests. It passes on Python 3.10, 3.11, 3.12 and 3.13, and with pandas 2 and pandas 3.
+CI runs the suite on Python 3.10, 3.11 and 3.12 for every pull request, and again against the built wheel.
 
-| File | Tests | Covers |
-| --- | --- | --- |
-| [`test_sharepoint_http.py`](../tests/test_sharepoint_http.py) | 36 | `Retry-After` in seconds and as a date (with clamping, NaN and past dates); retries on 429, 5xx, connection errors and timeouts, with backoff and jitter; redirects for POST keep the method; cross-host, https-to-http and looping redirects are refused |
-| [`test_sharepoint_helpers.py`](../tests/test_sharepoint_helpers.py) | 74 | Group naming, mail nicknames and collisions; DataFrame and URL validation; parallel runs logging failures without stopping; library lookup by slug and display name, with paging; duplicate and case-differing group names; member keys for users, groups and service principals; replication waits; user resolution by UPN, mail and proxy address, malformed and unknown users; nestable group resolution; property bag XML escaping and errors; navigation URL normalisation |
-| [`test_sharepoint_manager.py`](../tests/test_sharepoint_manager.py) | 79 | Every operation end to end: creating libraries with groups, metadata and navigation, and again changing nothing; renaming; dry runs making no writes; manual-only (SLT) libraries; colliding codes; one failing library not stopping others; parallel runs. Membership sync adding users and aliases, removing stale members, keeping service principals, emptying roles without creating groups, the removal guardrail, unresolved users blocking removals, nested groups, OneDrive shortcuts, `add_failed` and `remove_failed`. Unlink keeping Manual groups; retire removing access but not membership; grants being additive and idempotent; site sharing lockdown, including a write that doesn't stick. Authenticating with the real `KeyVaultCertificateCredential` (Entra ID and Key Vault faked): one Graph and one SharePoint token, each sent only to its own API |
-| [`test_faculty_notebook.py`](../tests/test_faculty_notebook.py) | 10 | Runs the example notebook cell by cell, as Fabric does, with Spark SQL run on SQLite over small faculty tables and the real `KeyVaultCertificateCredential`, and checks a live run, a second run, a dry run, a failed run and a widened scope (below). Also checks the notebook has no undefined names and uses only the package's public API |
+| File | Covers |
+| --- | --- |
+| [`test_sharepoint_http.py`](../tests/test_sharepoint_http.py) | `Retry-After` in seconds and as a date (with clamping, NaN and past dates); retries on 429, 5xx, connection errors and timeouts, with backoff and jitter; redirects for POST keep the method; cross-host, https-to-http and looping redirects are refused |
+| [`test_sharepoint_helpers.py`](../tests/test_sharepoint_helpers.py) | Group naming, mail nicknames and collisions; DataFrame and URL validation; parallel runs logging failures without stopping; library lookup by URL slug only, with paging; duplicate and case-differing group names; member keys for users, groups and service principals; replication waits; user resolution by UPN, mail and proxy address, malformed and unknown users; nestable group resolution; property bag XML escaping and errors; navigation URL normalisation |
+| [`test_sharepoint_manager.py`](../tests/test_sharepoint_manager.py) | Every operation end to end: creating libraries with groups, metadata and navigation, and again changing nothing; renaming; dry runs making no writes; manual-only (SLT) libraries; colliding codes; one failing library not stopping others; parallel runs. Membership sync adding users and aliases, removing stale members, keeping service principals, emptying roles without creating groups, the removal guardrail, unresolved users blocking removals, nested groups, OneDrive shortcuts, `add_failed` and `remove_failed`. Unlink keeping Manual groups; retire removing access but not membership; grants being additive and idempotent; site sharing lockdown, including a write that doesn't stick. Authenticating with the real `KeyVaultCertificateCredential` (Entra ID and Key Vault faked): one Graph and one SharePoint token, each sent only to its own API |
+| [`test_faculty_notebook.py`](../tests/test_faculty_notebook.py) | Runs the example notebook cell by cell, as Fabric does, with Spark SQL run on SQLite over small faculty tables and the real `KeyVaultCertificateCredential`, and checks a live run, a second run, a dry run, a failed run and a widened scope (below). Also checks the notebook has no undefined names and uses only the package's public API |
 
 Line and branch coverage of `alt_fabric_m365.sharepoint` is 97%. Most of what's left is handling for rarer failures, such as a site's prefetch failing part way through a rename.
 
@@ -234,9 +234,9 @@ The notebook test's scenarios, against a pilot scope of `BAA` and `MATH%`:
 - **Failed run.** A failed member addition makes the run outcome cell raise, and the watermark isn't advanced.
 - **Widened scope.** Changing the filters starts a new watermark and replays events for the newly in-scope faculties, and the faculty coded `SLT` is reported and skipped.
 
-**Not covered:** whether Microsoft Graph and SharePoint accept these requests. The fake follows the documented APIs, but only a run against the tenant can show it. The notebook's smoke test does that against the IT site's demo library, so run it (with `DRY_RUN = True` first) before switching the pipeline over, and after upgrading the package.
+**Not covered:** whether Microsoft Graph and SharePoint accept these requests. The fake follows the documented APIs, but only a run against the tenant can show it. The notebook's smoke test does that against the IT site's demo library. With `DRY_RUN = True` it only checks the reads; the writes are only tried in a live run, which also runs every Real Data pass, so do that once the dry run's action log looks right. Do both before switching the pipeline over, and after upgrading the package.
 
 ## Possible next steps
 
 - **Use a non-exportable key.** Creating the certificate in Key Vault as in step 3, rather than importing one, means nobody can download its private key.
-- **Pin the package version** in the environment, and upgrade deliberately: run the smoke test with `DRY_RUN = True` after each upgrade.
+- **Pin the package version** in the environment, and upgrade deliberately: run the smoke test after each upgrade, first with `DRY_RUN = True`, which only checks reads, then live.
