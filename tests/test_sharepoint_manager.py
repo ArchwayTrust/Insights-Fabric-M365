@@ -1853,37 +1853,56 @@ def test_library_codes_sharepoint_would_change_are_refused_before_anything_chang
     assert tenant.calls == []
 
 
-# A 5xx or dropped connection can come after Graph made the group, and its name lookups can then miss it
-@pytest.mark.parametrize("failure", ["503", "connection reset"])
+def fail_group_creates(tenant, monkeypatch, failure, times=1):
+    """Makes the next *times* group creates fail with *failure*, after Graph may or may not have made the group."""
+    import requests
+    from alt_fabric_m365.sharepoint import _http
+    from sharepoint_fake import graph_error, response
+
+    failures = {
+        "503": lambda: graph_error(503, "serviceNotAvailable"),
+        "403": lambda: graph_error(403, "Authorization_RequestDenied"),
+        # Not followed for a POST, and it points at what the POST made
+        "303 to the new group": lambda: response(303, headers={"Location": "https://graph.microsoft.com/v1.0/groups/1"}),
+    }
+    if failure in failures:
+        tenant.fail("POST", r"/groups$", failures[failure](), times=times)
+        return
+    exception = {"connection reset": requests.ConnectionError, "connect timeout": requests.ConnectTimeout}[failure]
+    real_request = _http.requests.request
+    failed = []
+
+    def fail_group_create(method, url, **kwargs):
+        if method == "POST" and url.endswith("/groups") and len(failed) < times:
+            failed.append(url)
+            raise exception(failure)
+        return real_request(method, url, **kwargs)
+    monkeypatch.setattr(_http.requests, "request", fail_group_create)
+
+
+def make_failed_create_visible_only_by_id(tenant, name):
+    """Adds the group a failed create made, which Graph's name lookups don't return yet."""
+    made = tenant.add_group(name, owners={APP_ID})
+    tenant.replicating.add(made["id"])
+    return made
+
+
+# A 5xx, dropped connection or unfollowed redirect can come after Graph made the group, and its name lookups can then
+# miss it
+@pytest.mark.parametrize("failure", ["503", "connection reset", "303 to the new group"])
 def test_a_group_whose_create_may_have_succeeded_is_not_created_again_in_the_run(
     make_manager, tenant, site, monkeypatch, failure,
 ):
-    import requests
-    from alt_fabric_m365.sharepoint import _http
-    from sharepoint_fake import graph_error
     tenant.add_user("jo@contoso.com")
     manager = make_manager()
     name = "BAA-Sharepoint-MATH-Auto-Read"
-    if failure == "503":
-        tenant.fail("POST", r"/groups$", graph_error(503, "serviceNotAvailable"))
-    else:
-        real_request = _http.requests.request
-        posts = []
-
-        def drop_first_group_create(method, url, **kwargs):
-            if method == "POST" and url.endswith("/groups") and not posts:
-                posts.append(url)
-                raise requests.ConnectionError("Connection reset by peer")
-            return real_request(method, url, **kwargs)
-        monkeypatch.setattr(_http.requests, "request", drop_first_group_create)
+    fail_group_creates(tenant, monkeypatch, failure)
 
     results = manager.create_libraries(libraries_df(site, "MATH"))
 
     [error] = rows(results, "error").itertuples()
     assert error.document_library == "MATH"
-    # Graph did make it, but its name lookups don't return it yet
-    made = tenant.add_group(name, owners={APP_ID})
-    tenant.replicating.add(made["id"])
+    made = make_failed_create_visible_only_by_id(tenant, name)
 
     results = manager.update_memberships(memberships_df(site, [("MATH", "jo@contoso.com", "read")]))
 
@@ -1892,32 +1911,71 @@ def test_a_group_whose_create_may_have_succeeded_is_not_created_again_in_the_run
     assert [g["id"] for g in tenant.groups.values() if g["displayName"] == name] == [made["id"]]
 
 
-@pytest.mark.parametrize("failure", [
-    "403",  # refused: Graph didn't make the group
-    "connect timeout",  # never arrived
-])
-def test_a_group_whose_create_certainly_failed_is_created_on_the_next_try(
-    make_manager, tenant, site, monkeypatch, failure,
+@pytest.mark.parametrize("operation", ["create_libraries", "update_memberships"])
+def test_a_dry_run_reports_that_a_group_whose_create_may_have_succeeded_wont_be_created(
+    make_manager, tenant, site, monkeypatch, operation,
 ):
-    import requests
-    from alt_fabric_m365.sharepoint import _http
-    from sharepoint_fake import graph_error
     tenant.add_user("jo@contoso.com")
     manager = make_manager()
-    if failure == "403":
-        tenant.fail("POST", r"/groups$", graph_error(403, "Authorization_RequestDenied"))
-    else:
-        real_request = _http.requests.request
-        attempts = []
+    fail_group_creates(tenant, monkeypatch, "503")
+    manager.create_libraries(libraries_df(site, "MATH"))
+    make_failed_create_visible_only_by_id(tenant, "BAA-Sharepoint-MATH-Auto-Read")
+    writes = len(tenant.writes())
 
-        def time_out_connecting(method, url, **kwargs):
-            if method == "POST" and url.endswith("/groups") and len(attempts) < 6:
-                attempts.append(url)
-                raise requests.ConnectTimeout("Connection timed out")
-            return real_request(method, url, **kwargs)
-        monkeypatch.setattr(_http.requests, "request", time_out_connecting)
+    results = (
+        manager.create_libraries(libraries_df(site, "MATH"), dry_run=True) if operation == "create_libraries"
+        else manager.update_memberships(memberships_df(site, [("MATH", "jo@contoso.com", "read")]), dry_run=True)
+    )
+
+    [error] = rows(results, "error").itertuples()
+    assert "may have been created by an earlier request this run" in error.status
+    assert len(tenant.writes()) == writes
+
+
+@pytest.mark.parametrize("failure, times", [
+    ("403", 1),  # refused: Graph didn't make the group
+    ("connect timeout", 6),  # never arrived, on the first attempt or any retry
+])
+def test_a_group_whose_create_certainly_failed_is_created_on_the_next_try(
+    make_manager, tenant, site, monkeypatch, failure, times,
+):
+    tenant.add_user("jo@contoso.com")
+    manager = make_manager()
+    fail_group_creates(tenant, monkeypatch, failure, times=times)
 
     manager.create_libraries(libraries_df(site, "MATH"))
+    manager.update_memberships(memberships_df(site, [("MATH", "jo@contoso.com", "read")]))
+
+    assert tenant.member_upns("BAA-Sharepoint-MATH-Auto-Read") == ["jo@contoso.com"]
+
+
+def test_a_group_is_created_on_the_next_try_after_its_token_couldnt_be_got(make_manager, tenant, site, monkeypatch):
+    import requests
+    from alt_fabric_m365.sharepoint import manager as manager_module
+    tenant.add_user("jo@contoso.com")
+    manager = make_manager()
+    # The credential can't be reached for the token the first group create needs, so nothing is sent
+    real_find, real_get_token, armed = manager_module._find_group_by_name, manager.credential.get_token, []
+
+    def find_group_by_name(token, name):
+        group = real_find(token, name)
+        armed.append(group is None and len(armed) == 0)
+        return group
+
+    def get_token(*scopes, **kwargs):
+        if armed and armed[-1]:
+            armed[-1] = False
+            raise requests.ConnectionError("Key Vault unreachable")
+        return real_get_token(*scopes, **kwargs)
+    monkeypatch.setattr(manager_module, "_find_group_by_name", find_group_by_name)
+    monkeypatch.setattr(manager.credential, "get_token", get_token)
+
+    results = manager.create_libraries(libraries_df(site, "MATH"))
+
+    [error] = rows(results, "error").itertuples()
+    assert "Key Vault unreachable" in error.status
+    assert not [call for call in tenant.calls if call[0] == "POST" and call[1].endswith("/groups")]
+
     manager.update_memberships(memberships_df(site, [("MATH", "jo@contoso.com", "read")]))
 
     assert tenant.member_upns("BAA-Sharepoint-MATH-Auto-Read") == ["jo@contoso.com"]
