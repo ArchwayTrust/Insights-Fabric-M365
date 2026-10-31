@@ -427,7 +427,17 @@ def take_lease() -> None:
     now = datetime.now(timezone.utc)
     now_literal = _timestamp_literal(now)
     expires_literal = _timestamp_literal(now + timedelta(minutes=LEASE_MINUTES))
-    # One MERGE, so of two runs taking the lease at the same moment, Delta
+    # Refused without writing: Delta rewrites the row's file even for a MERGE
+    # that changes nothing, which can make the holder's next renewal fail
+    holder, expires = _lease_holder()
+    if holder is not None and holder != RUN_ID and expires is not None and (
+        pd.Timestamp(expires) >= pd.Timestamp(now.replace(tzinfo=None))
+    ):
+        raise RuntimeError(
+            f"Run {holder} holds the lease in {sync_state_table} until {expires} UTC, so this run changes "
+            "nothing. Wait for that run to finish, or for its lease to expire if it crashed."
+        )
+    # One MERGE, so of two runs taking a free lease at the same moment, Delta
     # fails the second one's write rather than letting both have it
     spark.sql(f"""
         MERGE INTO {sync_state_table} AS t
@@ -457,11 +467,18 @@ def renew_lease() -> None:
     Called just before each pass that changes anything, after each pass, and
     before the watermark is written. Only a lease still in this run's name is
     extended: once another run has taken it, this run stops, even if the
-    lease is free again, as that run may have changed things since.
+    lease is free again, as that run may have changed things since. A live
+    run that doesn't hold the lease, such as one whose cell is run again by
+    hand after it was refused or lost the lease, stops too.
     """
     global holds_lease
-    if not holds_lease:
+    if DRY_RUN:
         return
+    if not holds_lease:
+        raise RuntimeError(
+            f"Run {RUN_ID} doesn't hold the lease in {sync_state_table}, so this cell changes nothing. "
+            "Run the whole notebook again, which takes the lease afresh."
+        )
     now = datetime.now(timezone.utc)
     spark.sql(f"""
         UPDATE {sync_state_table}
