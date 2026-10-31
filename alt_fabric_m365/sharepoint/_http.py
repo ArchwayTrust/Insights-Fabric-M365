@@ -6,6 +6,7 @@ import logging
 import math
 import random
 import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 from urllib.parse import urljoin, urlparse
 
@@ -33,6 +34,60 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Resilient HTTP wrapper
 # ---------------------------------------------------------------------------
+
+
+class _RenewableToken(str):
+    """An access token, or an Authorization header value, that can be replaced by a current one.
+
+    Helpers take a token as a string and build their headers once, but one
+    request can be retried for many minutes (Retry-After is honoured up to
+    RETRY_AFTER_MAX_DELAY, for each of several retries), and a helper can
+    wait out replication or follow pages with the same headers.  A
+    credential only promises a token will last a few minutes when it hands
+    it out, so _request_with_retry renews the header before every attempt.
+
+    Attributes:
+        renew (Callable[[], str]): Returns the current value, such as from a credential's get_token.
+    """
+
+    def __new__(cls, renew: Callable[[], str], value: str | None = None) -> "_RenewableToken":
+        """Creates the token.
+
+        Args:
+            renew: Returns the current value. Credentials cache their tokens, so it's cheap to call.
+            value: Optional. The current value, if the caller already has it. Defaults to calling renew.
+        """
+        token = super().__new__(cls, renew() if value is None else value)
+        token.renew = renew
+        return token
+
+
+def _bearer(token: str) -> str:
+    """Return the Authorization header value for *token*.
+
+    Args:
+        token: An access token. A _RenewableToken gives a header value _request_with_retry renews before each
+            attempt.
+
+    Returns:
+        ``Bearer <token>``.
+    """
+    if isinstance(token, _RenewableToken):
+        return _RenewableToken(lambda: f"Bearer {token.renew()}", f"Bearer {token}")
+    return f"Bearer {token}"
+
+
+def _with_current_token(kwargs: dict) -> None:
+    """Replace a renewable Authorization header in a request's keyword arguments with a current one.
+
+    Args:
+        kwargs: The keyword arguments for requests.request. Its headers are copied rather than changed, as
+            the caller may reuse them.
+    """
+    headers = kwargs.get("headers")
+    authorization = headers.get("Authorization") if headers else None
+    if isinstance(authorization, _RenewableToken):
+        kwargs["headers"] = {**headers, "Authorization": _RenewableToken(authorization.renew)}
 
 
 def _parse_retry_after(value: str | None) -> float | None:
@@ -103,6 +158,10 @@ def _request_with_retry(
 
     Does NOT retry on other 4xx errors (returns the response for the caller).
 
+    An Authorization header built with _bearer from a _RenewableToken is
+    renewed before every attempt, so a long wait doesn't leave a retry with
+    an expired token.
+
     With *idempotent* False (a request that must not run twice, such as
     creating a group), only failures where the server certainly did not act
     are retried: 429 and connect timeouts.  A 5xx, read timeout or dropped
@@ -135,6 +194,7 @@ def _request_with_retry(
     redirect_codes = (301, 302, 303, 307, 308) if method.upper() == "GET" else (301, 302, 307, 308)
 
     for attempt in range(max_retries + 1):
+        _with_current_token(kwargs)
         try:
             resp = requests.request(method, url, **kwargs)
 

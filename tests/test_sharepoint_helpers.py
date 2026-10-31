@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 import requests
 
-from alt_fabric_m365.sharepoint import _common, _graph, _groups, _navigation, _sharepoint
+from alt_fabric_m365.sharepoint import _common, _graph, _groups, _http, _navigation, _sharepoint
 from alt_fabric_m365.sharepoint import build_group_name, sanitise_for_group_name
 from alt_fabric_m365.sharepoint._groups import GroupResolutionError, UserResolutionError
 
@@ -287,6 +287,22 @@ def test_adding_to_a_new_group_waits_for_replication(tenant, monkeypatch, error)
 
     assert user["id"] in group["members"]
     assert sleeps == [5.0, 10.0]
+
+
+def test_waiting_for_a_new_group_sends_a_current_token(tenant, monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+    group = tenant.add_group("SP-ENG-Auto-Read")
+    user = tenant.add_user("jo@contoso.com")
+    tenant.fail("POST", r"/members/\$ref$", graph_error(404, "Request_ResourceNotFound"), times=2)
+    # Changes whenever time passes, as a credential's token does when it's renewed near expiry
+    token = _http._RenewableToken(lambda: f"token-{len(sleeps)}")
+
+    _groups._add_group_member(token, group["id"], user["id"], is_new_group=True)
+
+    assert [call[2]["headers"]["Authorization"] for call in tenant.calls] == [
+        "Bearer token-0", "Bearer token-1", "Bearer token-2",
+    ]
 
 
 @pytest.mark.parametrize("error", NOT_REPLICATED)
