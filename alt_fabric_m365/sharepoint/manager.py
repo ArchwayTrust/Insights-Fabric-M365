@@ -304,6 +304,7 @@ class SharePointLibraryManager:
     def _check_group_owner(
         self, group_id: str, group_name: str, site_url: str, library_code: str,
         permission: str, action_log: _ThreadSafeLog, *, dry_run: bool = False, is_new_group: bool = False,
+        expanded_owners: list[dict] | None = None,
     ) -> bool:
         """Return whether an existing group may be granted access or synced.
 
@@ -312,9 +313,12 @@ class SharePointLibraryManager:
         with no owner gets the app added as owner and is logged.  A dry run
         only reads the owners, so it reports what a live run would do.  With
         *is_new_group*, a 404 while the group replicates is waited out.
+        *expanded_owners* are the owners the lookup that found the group
+        expanded, which save reading them again.
         """
         outcome = _ensure_app_owns_group(
             self._graph_token, group_id, self.service_principal_id, dry_run=dry_run, is_new_group=is_new_group,
+            expanded_owners=expanded_owners,
         )
         if outcome == "adopted":
             _append_log(
@@ -619,7 +623,7 @@ class SharePointLibraryManager:
                         self._refuse_if_maybe_created(group_display_name)
                     if existing_group and app_owned and not self._check_group_owner(
                         existing_group["id"], group_display_name, site_url, library_code, role_key, action_log,
-                        dry_run=True,
+                        dry_run=True, expanded_owners=existing_group.get("owners"),
                     ):
                         continue
                     dry_action = (
@@ -667,6 +671,7 @@ class SharePointLibraryManager:
                     if app_owned and not is_new:
                         if not self._check_group_owner(
                             group_id, group_display_name, site_url, library_code, role_key, action_log,
+                            expanded_owners=group.get("owners"),
                         ):
                             continue
                         # The name follows the code, which never changes, but the
@@ -1445,7 +1450,7 @@ class SharePointLibraryManager:
                 # Emptying is destructive, so only for the app's own groups
                 if not self._check_group_owner(
                     existing_group["id"], group_name, site_url, library_code, "", action_log,
-                    dry_run=dry_run,
+                    dry_run=dry_run, expanded_owners=existing_group.get("owners"),
                 ):
                     continue
 
@@ -2174,6 +2179,7 @@ class SharePointLibraryManager:
                 if existing_group and not known_owned and not self._check_group_owner(
                     existing_group["id"], group_display_name, site_url, library_code,
                     role, action_log, dry_run=dry_run, is_new_group=replicating,
+                    expanded_owners=existing_group.get("owners"),
                 ):
                     continue
                 if desired_upns or desired_groups:

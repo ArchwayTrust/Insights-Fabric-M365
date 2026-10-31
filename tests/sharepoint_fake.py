@@ -80,6 +80,18 @@ def _public(group):
     return {k: v for k, v in group.items() if k not in ("members", "owners")}
 
 
+# Graph expands at most this many objects of a directory relationship, such as a group's owners
+EXPAND_LIMIT = 20
+
+
+def _listed(group, expand):
+    """A group as a $filter query lists it, with the owners $expand asks for, cut off as Graph cuts them."""
+    listed = _public(group)
+    if expand:
+        listed["owners"] = [{"id": owner} for owner in sorted(group["owners"])[:EXPAND_LIMIT]]
+    return listed
+
+
 def _xml_unescape(text):
     return text.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
 
@@ -433,19 +445,22 @@ class FakeTenant:
 
     def _find_groups(self, query):
         flt = query.get("$filter", "")
+        expand = query.get("$expand")
+        if expand not in (None, "owners($select=id)"):
+            return graph_error(400, "Request_BadRequest", f"Unsupported $expand: {expand}")
         m = re.fullmatch(r"displayName eq '((?:[^']|'')*)'", flt)
         if m:
             # Graph compares display names case-insensitively
             name = m.group(1).replace("''", "'").lower()
             return response(200, {"value": [
-                _public(g) for g in self.groups.values()
+                _listed(g, expand) for g in self.groups.values()
                 if g["displayName"].lower() == name and g["id"] not in self.replicating
             ]})
         m = re.fullmatch(r"startswith\(displayName, '((?:[^']|'')*)'\)", flt)
         if m:
             prefix = m.group(1).replace("''", "'").lower()
             return response(200, {"value": [
-                _public(g) for g in self.groups.values()
+                _listed(g, expand) for g in self.groups.values()
                 if g["displayName"].lower().startswith(prefix) and g["id"] not in self.replicating
             ]})
         return graph_error(400, "Request_UnsupportedQuery", f"Invalid filter clause: {flt}")

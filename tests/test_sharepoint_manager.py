@@ -9,6 +9,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 
 import numpy as np
 import pandas as pd
@@ -2739,6 +2740,57 @@ def test_an_ownerless_group_is_adopted(make_manager, tenant, site):
     assert legacy["owners"] == {APP_ID}
     assert f"c:0t.c|tenant|{legacy['id']}" in site.principals
     assert "group_owner_added" not in actions(make_manager().create_libraries(libraries_df(site, "MATH")))
+
+
+def owner_reads(tenant):
+    return [url for method, url, _ in tenant.calls if method == "GET" and urlsplit(url).path.endswith("/owners")]
+
+
+# Group lookups expand each group's owners, so checking them takes no request of its own
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("operation", ["create_libraries", "update_memberships", "unlink_libraries"])
+def test_ownership_is_read_from_the_group_lookup(make_manager, tenant, site, operation, dry_run):
+    tenant.add_user("jo@contoso.com")
+    make_manager().create_libraries(libraries_df(site, "MATH", manual_read=True))
+    tenant.calls.clear()
+    df = {
+        "create_libraries": libraries_df(site, "MATH", manual_read=True),
+        "update_memberships": memberships_df(site, [("MATH", "jo@contoso.com", "contribute")]),
+        "unlink_libraries": libraries_df(site, "MATH"),
+    }[operation]
+
+    results = getattr(make_manager(dry_run=dry_run), operation)(df)
+
+    assert not {"error", "group_not_owned"} & set(actions(results))
+    assert owner_reads(tenant) == []
+
+
+# Graph expands at most 20 owners, so the app may be one it left out
+@pytest.mark.parametrize("app_owns_it", [True, False])
+def test_a_group_with_more_owners_than_graph_expands_has_them_all_read(make_manager, tenant, site, app_owns_it):
+    site.add_list("MATH", unique=True)
+    owners = {f"00000000-0000-0000-0000-{n:012d}" for n in range(20)}  # all listed before the app
+    tenant.add_group("BAA-Sharepoint-MATH-Auto-Contribute", owners=owners | ({APP_ID} if app_owns_it else set()))
+    tenant.add_user("jo@contoso.com")
+
+    results = make_manager().update_memberships(memberships_df(site, [("MATH", "jo@contoso.com", "contribute")]))
+
+    assert ("group_not_owned" in actions(results)) is not app_owns_it
+    assert len(owner_reads(tenant)) == 1
+
+
+def test_a_group_with_more_owners_than_graph_expands_isnt_read_again_when_the_app_is_among_them(
+    make_manager, tenant, site,
+):
+    site.add_list("MATH", unique=True)
+    owners = {f"ffffffff-0000-0000-0000-{n:012d}" for n in range(20)}  # all listed after the app
+    tenant.add_group("BAA-Sharepoint-MATH-Auto-Contribute", owners=owners | {APP_ID})
+    tenant.add_user("jo@contoso.com")
+
+    results = make_manager().update_memberships(memberships_df(site, [("MATH", "jo@contoso.com", "contribute")]))
+
+    assert "group_not_owned" not in actions(results)
+    assert owner_reads(tenant) == []
 
 
 @pytest.mark.parametrize("dry_run", [False, True])
