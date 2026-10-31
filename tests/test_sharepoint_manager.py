@@ -564,7 +564,9 @@ def test_old_library_code_is_refused(make_manager, tenant, site):
 def test_an_empty_old_library_code_column_is_ignored(make_manager, site):
     make_manager().create_libraries(libraries_df(site, "MATH"))
 
-    results = make_manager().rename_libraries(libraries_df(site, "MATH", old_library_code=None))
+    results = make_manager().rename_libraries(
+        libraries_df(site, "MATH", old_library_code=None, library_display_name="Maths"),
+    )
 
     assert actions(results) == ["library_renamed"]
 
@@ -577,6 +579,19 @@ def test_rename_syncs_the_navigation_title(make_manager, site):
 
     assert actions(results) == ["library_renamed", "navigation_link_renamed"]
     assert site.nav[0]["Children"][0]["Title"] == "Mathematics"
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_rename_to_the_name_a_library_already_has_writes_nothing(make_manager, tenant, site, dry_run):
+    make_manager().create_libraries(libraries_df(site, "MATH", library_display_name="Maths"))
+    tenant.calls.clear()
+
+    results = make_manager(dry_run=dry_run).rename_libraries(
+        libraries_df(site, "MATH", library_display_name="Maths"),
+    )
+
+    assert results[["action", "status"]].values.tolist() == [["already_named", "display name is already 'Maths'"]]
+    assert tenant.writes() == []
 
 
 def test_rename_dry_run_makes_no_writes(make_manager, tenant, site):
