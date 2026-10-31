@@ -437,15 +437,6 @@ class SharePointLibraryManager:
                     "would stop it inheriting the site's permissions",
                 )
 
-            # Step 2.5: Set metadata properties on the library's root folder
-            if source_system is not None or source_id is not None:
-                # A dry run has no list_id, but reads an existing library's values
-                _ensure_library_metadata(
-                    self._sp_token, site_url,
-                    list_id if list_id is not None else (existing_list or {}).get("id"),
-                    library_code, source_system, source_id, action_log, dry_run=dry_run,
-                )
-
             # Step 3: Build the full list of groups to create
             # Group names use the library code for stability
             all_groups: list[tuple[str, str, str, str]] = []
@@ -610,7 +601,23 @@ class SharePointLibraryManager:
                             f"display name set to '{library_display_name}'",
                         )
 
-            # Step 8: Ensure the library is linked in site navigation under
+            # Step 8: Record where the library came from in its root folder's
+            # property bag.  After the permissions and display name on
+            # purpose: users never see it, so a failure writing it is an
+            # error row, but never leaves the library without its groups.
+            if source_system is not None or source_id is not None:
+                try:
+                    # A dry run has no list_id, but reads an existing library's values
+                    _ensure_library_metadata(
+                        self._sp_token, site_url,
+                        list_id if list_id is not None else (existing_list or {}).get("id"),
+                        library_code, source_system, source_id, action_log, dry_run=dry_run,
+                    )
+                except requests.RequestException as exc:
+                    logger.error("Metadata not set on '%s' on '%s': %s", library_code, site_url, exc)
+                    _append_log(action_log, site_url, library_code, "error", f"metadata not set: {exc}")
+
+            # Step 9: Ensure the library is linked in site navigation under
             # the label.  Last on purpose: a navigation failure is logged as
             # an error but never blocks the permissions work above.
             if nav is not None:
@@ -658,7 +665,10 @@ class SharePointLibraryManager:
              whose membership is NOT synced.
           5. If ``manual_contribute`` is True, creates a Manual-Contribute group
              (Contribute role) whose membership is NOT synced.
-          6. If ``add_to_navigation`` is on, ensures the library is linked in the
+          6. Writes ``source_system`` and ``source_id``, when given, to the
+             library's property bag.  After the groups, so a failure here is an
+             ``error`` row but never leaves the library without them.
+          7. If ``add_to_navigation`` is on, ensures the library is linked in the
              site's quick-launch navigation, nested under the ``navigation_label``
              heading (the label is created once per site when missing).  Libraries
              created via Graph do not appear in navigation on their own; this is

@@ -284,6 +284,23 @@ def test_only_metadata_that_changed_is_written(make_manager, tenant, site, opera
     assert len(created(tenant, "ProcessQuery")) == (0 if dry_run else 1)
 
 
+def test_a_failed_metadata_write_still_leaves_the_library_its_groups_and_name(make_manager, tenant, site):
+    from sharepoint_fake import response
+    tenant.fail("POST", r"/ProcessQuery", response(403, {"error": {"code": "-2147024891", "message": {"value": "Denied."}}}))
+
+    results = make_manager(add_to_navigation=True).create_libraries(
+        libraries_df(site, "MATH", library_display_name="Maths", source_system="Arbor", source_id="F1"),
+    )
+
+    [error] = rows(results, "error")["status"]
+    assert error.startswith("metadata not set: Status code: 403")
+    assert actions(results).count("group_assigned") == 2
+    assert {"library_created", "navigation_link_added"} <= set(actions(results))
+    library = site.list_by_slug("MATH")
+    assert (library["displayName"], library["unique"], len(library["role_assignments"])) == ("Maths", True, 2)
+    assert library["properties"] == {}
+
+
 def test_create_library_renames_display_name_and_navigation_link(make_manager, site):
     manager = make_manager(add_to_navigation=True)
     manager.create_libraries(libraries_df(site, "MATH", library_display_name="Maths"))
