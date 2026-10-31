@@ -97,7 +97,8 @@ def _request_with_retry(
 
     Retries on:
       - HTTP 429 (Too Many Requests) — respects the Retry-After header
-      - HTTP 500, 502, 503, 504 — server errors
+      - HTTP 5xx — server errors, respecting Retry-After when it is sent, as
+        SharePoint and Graph send it with 503 when throttling
       - Connection errors and timeouts
 
     Does NOT retry on other 4xx errors (returns the response for the caller).
@@ -198,10 +199,14 @@ def _request_with_retry(
                     method, url, delay, attempt + 1, max_retries,
                 )
             else:
-                # 5xx server error
-                delay = min(base_delay * (2 ** attempt), max_delay)
-                # Add jitter (0-25%) to avoid thundering herd
-                delay += delay * random.uniform(0, 0.25)
+                # 5xx server error.  SharePoint and Graph also throttle with
+                # 503 and a Retry-After header, so honour one when it's sent:
+                # retrying sooner only extends the throttling.
+                delay = _parse_retry_after(resp.headers.get("Retry-After"))
+                if delay is None:
+                    delay = min(base_delay * (2 ** attempt), max_delay)
+                    # Add jitter (0-25%) to avoid thundering herd
+                    delay += delay * random.uniform(0, 0.25)
                 logger.warning(
                     "Server error %d on %s %s — retrying in %.1fs (attempt %d/%d)",
                     resp.status_code, method, url, delay, attempt + 1, max_retries,

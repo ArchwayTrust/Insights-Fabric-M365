@@ -85,8 +85,10 @@ def test_client_errors_are_returned_without_retrying(sleeps):
     assert request.call_count == 1
 
 
-def test_throttling_honours_retry_after(sleeps):
-    responses = [response(429, headers={"Retry-After": "7"}), response(200, {})]
+# SharePoint and Graph throttle with 503 as well as 429, both with Retry-After
+@pytest.mark.parametrize("status", [429, 503])
+def test_throttling_honours_retry_after(sleeps, status):
+    responses = [response(status, headers={"Retry-After": "7"}), response(200, {})]
     with patch_request(side_effect=responses):
         assert _request_with_retry("GET", URL).status_code == 200
 
