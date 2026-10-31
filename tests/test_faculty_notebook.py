@@ -25,7 +25,7 @@ import pytest
 import alt_fabric_m365.auth.keyvault
 from alt_fabric_m365.auth import Scopes
 
-from conftest import FakeAzure
+from conftest import FakeAzure, fake_token
 from sharepoint_fake import APP_ID, HOST, ROLE_DEFINITIONS, FakeTenant
 
 NOTEBOOK = (Path(__file__).resolve().parent.parent / "examples" / "Manage Faculty Sharepoint Libraries.Notebook"
@@ -220,7 +220,7 @@ def seed_existing_libraries(tenant):
 
     class Credential:
         def get_token(self, *scopes, **kwargs):
-            return types.SimpleNamespace(token="t")
+            return types.SimpleNamespace(token=fake_token(scopes[0]))
 
     manager = SharePointLibraryManager(
         Credential(), HOST, include_site_name=False, add_to_navigation=True, service_principal_id=APP_ID,

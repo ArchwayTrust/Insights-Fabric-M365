@@ -6,8 +6,11 @@ and keeps state (groups, members, libraries, role assignments, navigation, shari
 check what an operation changed, and that running it again changes nothing.
 
 Like the real services, it parses query strings out of the URL it is given, so a value that isn't encoded
-properly (for example an '&' in a $filter) is misread here too.
+properly (for example an '&' in a $filter) is misread here too. It answers a token issued for another audience
+(see conftest.fake_token) with a 401, and leaves out SharePoint REST's "d" wrapper unless the request asks for
+odata=verbose.
 """
+import base64
 import json
 import re
 import threading
@@ -43,6 +46,29 @@ def response(status_code, body=None, headers=None):
 
 def graph_error(status_code, code, message=""):
     return response(status_code, {"error": {"code": code, "message": message}})
+
+
+def _audience(kwargs):
+    """Returns the aud claim of the request's bearer token, or None if it hasn't one."""
+    scheme, _, token = ((kwargs.get("headers") or {}).get("Authorization") or "").partition(" ")
+    if scheme != "Bearer":
+        return None
+    try:
+        payload = token.split(".")[1]
+        return json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))["aud"]
+    except (IndexError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _without_verbose_metadata(resp):
+    """Returns a SharePoint REST response as it comes without odata=verbose in Accept: without the "d" wrapper."""
+    body = resp.json() if resp.content else None
+    if not isinstance(body, dict) or "d" not in body:
+        return resp
+    inner = body["d"]
+    if isinstance(inner, dict) and set(inner) == {"results"}:
+        inner = {"value": inner["results"]}
+    return response(resp.status_code, inner, dict(resp.headers))
 
 
 def _effective_method(method, kwargs):
@@ -189,14 +215,29 @@ class FakeTenant:
 
     def _request(self, method, url, **kwargs):
         self.calls.append((method.upper(), url, kwargs))
-        effective = _effective_method(method, kwargs)
+        parsed = urlparse(url)
 
+        # Graph and SharePoint each refuse a token issued for another audience, before anything else
+        if url.startswith(GRAPH) and _audience(kwargs) != "https://graph.microsoft.com":
+            return graph_error(401, "InvalidAuthenticationToken", "Access token validation failure. Invalid audience.")
+        if parsed.hostname == HOST and _audience(kwargs) != f"https://{HOST}":
+            return response(401, {"error": "invalid_request", "error_description": "Invalid audience Uri."})
+
+        resp = self._respond(method, url, parsed, kwargs)
+        # Without odata=verbose, SharePoint Online leaves out the "d" wrapper the package reads
+        accept = (kwargs.get("headers") or {}).get("Accept", "")
+        if parsed.hostname == HOST and "/_api/" in parsed.path and "odata=verbose" not in accept:
+            return _without_verbose_metadata(resp)
+        return resp
+
+    def _respond(self, method, url, parsed, kwargs):
+        """Returns the response to a request with an accepted token: a failure from fail(), or the service's own."""
+        effective = _effective_method(method, kwargs)
         for failure in self.failures:
             if failure[3] > 0 and failure[0] == effective and failure[1].search(url):
                 failure[3] -= 1
                 return failure[2]
 
-        parsed = urlparse(url)
         query = {k: v[0] for k, v in parse_qs(parsed.query).items()}
         query.update(kwargs.get("params") or {})
         body = kwargs.get("json")

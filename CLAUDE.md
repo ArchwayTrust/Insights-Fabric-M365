@@ -80,7 +80,7 @@ No test calls a real service. `requests` is mocked and `notebookutils` and Spark
 
 | File | Covers |
 | --- | --- |
-| `conftest.py` | Shared fixtures: `fake_notebookutils`, `no_notebookutils`, `credential` (`FakeCredential`), `make_response`, `FakeAzure` (Key Vault and Entra ID) |
+| `conftest.py` | Shared fixtures: `fake_notebookutils`, `no_notebookutils`, `credential` (`FakeCredential`), `make_response`, `FakeAzure` (Key Vault and Entra ID), and `fake_token`, which gives a token for a scope that `FakeTenant` accepts only on that scope's host |
 | `sharepoint_fake.py` | `FakeTenant`, an in-memory fake of the Graph and SharePoint endpoints that keeps state, so a test can check what an operation changed |
 | `test_auth.py` | `KeyVaultCertificateCredential` and its helpers |
 | `test_exchange.py` | `Emails` and its helpers |

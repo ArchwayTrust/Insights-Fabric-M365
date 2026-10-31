@@ -15,6 +15,7 @@ import alt_fabric_m365.auth
 import alt_fabric_m365.sharepoint
 from alt_fabric_m365.sharepoint import SharePointLibraryManager, sanitise_for_group_name
 
+from conftest import fake_token
 from sharepoint_fake import APP_ID, HOST, FakeTenant
 
 README = (Path(__file__).resolve().parent.parent / "README.md").read_text(encoding="utf-8")
@@ -97,7 +98,7 @@ def setting(monkeypatch):
             pass
 
         def get_token(self, *scopes, **kwargs):
-            return types.SimpleNamespace(token="t")
+            return types.SimpleNamespace(token=fake_token(scopes[0]))
 
     monkeypatch.setattr(alt_fabric_m365.auth, "KeyVaultCertificateCredential", Credential)
     monkeypatch.setattr(

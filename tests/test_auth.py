@@ -59,7 +59,7 @@ def test_token_is_cached(azure):
     first = credential.get_token("scope-a")
     second = credential.get_token("scope-a")
 
-    assert first.token == "token-1"
+    assert first.token == azure.issued[0]
     assert second is first
     assert len(azure.token_calls) == 1
 
@@ -78,9 +78,9 @@ def test_scope_order_and_duplicates_share_a_cached_token(azure):
 def test_different_scopes_are_cached_separately(azure):
     credential = make_credential()
 
-    assert credential.get_token("a").token == "token-1"
-    assert credential.get_token("b").token == "token-2"
-    assert credential.get_access_token("b") == "token-2"
+    assert credential.get_token("a").token == azure.issued[0]
+    assert credential.get_token("b").token == azure.issued[1] != azure.issued[0]
+    assert credential.get_access_token("b") == azure.issued[1]
 
 
 def test_token_close_to_expiry_is_refreshed(fake_notebookutils):
@@ -155,7 +155,7 @@ def test_claims_bypass_the_cache_and_are_sent(azure):
     credential.get_token("a")
     fresh = credential.get_token("a", claims=claims)
 
-    assert fresh.token == "token-2"
+    assert fresh.token == azure.issued[1] != azure.issued[0]
     assert azure.token_calls[1][1]["data"]["claims"] == claims
     assert "claims" not in azure.token_calls[0][1]["data"]
     # The fresh token replaces the cached one
@@ -172,8 +172,8 @@ def test_other_tenant_raises_without_a_request(azure):
 def test_same_tenant_cae_and_unknown_kwargs_are_accepted(azure):
     credential = make_credential()
 
-    assert credential.get_token("a", tenant_id=TENANT.upper()).token == "token-1"
-    assert credential.get_token("a", enable_cae=True, something_new=1).token == "token-1"
+    assert credential.get_token("a", tenant_id=TENANT.upper()).token == azure.issued[0]
+    assert credential.get_token("a", enable_cae=True, something_new=1).token == azure.issued[0]
 
 
 # Requests to Key Vault and Entra ID

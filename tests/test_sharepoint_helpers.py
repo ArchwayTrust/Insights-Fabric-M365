@@ -12,13 +12,16 @@ import pandas as pd
 import pytest
 import requests
 
+from alt_fabric_m365.auth import Scopes
 from alt_fabric_m365.sharepoint import _common, _graph, _groups, _http, _navigation, _sharepoint
 from alt_fabric_m365.sharepoint import build_group_name, sanitise_for_group_name
 from alt_fabric_m365.sharepoint._groups import GroupResolutionError, UserResolutionError
 
-from sharepoint_fake import GRAPH, FakeTenant, graph_error, response
+from conftest import fake_token
+from sharepoint_fake import GRAPH, HOST, FakeTenant, graph_error, response
 
-TOKEN = "token"
+GRAPH_TOKEN = fake_token(Scopes.GRAPH)
+SP_TOKEN = fake_token(f"https://{HOST}/.default")
 SITE = "https://contoso.sharepoint.com/sites/maths"
 
 
@@ -241,7 +244,7 @@ def test_lists_are_keyed_by_url_slug_only(tenant):
     titled_art = site.add_list("Art", slug="ARTD")  # titled like another faculty's code
     spaced = site.add_list("Year 7 & 8", slug="Y7 & 8")
 
-    lists = _graph._list_existing_lists(TOKEN, site.id)
+    lists = _graph._list_existing_lists(GRAPH_TOKEN, site.id)
 
     assert sorted(lists) == ["artd", "slt", "y7 & 8"]  # slug is percent-decoded
     assert (lists["slt"]["id"], lists["artd"]["id"], lists["y7 & 8"]["id"]) == (slt["id"], titled_art["id"], spaced["id"])
@@ -255,20 +258,20 @@ def test_lists_follow_pages(tenant):
         site.add_list(code)
     tenant.list_page_size = 2
 
-    assert sorted(_graph._list_existing_lists(TOKEN, site.id)) == ["a", "b", "c", "d", "e"]
+    assert sorted(_graph._list_existing_lists(GRAPH_TOKEN, site.id)) == ["a", "b", "c", "d", "e"]
 
 
 def test_missing_library_raises(tenant):
     site = tenant.add_site("/sites/maths")
     with pytest.raises(ValueError, match="Library 'ENG' not found"):
-        _graph._get_list_id(TOKEN, site.id, "ENG")
+        _graph._get_list_id(GRAPH_TOKEN, site.id, "ENG")
 
 
 def test_ensure_library_creates_it_titled_with_its_code_once(tenant):
     site = tenant.add_site("/sites/maths")
 
-    lib = _graph._ensure_document_library(TOKEN, site.id, "ENG")
-    again = _graph._ensure_document_library(TOKEN, site.id, "ENG")
+    lib = _graph._ensure_document_library(GRAPH_TOKEN, site.id, "ENG")
+    again = _graph._ensure_document_library(GRAPH_TOKEN, site.id, "ENG")
 
     created = site.lists[lib["id"]]
     assert (created["slug"], created["displayName"]) == ("ENG", "ENG")
@@ -280,7 +283,7 @@ def test_title_conflict_with_a_display_name(tenant):
     english = site.add_list("English", slug="EnglishOld")
     site.add_list("Maths", slug="MATH")
 
-    lists = _graph._list_existing_lists(TOKEN, site.id)
+    lists = _graph._list_existing_lists(GRAPH_TOKEN, site.id)
 
     assert _graph._find_title_conflict(lists, "ENG", title="english")["id"] == english["id"]
     assert _graph._find_title_conflict(lists, "MATH", title="Maths") is None  # its own title
@@ -315,7 +318,7 @@ def test_duplicate_group_names_are_refused(tenant):
     tenant.add_group("SP-ENG-Auto-Read")
 
     with pytest.raises(ValueError, match="Multiple Entra groups share displayName"):
-        _groups._find_group_by_name(TOKEN, "SP-ENG-Auto-Read")
+        _groups._find_group_by_name(GRAPH_TOKEN, "SP-ENG-Auto-Read")
 
 
 def test_prefix_lookup_returns_all_matches_and_unique_lookup_refuses_duplicates(tenant):
@@ -324,7 +327,7 @@ def test_prefix_lookup_returns_all_matches_and_unique_lookup_refuses_duplicates(
     tenant.add_group("SP-ENG-Manual-Read")
     tenant.add_group("SP-MATH-Auto-Read")
 
-    groups = _groups._find_groups_by_name_prefix(TOKEN, "SP-ENG-")
+    groups = _groups._find_groups_by_name_prefix(GRAPH_TOKEN, "SP-ENG-")
 
     assert sorted(groups) == ["sp-eng-auto-read", "sp-eng-manual-read"]
     assert _groups._get_unique_group(groups, "SP-ENG-Auto-Read")["displayName"] == "SP-ENG-Auto-Read"
@@ -340,7 +343,7 @@ def test_group_members_are_keyed_by_kind(tenant):
     service_principal = tenant.add_service_principal()
     group["members"] = {user["id"]: user, nested["id"]: nested, service_principal["id"]: service_principal}
 
-    members = _groups._get_group_members(TOKEN, group["id"])
+    members = _groups._get_group_members(GRAPH_TOKEN, group["id"])
 
     assert members == {
         "jo.smith@contoso.com": user["id"],
@@ -353,8 +356,8 @@ def test_adding_an_existing_member_is_success(tenant):
     group = tenant.add_group("SP-ENG-Auto-Read")
     user = tenant.add_user("jo@contoso.com")
 
-    _groups._add_group_member(TOKEN, group["id"], user["id"])
-    _groups._add_group_member(TOKEN, group["id"], user["id"])
+    _groups._add_group_member(GRAPH_TOKEN, group["id"], user["id"])
+    _groups._add_group_member(GRAPH_TOKEN, group["id"], user["id"])
 
     assert list(group["members"]) == [user["id"]]
 
@@ -375,7 +378,7 @@ def test_adding_to_a_new_group_waits_for_replication(tenant, monkeypatch, error)
     user = tenant.add_user("jo@contoso.com")
     tenant.fail("POST", r"/members/\$ref$", error, times=2)
 
-    _groups._add_group_member(TOKEN, group["id"], user["id"], is_new_group=True)
+    _groups._add_group_member(GRAPH_TOKEN, group["id"], user["id"], is_new_group=True)
 
     assert user["id"] in group["members"]
     assert sleeps == [5.0, 10.0]
@@ -388,12 +391,12 @@ def test_waiting_for_a_new_group_sends_a_current_token(tenant, monkeypatch):
     user = tenant.add_user("jo@contoso.com")
     tenant.fail("POST", r"/members/\$ref$", graph_error(404, "Request_ResourceNotFound"), times=2)
     # Changes whenever time passes, as a credential's token does when it's renewed near expiry
-    token = _http._RenewableToken(lambda: f"token-{len(sleeps)}")
+    token = _http._RenewableToken(lambda: fake_token(Scopes.GRAPH, n=len(sleeps)))
 
     _groups._add_group_member(token, group["id"], user["id"], is_new_group=True)
 
     assert [call[2]["headers"]["Authorization"] for call in tenant.calls] == [
-        "Bearer token-0", "Bearer token-1", "Bearer token-2",
+        f"Bearer {fake_token(Scopes.GRAPH, n=n)}" for n in range(3)
     ]
 
 
@@ -404,7 +407,7 @@ def test_adding_to_an_existing_group_does_not_wait(tenant, monkeypatch, error):
     tenant.fail("POST", r"/members/\$ref$", error)
 
     with pytest.raises(requests.HTTPError):
-        _groups._add_group_member(TOKEN, "missing-group", "user")
+        _groups._add_group_member(GRAPH_TOKEN, "missing-group", "user")
 
     # An existing group has replicated, so its "doesn't exist" errors are real, not waited out
     assert sleeps == []
@@ -415,7 +418,7 @@ def test_adding_an_owner_a_group_already_has_succeeds(tenant):
     group = tenant.add_group("SP-ENG-Auto-Read", owners={"app"})
 
     # Graph answers 400 "already exist", which counts as success
-    _groups._add_group_owner(TOKEN, group["id"], "app")
+    _groups._add_group_owner(GRAPH_TOKEN, group["id"], "app")
 
     assert group["owners"] == {"app"}
     assert [method for method, url, _ in tenant.calls if url.endswith("/owners/$ref")] == ["POST"]
@@ -430,7 +433,7 @@ def test_reading_a_new_group_waits_for_replication(tenant, monkeypatch, read, pa
     group = tenant.add_group("SP-ENG-Auto-Read", owners={"app"})
     tenant.fail("GET", rf"/{path}\?", graph_error(404, "Request_ResourceNotFound"), times=2)
 
-    assert read(TOKEN, group["id"], is_new_group=True) == ({} if path == "members" else {"app"})
+    assert read(GRAPH_TOKEN, group["id"], is_new_group=True) == ({} if path == "members" else {"app"})
     assert sleeps == [5.0, 10.0]
 
 
@@ -440,7 +443,7 @@ def test_reading_a_new_group_waits_for_replication(tenant, monkeypatch, read, pa
 def test_reading_an_existing_group_does_not_wait(tenant, read, path):
     tenant.fail("GET", rf"/{path}\?", graph_error(404, "Request_ResourceNotFound"))
     with pytest.raises(requests.HTTPError):
-        read(TOKEN, "missing-group")
+        read(GRAPH_TOKEN, "missing-group")
 
 
 def test_adopting_a_new_group_waits_for_replication(tenant, monkeypatch):
@@ -449,7 +452,7 @@ def test_adopting_a_new_group_waits_for_replication(tenant, monkeypatch):
     group = tenant.add_group("SP-ENG-Auto-Read")
     tenant.fail("POST", r"/owners/\$ref$", graph_error(404, "Request_ResourceNotFound"))
 
-    assert _groups._ensure_app_owns_group(TOKEN, group["id"], "app", is_new_group=True) == "adopted"
+    assert _groups._ensure_app_owns_group(GRAPH_TOKEN, group["id"], "app", is_new_group=True) == "adopted"
     assert group["owners"] == {"app"}
     assert sleeps == [5.0]
 
@@ -460,7 +463,7 @@ def test_emptying_a_group_removes_every_kind_of_member(tenant):
     service_principal = tenant.add_service_principal()
     group["members"] = {user["id"]: user, service_principal["id"]: service_principal}
 
-    assert _groups._empty_group_members(TOKEN, group["id"]) == (2, {})
+    assert _groups._empty_group_members(GRAPH_TOKEN, group["id"]) == (2, {})
     assert group["members"] == {}
 
 
@@ -470,7 +473,7 @@ def test_emptying_a_group_carries_on_past_a_member_it_cannot_remove(tenant):
     group["members"] = {user["id"]: user for user in (jo, sam, ali)}
     tenant.fail("DELETE", rf"/members/{sam['id']}/\$ref$", graph_error(403, "Authorization_RequestDenied", "Denied."))
 
-    removed, failures = _groups._empty_group_members(TOKEN, group["id"])
+    removed, failures = _groups._empty_group_members(GRAPH_TOKEN, group["id"])
 
     assert removed == 2
     assert list(failures) == ["sam@contoso.com"]
@@ -483,9 +486,9 @@ def test_removing_a_member_already_gone_is_not_an_error(tenant):
     jo = tenant.add_user("jo@contoso.com")
     group["members"] = {jo["id"]: jo}
 
-    assert _groups._remove_group_member(TOKEN, group["id"], jo["id"]) is True
+    assert _groups._remove_group_member(GRAPH_TOKEN, group["id"], jo["id"]) is True
     # As when a DELETE retried after a timeout finds the first attempt removed the member
-    assert _groups._remove_group_member(TOKEN, group["id"], jo["id"]) is False
+    assert _groups._remove_group_member(GRAPH_TOKEN, group["id"], jo["id"]) is False
 
 
 def test_other_member_removal_errors_are_raised(tenant):
@@ -493,7 +496,7 @@ def test_other_member_removal_errors_are_raised(tenant):
     tenant.fail("DELETE", r"/members/.+/\$ref$", graph_error(403, "Authorization_RequestDenied", "Denied."))
 
     with pytest.raises(requests.HTTPError, match="Authorization_RequestDenied"):
-        _groups._remove_group_member(TOKEN, group["id"], "member")
+        _groups._remove_group_member(GRAPH_TOKEN, group["id"], "member")
 
 
 # Users
@@ -501,13 +504,15 @@ def test_other_member_removal_errors_are_raised(tenant):
 def test_user_resolves_directly_by_upn(tenant):
     user = tenant.add_user("Jo.Smith@contoso.com")
 
-    assert _groups._resolve_user_with_fallback(TOKEN, "jo.smith@contoso.com") == (user["id"], "jo.smith@contoso.com")
+    assert _groups._resolve_user_with_fallback(GRAPH_TOKEN, "jo.smith@contoso.com") == (
+        user["id"], "jo.smith@contoso.com",
+    )
 
 
 def test_user_resolves_by_mail_when_the_upn_differs(tenant):
     user = tenant.add_user("jsmith@contoso.onmicrosoft.com", mail="jo.smith@contoso.com")
 
-    assert _groups._resolve_user_with_fallback(TOKEN, "jo.smith@contoso.com") == (
+    assert _groups._resolve_user_with_fallback(GRAPH_TOKEN, "jo.smith@contoso.com") == (
         user["id"], "jsmith@contoso.onmicrosoft.com"
     )
 
@@ -515,26 +520,26 @@ def test_user_resolves_by_mail_when_the_upn_differs(tenant):
 def test_user_resolves_by_proxy_address(tenant):
     user = tenant.add_user("jsmith@contoso.com", proxy_addresses=["jo.smith@oldschool.org"])
 
-    oid, upn = _groups._resolve_user_with_fallback(TOKEN, "Jo.Smith@OldSchool.org")
+    oid, upn = _groups._resolve_user_with_fallback(GRAPH_TOKEN, "Jo.Smith@OldSchool.org")
 
     assert (oid, upn) == (user["id"], "jsmith@contoso.com")
 
 
 def test_unknown_user_raises_a_resolution_error(tenant):
     with pytest.raises(UserResolutionError, match="not found by UPN, mail, or proxyAddresses"):
-        _groups._resolve_user_with_fallback(TOKEN, "nobody@contoso.com")
+        _groups._resolve_user_with_fallback(GRAPH_TOKEN, "nobody@contoso.com")
 
 
 def test_malformed_user_is_reported_as_malformed(tenant):
     with pytest.raises(UserResolutionError, match="malformed") as raised:
-        _groups._resolve_user_with_fallback(TOKEN, "jo smith@contoso.com")
+        _groups._resolve_user_with_fallback(GRAPH_TOKEN, "jo smith@contoso.com")
 
     assert raised.value.user_principal_name == "jo smith@contoso.com"
 
 
 def test_empty_user_raises_without_calling_graph(tenant):
     with pytest.raises(UserResolutionError, match="empty"):
-        _groups._resolve_user_with_fallback(TOKEN, "  ")
+        _groups._resolve_user_with_fallback(GRAPH_TOKEN, "  ")
 
     assert tenant.calls == []
 
@@ -543,13 +548,13 @@ def test_user_lookup_api_failures_are_raised(tenant):
     tenant.fail("GET", r"/users/", graph_error(403, "Authorization_RequestDenied"))
 
     with pytest.raises(requests.HTTPError):
-        _groups._resolve_user_with_fallback(TOKEN, "jo@contoso.com")
+        _groups._resolve_user_with_fallback(GRAPH_TOKEN, "jo@contoso.com")
 
 
 def test_user_lookup_quotes_are_escaped(tenant):
     user = tenant.add_user("oneil@contoso.com", mail="o'neil@contoso.com")
 
-    assert _groups._resolve_user_with_fallback(TOKEN, "o'neil@contoso.com")[0] == user["id"]
+    assert _groups._resolve_user_with_fallback(GRAPH_TOKEN, "o'neil@contoso.com")[0] == user["id"]
 
 
 # Nestable groups
@@ -557,8 +562,8 @@ def test_user_lookup_quotes_are_escaped(tenant):
 def test_nestable_group_resolves_by_object_id_or_name(tenant):
     group = tenant.add_group("All Staff")
 
-    assert _groups._resolve_nestable_group(TOKEN, group["id"])["id"] == group["id"]
-    assert _groups._resolve_nestable_group(TOKEN, " All Staff ")["id"] == group["id"]
+    assert _groups._resolve_nestable_group(GRAPH_TOKEN, group["id"])["id"] == group["id"]
+    assert _groups._resolve_nestable_group(GRAPH_TOKEN, " All Staff ")["id"] == group["id"]
 
 
 @pytest.mark.parametrize("setup, reference, reason", [
@@ -573,7 +578,7 @@ def test_unresolvable_nestable_groups(tenant, setup, reference, reason):
     setup(tenant)
 
     with pytest.raises(GroupResolutionError, match=reason):
-        _groups._resolve_nestable_group(TOKEN, reference)
+        _groups._resolve_nestable_group(GRAPH_TOKEN, reference)
 
 
 # SharePoint principals and role assignments
@@ -586,7 +591,7 @@ def test_new_group_principal_waits_for_replication(tenant, monkeypatch):
     tenant.fail("POST", r"/web/ensureuser$", response(400), times=1)
 
     principal_id = _sharepoint._resolve_group_principal_id(
-        TOKEN, site.url, f"c:0t.c|tenant|{group['id']}", is_new_group=True,
+        SP_TOKEN, site.url, f"c:0t.c|tenant|{group['id']}", is_new_group=True,
     )
 
     assert principal_id == site.principals[f"c:0t.c|tenant|{group['id']}"]
@@ -597,13 +602,13 @@ def test_existing_group_principal_failure_is_raised(tenant):
     site = tenant.add_site("/sites/maths")
 
     with pytest.raises(requests.HTTPError):
-        _sharepoint._resolve_group_principal_id(TOKEN, site.url, "c:0t.c|tenant|missing")
+        _sharepoint._resolve_group_principal_id(SP_TOKEN, site.url, "c:0t.c|tenant|missing")
 
 
 def test_role_definitions_are_read_in_one_request(tenant):
     site = tenant.add_site("/sites/maths")
 
-    role_def_ids = _sharepoint._resolve_role_def_ids(TOKEN, site.url)
+    role_def_ids = _sharepoint._resolve_role_def_ids(SP_TOKEN, site.url)
 
     assert role_def_ids == {"read": 1073741826, "contribute": 1073741827, "owner": 1073741829}
     assert len(tenant.calls) == 1
@@ -616,7 +621,7 @@ def test_missing_role_definition_is_an_error(tenant):
     ]}}))
 
     with pytest.raises(ValueError, match="contribute"):
-        _sharepoint._resolve_role_def_ids(TOKEN, site.url)
+        _sharepoint._resolve_role_def_ids(SP_TOKEN, site.url)
 
 
 def test_role_definitions_are_found_by_type_not_name(tenant):
@@ -628,7 +633,7 @@ def test_role_definitions_are_found_by_type_not_name(tenant):
         {"Id": 14, "Name": "Read", "RoleTypeKind": 0},  # a custom level reusing an English name
     ]}}))
 
-    assert _sharepoint._resolve_role_def_ids(TOKEN, site.url) == {"read": 11, "contribute": 12, "owner": 13}
+    assert _sharepoint._resolve_role_def_ids(SP_TOKEN, site.url) == {"read": 11, "contribute": 12, "owner": 13}
 
 
 def test_ordinary_lists_are_not_libraries_but_their_titles_count(tenant):
@@ -636,7 +641,7 @@ def test_ordinary_lists_are_not_libraries_but_their_titles_count(tenant):
     tasks = site.add_list("English tasks", slug="ENG", template="genericList")  # /Lists/ENG
     titled = site.add_list("ART", slug="ArtList", template="genericList")
 
-    lists = _graph._list_existing_lists(TOKEN, site.id)
+    lists = _graph._list_existing_lists(GRAPH_TOKEN, site.id)
 
     assert "eng" not in lists and lists["list:eng"]["id"] == tasks["id"]
     assert _graph._find_title_conflict(lists, "ART")["id"] == titled["id"]
@@ -647,15 +652,15 @@ def test_group_roles_are_keyed_by_claims_login_name(tenant):
     site = tenant.add_site("/sites/maths")
     lst = site.add_list("ENG", unique=True)
     group = tenant.add_group("SP-ENG-Auto-Read")
-    principal = _sharepoint._resolve_group_principal_id(TOKEN, site.url, _sharepoint._group_claims(group["id"]))
-    _sharepoint._add_role_assignment(TOKEN, site.url, lst["id"], principal, 1073741826)
+    principal = _sharepoint._resolve_group_principal_id(SP_TOKEN, site.url, _sharepoint._group_claims(group["id"]))
+    _sharepoint._add_role_assignment(SP_TOKEN, site.url, lst["id"], principal, 1073741826)
 
-    roles = _sharepoint._get_library_group_roles(TOKEN, site.url, lst["id"])
+    roles = _sharepoint._get_library_group_roles(SP_TOKEN, site.url, lst["id"])
 
     assert roles == {f"c:0t.c|tenant|{group['id']}": {1073741826}}
     tenant.calls.clear()
     assert _sharepoint._ensure_group_assigned_to_library(
-        TOKEN, site.url, lst["id"], group["id"], "SP-ENG-Auto-Read", 1073741826, existing_roles=roles,
+        SP_TOKEN, site.url, lst["id"], group["id"], "SP-ENG-Auto-Read", 1073741826, existing_roles=roles,
     ) is False
     assert tenant.calls == []
 
@@ -664,7 +669,7 @@ def test_removing_a_missing_role_assignment_is_not_an_error(tenant):
     site = tenant.add_site("/sites/maths")
     lst = site.add_list("ENG", unique=True)
 
-    assert _sharepoint._remove_library_role_assignment(TOKEN, site.url, lst["id"], 99) is False
+    assert _sharepoint._remove_library_role_assignment(SP_TOKEN, site.url, lst["id"], 99) is False
 
 
 # Property bag
@@ -673,11 +678,12 @@ def test_property_bag_values_are_xml_escaped_and_read_back(tenant):
     site = tenant.add_site("/sites/maths")
     lst = site.add_list("ENG")
 
-    _sharepoint._set_library_properties(TOKEN, site.url, lst["id"], {"SourceSystem": "A & B <c>", "SourceId": "42"})
+    _sharepoint._set_library_properties(SP_TOKEN, site.url, lst["id"], {"SourceSystem": "A & B <c>", "SourceId": "42"})
 
     [(_, _, kwargs)] = tenant.calls
     assert b"A &amp; B &lt;c&gt;" in kwargs["data"]
-    assert _sharepoint._get_library_properties(TOKEN, site.url, lst["id"], ["SourceSystem", "SourceId", "Other"]) == {
+    names = ["SourceSystem", "SourceId", "Other"]
+    assert _sharepoint._get_library_properties(SP_TOKEN, site.url, lst["id"], names) == {
         "SourceSystem": "A & B <c>", "SourceId": "42", "Other": None,
     }
 
@@ -686,7 +692,9 @@ def test_property_bag_csom_errors_are_raised(tenant):
     site = tenant.add_site("/sites/maths")
 
     with pytest.raises(ValueError, match="List does not exist"):
-        _sharepoint._set_library_properties(TOKEN, site.url, "0f0f0f0f-0000-0000-0000-000000000000", {"SourceId": "1"})
+        _sharepoint._set_library_properties(
+            SP_TOKEN, site.url, "0f0f0f0f-0000-0000-0000-000000000000", {"SourceId": "1"},
+        )
 
 
 # Navigation URLs
@@ -711,14 +719,14 @@ def test_graph_base_url_matches_the_fake():
 def test_group_names_with_query_characters_are_found(tenant, name):
     group = tenant.add_group(name)
 
-    assert _groups._find_group_by_name(TOKEN, name)["id"] == group["id"]
-    assert _groups._find_groups_by_name_prefix(TOKEN, name[:6])[name.lower()][0]["id"] == group["id"]
+    assert _groups._find_group_by_name(GRAPH_TOKEN, name)["id"] == group["id"]
+    assert _groups._find_groups_by_name_prefix(GRAPH_TOKEN, name[:6])[name.lower()][0]["id"] == group["id"]
 
 
 def test_group_names_match_case_insensitively_like_graph(tenant):
     group = tenant.add_group("baa-sharepoint-MATH-Auto-Read")
 
-    groups = _groups._find_groups_by_name_prefix(TOKEN, "BAA-Sharepoint-MATH-")
+    groups = _groups._find_groups_by_name_prefix(GRAPH_TOKEN, "BAA-Sharepoint-MATH-")
 
     assert _groups._get_unique_group(groups, "BAA-Sharepoint-MATH-Auto-Read")["id"] == group["id"]
 
@@ -731,7 +739,7 @@ def test_prefix_lookup_sends_the_filter_as_a_parameter_on_the_first_page_only(mo
     sent = []
     monkeypatch.setattr(requests, "request", lambda method, url, **kwargs: sent.append((url, kwargs)) or pages.pop(0))
 
-    _groups._find_groups_by_name_prefix(TOKEN, "SP-")
+    _groups._find_groups_by_name_prefix(GRAPH_TOKEN, "SP-")
 
     assert sent[0][0] == f"{GRAPH}/groups"
     assert sent[0][1]["params"]["$filter"] == "startswith(displayName, 'SP-')"
@@ -742,7 +750,7 @@ def test_user_principal_name_cannot_change_the_graph_path(tenant):
     tenant.add_group("Target")
 
     with pytest.raises(UserResolutionError):
-        _groups._resolve_user_with_fallback(TOKEN, "../groups/x@contoso.com")
+        _groups._resolve_user_with_fallback(GRAPH_TOKEN, "../groups/x@contoso.com")
 
     direct = [url for method, url, _ in tenant.calls if "/users/" in url]
     assert direct == [f"{GRAPH}/users/..%2Fgroups%2Fx%40contoso.com"]
@@ -784,7 +792,7 @@ def test_group_names_differing_only_in_case_are_duplicates(tenant):
     tenant.add_group("sp-eng-auto-read")
 
     with pytest.raises(ValueError, match="Multiple Entra groups share displayName"):
-        _groups._find_group_by_name(TOKEN, "SP-ENG-Auto-Read")
+        _groups._find_group_by_name(GRAPH_TOKEN, "SP-ENG-Auto-Read")
 
 
 def jwt(claims):
