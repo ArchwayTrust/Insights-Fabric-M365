@@ -488,6 +488,12 @@ class SharePointLibraryManager:
             current_title = existing_list["displayName"] if existing_list is not None else library_code
             if library_display_name and library_display_name != current_title:
                 title_conflict = _find_title_conflict(existing_lists, library_code, title=library_display_name)
+                if title_conflict is not None and not dry_run:
+                    # The lists were read before this run's renames, and the
+                    # other list may have given up the title since
+                    title_conflict = _find_title_conflict(
+                        _list_existing_lists(self._graph_token, site_id), library_code, title=library_display_name,
+                    )
                 if title_conflict is not None:
                     # Titles are unique per site, so the rename would fail on every run
                     _append_log(

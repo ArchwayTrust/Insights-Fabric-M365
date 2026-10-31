@@ -237,6 +237,18 @@ def test_a_failed_rename_leaves_the_library_with_its_own_permissions(make_manage
     assert list(rows(results, "error")["document_library"]) == ["SCI2"]
 
 
+def test_a_title_another_library_gives_up_in_the_same_run_is_used(make_manager, site):
+    make_manager().create_libraries(libraries_df(site, "ENG", "OTH", library_display_name=["English", "Other"]))
+
+    # ENG gives up "English" before OTH takes it, after the site's lists were read
+    results = make_manager().create_libraries(
+        libraries_df(site, "ENG", "OTH", library_display_name=["Maths", "English"]),
+    )
+
+    assert (site.list_by_slug("ENG")["displayName"], site.list_by_slug("OTH")["displayName"]) == ("Maths", "English")
+    assert "library_name_conflict" not in actions(results)
+
+
 def test_renaming_onto_another_lists_title_is_a_warning(make_manager, site):
     make_manager().create_libraries(libraries_df(site, "ENG"))
     site.add_list("English", slug="EnglishOld")
