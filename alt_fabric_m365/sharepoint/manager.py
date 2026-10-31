@@ -279,8 +279,9 @@ class SharePointLibraryManager:
         A site that can't be read gets one ``error`` row and is left out, so
         only its libraries are skipped and the rest of the operation
         proceeds; the watermark is held back, so they are retried next run.
-        *gone* is an (action, status) row logged instead when a site no
-        longer resolves (HTTP 400, 403 or 404).
+        *gone* is an (action, status) row logged instead when a site doesn't
+        exist (HTTP 404).  A 403 isn't one: the site exists, but the app
+        can't read it, as when its Sites.Selected grant has been removed.
         """
         sites: dict[str, dict] = {}
         for site_url in dict.fromkeys(site_urls):
@@ -289,7 +290,7 @@ class SharePointLibraryManager:
                     site_id = _get_site_id(self._graph_token, site_url)
                 except requests.HTTPError as exc:
                     status = exc.response.status_code if exc.response is not None else None
-                    if gone is not None and status in (400, 403, 404):
+                    if gone is not None and status == 404:
                         _append_log(action_log, site_url, "", *gone)
                         continue
                     raise
@@ -438,9 +439,11 @@ class SharePointLibraryManager:
 
             # Step 2.5: Set metadata properties on the library's root folder
             if source_system is not None or source_id is not None:
+                # A dry run has no list_id, but reads an existing library's values
                 _ensure_library_metadata(
-                    self._sp_token, site_url, list_id, library_code,
-                    source_system, source_id, action_log, dry_run=dry_run,
+                    self._sp_token, site_url,
+                    list_id if list_id is not None else (existing_list or {}).get("id"),
+                    library_code, source_system, source_id, action_log, dry_run=dry_run,
                 )
 
             # Step 3: Build the full list of groups to create
@@ -1008,8 +1011,15 @@ class SharePointLibraryManager:
             # is found in the prefetched lists, so a dry run reports a missing
             # library as a live run does.
             list_id = _get_list_id(self._graph_token, site_id, library_code, existing=existing_lists)
-            lib_web_url = existing_lists[library_code.lower()].get("webUrl", "")
-            if dry_run:
+            library = existing_lists[library_code.lower()]
+            lib_web_url = library.get("webUrl", "")
+            if library.get("displayName") == new_display_name:
+                # A re-run writes nothing, as the README promises
+                _append_log(
+                    action_log, site_url, library_code,
+                    "already_named", f"display name is already '{new_display_name}'",
+                )
+            elif dry_run:
                 logger.info(
                     "[DRY RUN] Would set display name to '%s' on library '%s'",
                     new_display_name, library_code,
@@ -1064,7 +1074,8 @@ class SharePointLibraryManager:
         """Rename SharePoint libraries' display names.
 
         For each row in the DataFrame:
-          1. Updates the library's display name (the URL slug is unchanged).
+          1. Updates the library's display name (the URL slug is unchanged),
+             unless it already has that name (``already_named``).
           2. If ``add_to_navigation`` is on, updates the library's quick-launch
              navigation link title to the new display name (a missing label or
              link is a no-op — links are only added by ``create_libraries``).
@@ -1604,9 +1615,11 @@ class SharePointLibraryManager:
           3. If ``add_to_navigation`` is on, removes the old site's
              navigation link.
 
-        An old site that no longer resolves, or a library already gone, is
+        An old site that no longer exists, or a library already gone, is
         logged as ``retire_skipped`` — the leftover has evidently been
-        cleaned up already.
+        cleaned up already.  An old or new site the app can't read (such as
+        a 403 when its grant has been removed) is an ``error`` row, and the
+        library is left as it is.
 
         Required DataFrame columns:
           - site_url:       OLD SharePoint site URL (the previous hub)
@@ -1663,16 +1676,24 @@ class SharePointLibraryManager:
         # The new sites: to check the move's replacement exists, and that the
         # new site isn't the old one spelt differently.  Reads only, so dry
         # runs read them too.
+        # A new site that doesn't exist yet only defers the retire, but one
+        # that can't be read is an error for each library moving to it, so
+        # the run isn't clean while the reason is hidden.
+        new_site_log = _ThreadSafeLog()
         new_sites = (
-            self._prefetch_sites(new_site_urls, _ThreadSafeLog(), role_definitions=True) if new_site_urls else {}
+            self._prefetch_sites(new_site_urls, new_site_log, role_definitions=True, gone=("missing", ""))
+            if new_site_urls else {}
         )
+        unreadable_new_sites = {
+            row["site_url"]: row["status"] for row in new_site_log.to_list() if row["action"] == "error"
+        }
 
         # Old hubs may have been deleted since the move — those are skipped
         # (nothing to retire), not errors.
         sites = self._prefetch_sites(
             df["site_url"].unique(), action_log,
             navigation_label=navigation_label_ if add_to_navigation_ else None,
-            gone=("retire_skipped", "old site no longer resolves — nothing to retire"),
+            gone=("retire_skipped", "old site no longer exists — nothing to retire"),
         )
 
         items = []
@@ -1681,6 +1702,13 @@ class SharePointLibraryManager:
             if site_url not in sites:
                 continue  # site gone or couldn't be read — already logged
             new_site_url = row["new_site_url"]
+            if pd.notna(new_site_url) and new_site_url in unreadable_new_sites:
+                _append_log(
+                    action_log, site_url, row["library_code"], "error",
+                    f"its new site ({new_site_url}) couldn't be read, so it wasn't retired: "
+                    f"{unreadable_new_sites[new_site_url]}",
+                )
+                continue
             new_site = new_sites.get(new_site_url) if pd.notna(new_site_url) else None
             if new_site is not None and new_site["site_id"] == sites[site_url]["site_id"]:
                 # Graph finds a site ignoring case and a trailing slash, so
@@ -2950,19 +2978,34 @@ class SharePointLibraryManager:
         logged as an ``error`` row.
 
         Args:
-            site_urls:   Iterable of full SharePoint site URLs — duplicates
-                         are ignored.
+            site_urls:   Iterable of full SharePoint site URLs.  A site listed
+                         more than once, including spelt differently (in
+                         case, or with a trailing slash), is checked once,
+                         under its first spelling.
             dry_run:     Override instance default.
             max_workers: Override instance default.
 
         Returns:
             Action-log DataFrame (``document_library`` is empty for these
             site-level rows).
+
+        Raises:
+            TypeError: If site_urls is a single URL rather than a list of them.
         """
         dry_run_, max_workers_ = self._resolve_config(dry_run=dry_run, max_workers=max_workers)
 
-        unique_urls = sorted(set(site_urls))
-        _validate_site_urls(unique_urls, self.sharepoint_hostname)
+        # A string is an iterable of characters, each of which would fail as a URL
+        if isinstance(site_urls, str):
+            raise TypeError("site_urls is a list of site URLs: for one site, pass [site_url]")
+        site_urls = list(site_urls)
+        _validate_site_urls(site_urls, self.sharepoint_hostname)
+        # Graph finds a site ignoring case and a trailing slash, so each
+        # spelling would be checked and written separately, at the same time
+        # with max_workers above 1
+        spellings: dict[str, str] = {}
+        for site_url in site_urls:
+            spellings.setdefault(site_url.rstrip("/").lower(), site_url)
+        unique_urls = sorted(spellings.values())
 
         action_log = _ThreadSafeLog()
         items = [(site_url, dry_run_) for site_url in unique_urls]

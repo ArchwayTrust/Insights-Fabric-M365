@@ -558,6 +558,8 @@ mailbox = Emails(credential, "reports@contoso.com")
 
 A token is requested from the credential for each call, and the credential caches it, so one instance can be used for the whole notebook.
 
+Requests Graph throttles (`429`, or `503` with `Retry-After`), server errors and dropped connections are retried, honouring `Retry-After`, as the SharePoint manager's are. Sending an email is only retried when Graph certainly didn't send it, as a retry after a server error or timeout could send it twice.
+
 Every method also takes an optional `shared_mailbox_email` argument to work with a different mailbox for that call. The app needs access to that mailbox too. If you always pass `shared_mailbox_email`, you can leave out `mailbox`, as in `Emails(credential)`. A call with neither raises `ValueError`.
 
 ### Finding an email
@@ -648,7 +650,7 @@ Only file attachments can be downloaded. Passing the ID of an attached email or 
 mailbox.delete_email(message_id)
 ```
 
-Returns `True`, or raises an exception if the email couldn't be deleted. Delete emails after processing them, so the next run doesn't pick them up again.
+Returns `True`, also when the email is already gone, or raises an exception if it couldn't be deleted. Delete emails after processing them, so the next run doesn't pick them up again.
 
 ### Sending an email
 
@@ -873,7 +875,7 @@ To block every site, revoke the admin consent for `Sites.Selected` on both APIs,
 #### Things to know
 
 - **Grant a new site before the manager uses it.** When your data adds a library on a site the app hasn't been granted, that site gets one `error` row and its libraries are skipped. The rest of the run carries on. In the [recommended flow](#recommended-flow) the watermark isn't advanced, so once you've granted the site the next run picks them up.
-- **Keep the old site's grant until retiring is done.** `retire_moved_libraries` treats a 403 from the old site the same as a deleted site: it logs `retire_skipped` ("old site no longer resolves") and leaves the old library as it is. Only remove the grant after the old libraries have been retired.
+- **Keep the old site's grant until retiring is done.** `retire_moved_libraries` can't retire a library on a site the app can no longer read: a 403 from the old site, or from the new one, is an `error` row, and the old library is left as it is. Only remove the grant after the old libraries have been retired. An old site that no longer exists (404) is `retire_skipped`, as there's nothing left to retire; a new site that doesn't exist yet defers the retire (`retire_deferred`), so the old library keeps its access.
 - **A grant covers the whole site collection**, including any subsites, and doesn't change who else can use the site. It doesn't break permission inheritance on anything.
 - **The app can't find sites it hasn't been granted.** It can only work with the site URLs you give it, which is all `SharePointLibraryManager` needs.
 - **Other permissions still reach the whole tenant.** `Group.ReadWrite.All`, `GroupMember.ReadWrite.All` and `User.Read.All` aren't limited by `Sites.Selected`. Nor is `Files.ReadWrite.All`: as an application permission it can read and write files in every document library on every site, as well as every user's OneDrive. Adding it for `create_onedrive_shortcuts=True` therefore gives the app file access to sites it hasn't been granted, so only add it if you use shortcuts and accept that.
@@ -912,9 +914,9 @@ Create the credential without a scope: the manager asks it for a Graph token and
 | `update_memberships(df, libraries_df=None, nested_groups_df=None)` | Makes each library's Auto groups contain exactly the users (and nested groups) given. Users are matched by UPN, then mail, then proxy addresses, so aliased domains work. Libraries in `libraries_df` with no rows in `df` have their Auto groups emptied. | `site_url`, `library_code`, `user_principal_name`, `permission` (`read`, `contribute` or `owner`), `group_prefix` |
 | `unlink_libraries(df)` | For libraries removed at source: renames to `{code}_UNLINKED`, empties the Auto groups, keeps the Manual groups, removes the navigation link. Nothing is deleted. A library already unlinked isn't renamed again (`already_unlinked`). A code whose group names are another library's (`group_name_collision`, see [Safety features](#safety-features)) is skipped, so its groups are never emptied. | `site_url`, `library_code`, `group_prefix` |
 | `retire_moved_libraries(df)` | For a library whose site changed: renames the copy on the **old** site to `{code}_MOVED` and removes the groups' access to it. With `new_site_url`, waits until the library is working there (`retire_deferred` until then). A library already retired isn't renamed again (`already_retired`), and only groups that still have access are touched. | `site_url` (the old site), `library_code`, `group_prefix`. Optional: `new_site_url` |
-| `rename_libraries(df)` | Sets new display names, and the navigation links' titles. Groups keep their names, as the code can't change. Up to 1.0.x it accepted `old_library_code` to rename the groups to a new code, but that never worked, so a row with one now raises `ValueError`. | `site_url`, `library_code`, `library_display_name` |
+| `rename_libraries(df)` | Sets new display names, and the navigation links' titles. A library that already has its name is left alone (`already_named`). Groups keep their names, as the code can't change. Up to 1.0.x it accepted `old_library_code` to rename the groups to a new code, but that never worked, so a row with one now raises `ValueError`. | `site_url`, `library_code`, `library_display_name` |
 | `grant_group_access(df)` | Grants existing groups a permission level on existing libraries, for example a leadership group on every library. Additive: never removes access. | `site_url`, `library_code`, `group_name`, `permission` |
-| `enforce_site_sharing_lockdown(site_urls)` | Turns off member sharing, access requests and member invites on each site, and checks the change stuck. | A list of site URLs |
+| `enforce_site_sharing_lockdown(site_urls)` | Turns off member sharing, access requests and member invites on each site, and checks the change stuck. A site listed more than once, even spelt differently, is checked once. | A list of site URLs (for one site, `[site_url]`) |
 | `set_library_metadata(df)` / `get_library_metadata(df)` | Writes or reads `source_system` and `source_id` in each library's property bag. | `site_url`, `library_code`, and for set `source_system` and/or `source_id` |
 | `ensure_onedrive_shortcuts(df)` | Not part of the usual flow. Creates any missing OneDrive shortcuts to libraries, such as ones that failed because the user's OneDrive didn't exist yet (`onedrive_shortcut_failed`), which `update_memberships` never retries. A shortcut to the library already there, even renamed, is left alone (`onedrive_shortcut_exists`). A shortcut to a folder in the library doesn't count. | `site_url`, `library_code`, `user_principal_name`: the members table works as it is |
 
@@ -946,7 +948,7 @@ results = mgr.update_memberships(members, libraries_df=libraries)
 
 ### The action log
 
-Every operation returns a DataFrame with the columns `site_url`, `document_library`, `group`, `user`, `action`, `permission` and `status`, one row per thing it did or (in a dry run) would do. Problems are rows too, so one bad library, user or site never stops the others. Where nothing needed changing, the row says so (`already_member`, `already_assigned`), and nothing is written. Two sets of action names help decide whether a run succeeded:
+Every operation returns a DataFrame with the columns `site_url`, `document_library`, `group`, `user`, `action`, `permission` and `status`, one row per thing it did or (in a dry run) would do. Problems are rows too, so one bad library, user or site never stops the others. Where nothing needed changing, the row says so (`already_member`, `already_assigned`, `metadata_unchanged`), and nothing is written. Two sets of action names help decide whether a run succeeded:
 
 - `FATAL_ACTIONS`: `error`, `add_failed`, `remove_failed`. Something failed and should be retried, so fail the run.
 - `WARNING_ACTIONS`: for example `user_not_found`, `library_not_found` and `removal_guardrail_triggered`. Problems with the data that failing the run wouldn't fix.
@@ -1337,7 +1339,7 @@ What they cover:
 | File | Covers |
 | --- | --- |
 | `test_auth.py` | `KeyVaultCertificateCredential`: token requests and caching, Key Vault signing, the client assertion, error descriptions |
-| `test_exchange.py` | `Emails` and reading Graph errors |
+| `test_exchange.py` | `Emails`, its retries and reading Graph errors |
 | `test_sharepoint_http.py` | The retry wrapper: throttling, `Retry-After`, server and connection errors, redirects, a current token for each attempt |
 | `test_sharepoint_helpers.py` | Group naming and collisions, input validation, user and group resolution, the property bag, navigation URLs |
 | `test_sharepoint_manager.py` | Every `SharePointLibraryManager` operation end to end, including re-runs, dry runs, guardrails and failures, and authenticating with `KeyVaultCertificateCredential` |

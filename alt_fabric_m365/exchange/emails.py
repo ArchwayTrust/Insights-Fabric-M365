@@ -7,6 +7,9 @@ import requests
 import json
 import base64
 from ..auth import Scopes
+# The retry wrapper the SharePoint code uses: throttling, server errors and dropped connections are retried, and the
+# token is renewed before each attempt
+from ..sharepoint._http import _bearer, _RenewableToken, _request_with_retry
 
 
 class MessageNotFoundError(Exception):
@@ -82,6 +85,9 @@ class Emails:
         - Application Mail.Send to send emails.
     Don't grant Mail.Read, Mail.ReadWrite or Mail.Send as Entra ID API permissions, as those apply to every mailbox in the tenant.
 
+    Requests are retried when Graph throttles them, on server errors and on dropped connections, honouring Retry-After.
+    Sending is only retried when Graph certainly didn't send the email.
+
     Attributes:
         credential (TokenCredential): Credential used to get Microsoft Graph access tokens.
         mailbox (str | None): Email address of the default mailbox, used unless a method is given a different one.
@@ -107,13 +113,13 @@ class Emails:
     def _headers(self) -> dict:
         """Returns headers for calling Microsoft Graph with a current access token.
 
-        The credential caches tokens, so this is called for each request rather than storing a token
-        that would expire during long runs.
+        The credential caches tokens, so the token is fetched for each request, and again before each retry of it,
+        rather than stored where it would expire during long runs or a long wait while throttled.
         """
-        access_token = self.credential.get_token(Scopes.GRAPH).token
+        access_token = _RenewableToken(lambda: self.credential.get_token(Scopes.GRAPH).token)
 
         return {
-            'Authorization': f'Bearer {access_token}',
+            'Authorization': _bearer(access_token),
             'Content-Type': 'application/json'
         }
 
@@ -171,7 +177,9 @@ class Emails:
         messages = []
         while endpoint:
             # Get headers for each page, so a token expiring part way through is refreshed
-            response = requests.get(endpoint, headers=self._headers(), params=query_parameters, timeout=self.REQUEST_TIMEOUT_SECONDS)
+            response = _request_with_retry(
+                "GET", endpoint, headers=self._headers(), params=query_parameters, timeout=self.REQUEST_TIMEOUT_SECONDS,
+            )
             if response.status_code != 200:
                 raise Exception(_error_message("Error searching message by subject", response))
 
@@ -225,7 +233,7 @@ class Emails:
         attachments_info = []
         while endpoint:
             # Performing a GET request to retrieve a page of attachments, raising if unsuccessful
-            response = requests.get(endpoint, headers=self._headers(), timeout=self.REQUEST_TIMEOUT_SECONDS)
+            response = _request_with_retry("GET", endpoint, headers=self._headers(), timeout=self.REQUEST_TIMEOUT_SECONDS)
             if not response.ok:
                 raise requests.HTTPError(_error_message("Failed to list attachments", response), response=response)
 
@@ -280,7 +288,9 @@ class Emails:
         )
 
         # Making a GET request to fetch the attachment and check success
-        attachment_response = requests.get(attachment_url, headers=self._headers(), timeout=self.REQUEST_TIMEOUT_SECONDS)
+        attachment_response = _request_with_retry(
+            "GET", attachment_url, headers=self._headers(), timeout=self.REQUEST_TIMEOUT_SECONDS,
+        )
         if not attachment_response.ok:
             raise requests.HTTPError(
                 _error_message("Failed to download attachment", attachment_response), response=attachment_response,
@@ -312,7 +322,7 @@ class Emails:
             shared_mailbox_email: Optional. The email address of a different mailbox to delete the email from.
 
         Returns:
-            True if the email was successfully deleted.
+            True if the email was deleted, or was already gone (Graph's 404 ErrorItemNotFound).
 
         Raises:
             Exception: If Graph doesn't delete it. The message includes Graph's error code.
@@ -321,14 +331,18 @@ class Emails:
         delete_url = f'{self._mailbox_url(shared_mailbox_email)}/messages/{_path(message_id)}'
 
         # Sending the DELETE request
-        response = requests.delete(delete_url, headers=self._headers(), timeout=self.REQUEST_TIMEOUT_SECONDS)
+        response = _request_with_retry("DELETE", delete_url, headers=self._headers(), timeout=self.REQUEST_TIMEOUT_SECONDS)
 
         # Check if the request was successful
         if response.status_code == 204:
             print("Email deleted successfully.")
             return True
-        else:
-            raise Exception(_error_message("Failed to delete email", response))
+        # A retry after a timeout or server error finds the email the first attempt deleted gone. Either way it's
+        # not in the mailbox, as asked.
+        if response.status_code == 404 and _graph_error(response)[0] == 'ErrorItemNotFound':
+            print("Email already deleted.")
+            return True
+        raise Exception(_error_message("Failed to delete email", response))
 
     def send_email(
         self, subject: str, content: str, email_addresses: list[str] | str, shared_mailbox_email: str | None = None,
@@ -374,7 +388,12 @@ class Emails:
         }
 
         # Post the email.
-        response = requests.post(url, headers=self._headers(), data=json.dumps(email), timeout=self.REQUEST_TIMEOUT_SECONDS)
+        # Only retried when Graph certainly didn't send it (429, or a connection that never opened): a 5xx or timeout
+        # may follow an email that was sent, and a retry would send it twice
+        response = _request_with_retry(
+            "POST", url, headers=self._headers(), data=json.dumps(email), timeout=self.REQUEST_TIMEOUT_SECONDS,
+            idempotent=False,
+        )
 
         if response.status_code == 202:
             print("Email sent successfully!")
@@ -403,7 +422,9 @@ class Emails:
         message_url = f'{self._mailbox_url(shared_mailbox_email)}/messages/{_path(message_id)}'
 
         # Making a GET request to the Graph API, only selecting the ID to keep the response small
-        response = requests.get(message_url, headers=self._headers(), params={'$select': 'id'}, timeout=self.REQUEST_TIMEOUT_SECONDS)
+        response = _request_with_retry(
+            "GET", message_url, headers=self._headers(), params={'$select': 'id'}, timeout=self.REQUEST_TIMEOUT_SECONDS,
+        )
 
         if response.ok:
             return True

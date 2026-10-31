@@ -412,9 +412,20 @@ def _ensure_library_metadata(
 ) -> None:
     """Set source_system / source_id on a library's root folder property bag.
 
-    Skips any value that is ``None``.  Appends action-log entries for each
-    property that was written.  In dry-run mode only logs what would be set
-    (*list_id* may be None in that case).
+    Skips any value that is ``None``.  The current values are read first, so
+    only those that differ are written (``metadata_set``), and a re-run
+    writes nothing (``metadata_unchanged``).  In dry-run mode the values are
+    read but only logged as what would be set.
+
+    Args:
+        token: SharePoint access token.
+        site_url: Full SharePoint site URL.
+        list_id: Graph list ID of the library, or None for a library a dry run would create, which has no values.
+        library_code: The library's code, for the action log.
+        source_system: Value for SourceSystem, or None to leave it.
+        source_id: Value for SourceId, or None to leave it.
+        action_log: The operation's action log.
+        dry_run: Optional. Log what would be set rather than set it. Defaults to False.
     """
     props = {}
     for df_col, prop_key in METADATA_PROPERTY_KEYS.items():
@@ -425,8 +436,19 @@ def _ensure_library_metadata(
     if not props:
         return
 
+    current = _get_library_properties(token, site_url, list_id, list(props)) if list_id is not None else {}
+    changed = {key: value for key, value in props.items() if current.get(key) != value}
+    for prop_key, value in props.items():
+        if prop_key not in changed:
+            _append_log(
+                action_log, site_url, library_code,
+                "metadata_unchanged", f"{prop_key}={value}",
+            )
+    if not changed:
+        return
+
     if dry_run:
-        for prop_key, value in props.items():
+        for prop_key, value in changed.items():
             logger.info("[DRY RUN] Would set metadata %s=%s", prop_key, value)
             _append_log(
                 action_log, site_url, library_code,
@@ -434,9 +456,9 @@ def _ensure_library_metadata(
             )
         return
 
-    _set_library_properties(token, site_url, list_id, props)
+    _set_library_properties(token, site_url, list_id, changed)
 
-    for prop_key, value in props.items():
+    for prop_key, value in changed.items():
         _append_log(
             action_log, site_url, library_code,
             "metadata_set", f"{prop_key}={value}",
