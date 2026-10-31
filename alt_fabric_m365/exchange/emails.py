@@ -16,6 +16,21 @@ class MessageNotFoundError(Exception):
     """
 
 
+def _path(value: str) -> str:
+    """Returns a value quoted to go into a URL path as one segment.
+
+    An email address can contain '#', '?', '/' or '%', and message and attachment IDs can contain '/' and '='.
+    Unquoted, '#' would end the URL sent to Graph and '?' or '/' would change which resource it asks for.
+
+    Args:
+        value: A mailbox address, message ID or attachment ID.
+
+    Returns:
+        The value with every character that isn't a letter, digit or one of '_.-~' percent-encoded.
+    """
+    return requests.utils.quote(value, safe='')
+
+
 def _graph_error(response: requests.Response) -> tuple[str | None, str | None]:
     """Returns the error code and message from a Microsoft Graph error response.
 
@@ -91,7 +106,7 @@ class Emails:
         if not mailbox:
             raise ValueError("No mailbox given. Pass shared_mailbox_email or set a default mailbox when creating Emails.")
 
-        return f"{self.GRAPH_URL}/users/{mailbox}"
+        return f"{self.GRAPH_URL}/users/{_path(mailbox)}"
 
     def search_message_by_subject_and_sender(
         self,
@@ -184,7 +199,7 @@ class Emails:
             requests.HTTPError: If the Microsoft Graph request fails.
         """
         # Constructing the URL for the Microsoft Graph API attachments endpoint
-        endpoint = f'{self._mailbox_url(shared_mailbox_email)}/messages/{message_id}/attachments'
+        endpoint = f'{self._mailbox_url(shared_mailbox_email)}/messages/{_path(message_id)}/attachments'
 
         # Initialising an empty list to store attachment information
         attachments_info = []
@@ -235,7 +250,9 @@ class Emails:
             The content of the attachment, as bytes for binary files or a decoded string for text files.
         """
         # Constructing the URL to access the attachment via Microsoft Graph API
-        attachment_url = f'{self._mailbox_url(shared_mailbox_email)}/messages/{message_id}/attachments/{attachment_id}'
+        attachment_url = (
+            f'{self._mailbox_url(shared_mailbox_email)}/messages/{_path(message_id)}/attachments/{_path(attachment_id)}'
+        )
 
         # Making a GET request to fetch the attachment and check success
         attachment_response = requests.get(attachment_url, headers=self._headers(), timeout=self.REQUEST_TIMEOUT_SECONDS)
@@ -270,7 +287,7 @@ class Emails:
             True if the email was successfully deleted. Raises an exception otherwise.
         """
         # Constructing the URL for the Microsoft Graph API delete message endpoint
-        delete_url = f'{self._mailbox_url(shared_mailbox_email)}/messages/{message_id}'
+        delete_url = f'{self._mailbox_url(shared_mailbox_email)}/messages/{_path(message_id)}'
 
         # Sending the DELETE request
         response = requests.delete(delete_url, headers=self._headers(), timeout=self.REQUEST_TIMEOUT_SECONDS)
@@ -343,7 +360,7 @@ class Emails:
             Exception: If the check fails for any other reason. The message includes the status code and Graph error.
         """
         # Constructing the URL for the Microsoft Graph API message endpoint
-        message_url = f'{self._mailbox_url(shared_mailbox_email)}/messages/{message_id}'
+        message_url = f'{self._mailbox_url(shared_mailbox_email)}/messages/{_path(message_id)}'
 
         # Making a GET request to the Graph API, only selecting the ID to keep the response small
         response = requests.get(message_url, headers=self._headers(), params={'$select': 'id'}, timeout=self.REQUEST_TIMEOUT_SECONDS)
