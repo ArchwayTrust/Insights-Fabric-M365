@@ -2957,6 +2957,7 @@ class SharePointLibraryManager:
         sites = self._prefetch_sites(df["site_url"].unique(), action_log, role_definitions=True)
         principal_ids: dict[tuple[str, str], int] = {}
         principal_ids_lock = threading.Lock()
+        principal_id_failures: dict[tuple[str, str], Exception] = {}
 
         def principal_id(site_url: str, group_id: str) -> int:
             """Return a group's principal ID on a site, registering it there (ensureuser) the first time.
@@ -2964,14 +2965,22 @@ class SharePointLibraryManager:
             A principal is per site, and ensureuser is a write, so it's only
             called for a grant a library doesn't hold yet, and then once per
             site and group.  The lock is held while the ID is got, so
-            libraries running in parallel don't each get it.
+            libraries running in parallel don't each get it.  A failure is
+            kept too, and raised again for the site's other libraries rather
+            than tried again with its retries.
             """
+            key = (site_url, group_id)
             with principal_ids_lock:
-                if (site_url, group_id) not in principal_ids:
-                    principal_ids[(site_url, group_id)] = _resolve_group_principal_id(
-                        self._sp_token, site_url, _group_claims(group_id),
-                    )
-                return principal_ids[(site_url, group_id)]
+                if key not in principal_ids and key not in principal_id_failures:
+                    try:
+                        principal_ids[key] = _resolve_group_principal_id(
+                            self._sp_token, site_url, _group_claims(group_id),
+                        )
+                    except (requests.RequestException, ValueError, KeyError) as exc:
+                        principal_id_failures[key] = exc
+                if key in principal_id_failures:
+                    raise principal_id_failures[key]
+                return principal_ids[key]
 
         grants_by_library: dict[tuple[str, str], list[tuple[str, str, str]]] = {}
         for row in df.itertuples(index=False):

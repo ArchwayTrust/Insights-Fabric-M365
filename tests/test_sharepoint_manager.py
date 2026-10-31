@@ -2090,6 +2090,23 @@ def test_one_unresolvable_group_does_not_skip_the_sites_other_grants(make_manage
     assert sorted(actions(results)) == ["error", "group_access_granted"]
 
 
+def test_a_group_that_cant_be_registered_on_a_site_is_tried_once_for_all_its_libraries(
+    make_manager, tenant, site, library, slt_groups,
+):
+    from sharepoint_fake import response
+    make_manager().create_libraries(libraries_df(site, "ENG"))
+    tenant.fail("POST", r"/web/ensureuser$", response(400), times=1)
+    tenant.calls.clear()
+
+    results = make_manager().grant_group_access(grants_df(site, [
+        (code, "BAA-Sharepoint-SLT-Manual-Read", "read") for code in ("MATH", "ENG")
+    ]))
+
+    # Each library still gets its own error row, without registering the group again
+    assert rows(results, "error")["document_library"].tolist() == ["MATH", "ENG"]
+    assert len(created(tenant, "/web/ensureuser")) == 1
+
+
 def test_each_user_is_resolved_once_per_sync(make_manager, tenant, site):
     make_manager().create_libraries(libraries_df(site, "MATH", "ENG", "ART"))
     tenant.add_user("jo.smith@contoso.onmicrosoft.com", mail="jo@contoso.com")
