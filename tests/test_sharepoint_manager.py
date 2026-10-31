@@ -411,29 +411,39 @@ def test_set_metadata_on_a_missing_library_is_an_error_row(make_manager, site):
 
 # rename_libraries
 
-def test_rename_with_a_changed_code_renames_the_groups(make_manager, tenant, site):
-    make_manager().create_libraries(libraries_df(site, "MATHS", manual_read=True))
-    # The faculty's code changed from MATHS to MATH. The library's URL slug is set at creation and never
-    # changes, so here the library is found by the new code (as if it had been created with it).
-    site.list_by_slug("MATHS")["slug"] = "MATH"
-    df = libraries_df(site, "MATH", library_display_name="Maths", old_library_code="MATHS")
+def test_rename_sets_the_display_name_and_leaves_groups(make_manager, tenant, site):
+    make_manager().create_libraries(libraries_df(site, "MATH", manual_read=True))
+    groups = sorted(g["displayName"] for g in tenant.groups.values())
 
-    results = make_manager().rename_libraries(df)
+    results = make_manager().rename_libraries(
+        libraries_df(site, "MATH", library_display_name="Maths").drop(columns="group_prefix"),
+    )
 
-    assert actions(results) == ["group_renamed"] * 3 + ["library_renamed"]
-    assert sorted(g["displayName"] for g in tenant.groups.values()) == [
-        "BAA-Sharepoint-MATH-Auto-Contribute", "BAA-Sharepoint-MATH-Auto-Read", "BAA-Sharepoint-MATH-Manual-Read",
-    ]
+    assert actions(results) == ["library_renamed"]
     assert site.list_by_slug("MATH")["displayName"] == "Maths"
+    assert sorted(g["displayName"] for g in tenant.groups.values()) == groups
 
 
-def test_rename_of_a_missing_library_is_an_error_and_leaves_groups(make_manager, tenant, site):
-    make_manager().create_libraries(libraries_df(site, "MATHS"))
-
-    results = make_manager().rename_libraries(libraries_df(site, "MATH", old_library_code="MATHS"))
+def test_rename_of_a_missing_library_is_an_error(make_manager, site):
+    results = make_manager().rename_libraries(libraries_df(site, "MATH"))
 
     assert actions(results) == ["error"]
-    assert tenant.group_named("BAA-Sharepoint-MATHS-Auto-Read") is not None
+
+
+def test_old_library_code_is_refused(make_manager, tenant, site):
+    # A code is the library's URL, which can't change, so renaming groups to a new code never worked
+    with pytest.raises(ValueError, match="old_library_code"):
+        make_manager().rename_libraries(libraries_df(site, "MATH", old_library_code="MATHS"))
+
+    assert tenant.calls == []
+
+
+def test_an_empty_old_library_code_column_is_ignored(make_manager, site):
+    make_manager().create_libraries(libraries_df(site, "MATH"))
+
+    results = make_manager().rename_libraries(libraries_df(site, "MATH", old_library_code=None))
+
+    assert actions(results) == ["library_renamed"]
 
 
 def test_rename_syncs_the_navigation_title(make_manager, site):
@@ -1039,21 +1049,6 @@ def test_memberships_dry_run_lists_new_groups_shortcuts_and_nested_groups(make_m
     ])  # contribute exists, but has no members to remove
 
 
-def test_rename_dry_run_with_a_changed_code(make_manager, tenant, site):
-    make_manager().create_libraries(libraries_df(site, "MATHS"))
-    tenant.calls.clear()
-
-    results = make_manager(dry_run=True, add_to_navigation=True).rename_libraries(
-        libraries_df(site, "MATH", old_library_code="MATHS"),
-    )
-
-    assert tenant.writes() == []
-    assert actions(results) == sorted([
-        "rename_library (dry run)", "rename_group (dry run)", "rename_group (dry run)",
-        "sync_navigation_link (dry run)",
-    ])
-
-
 def test_retire_dry_run_makes_no_writes(make_manager, tenant, site):
     make_manager().create_libraries(libraries_df(site, "MATH"))
     tenant.calls.clear()
@@ -1235,18 +1230,6 @@ def test_one_unreadable_site_does_not_stop_the_others(make_manager, tenant, site
 
     [error] = rows(results, "error").itertuples()
     assert error.site_url == gone
-
-
-def test_rename_never_renames_onto_an_existing_group(make_manager, tenant, site):
-    make_manager().create_libraries(libraries_df(site, "MATHS"))
-    site.list_by_slug("MATHS")["slug"] = "MATH"
-    tenant.add_group("BAA-Sharepoint-MATH-Auto-Read")  # already ensured for the new code
-
-    results = make_manager().rename_libraries(libraries_df(site, "MATH", old_library_code="MATHS"))
-
-    assert sorted(actions(results)) == ["group_name_collision", "group_renamed", "library_renamed"]
-    assert tenant.group_named("BAA-Sharepoint-MATHS-Auto-Read") is not None
-    assert tenant.group_named("BAA-Sharepoint-MATH-Auto-Contribute") is not None
 
 
 def test_one_unresolvable_group_does_not_skip_the_sites_other_grants(make_manager, tenant, site, library, slt_groups):

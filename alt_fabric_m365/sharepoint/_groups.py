@@ -290,18 +290,6 @@ def _token_object_id(token: str) -> str:
     return object_id
 
 
-def _rename_security_group(token: str, group_id: str, new_display_name: str) -> None:
-    """Rename an Entra ID security group (displayName and mailNickname)."""
-    body = {
-        "displayName": new_display_name,
-        "mailNickname": _build_mail_nickname(new_display_name),
-    }
-    url = f"{GRAPH_BASE_URL}/groups/{group_id}"
-    resp = _request_with_retry("PATCH", url, headers=_graph_headers(token), json=body)
-    resp.raise_for_status()
-    logger.info("Renamed security group %s → '%s'", group_id, new_display_name)
-
-
 def _get_group_members(token: str, group_id: str) -> dict[str, str]:
     """Get current (direct) members of a security group.
 
