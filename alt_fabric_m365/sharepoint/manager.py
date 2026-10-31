@@ -3174,7 +3174,8 @@ class SharePointLibraryManager:
 
         Raises:
             ValueError: If the site URL isn't an https URL on sharepoint_hostname.
-            requests.HTTPError: If SharePoint refuses either read.
+            requests.RequestException: If SharePoint refuses either read
+                (requests.HTTPError), or can't be reached after retries.
         """
         _validate_site_urls([site_url], self.sharepoint_hostname)
         return _get_site_sharing_settings(self._sp_token, site_url)
@@ -3207,6 +3208,9 @@ class SharePointLibraryManager:
                 URL, which is the site URL and the code.
             TypeError: If navigation_label, given here or to the constructor,
                 isn't a string.
+            requests.RequestException: If SharePoint refuses the read of the
+                quick launch (requests.HTTPError), or can't be reached after
+                retries.
         """
         (navigation_label_,) = self._resolve_config(navigation_label=navigation_label)
         _validate_site_urls([site_url], self.sharepoint_hostname)
