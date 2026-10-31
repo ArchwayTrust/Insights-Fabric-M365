@@ -672,6 +672,8 @@ def test_unlinking_a_library_deleted_by_hand_removes_its_navigation_link(make_ma
 
     assert {"library_not_found", "navigation_link_removed"} <= set(actions(results))
     assert site.nav[0]["Children"] == []
+    # The removal is reported by its own row, once it's done
+    assert "navigation" not in rows(results, "library_not_found")["status"].iloc[0]
 
 
 def test_unlink_dry_run_makes_no_writes(make_manager, tenant, site):

@@ -1198,7 +1198,7 @@ class SharePointLibraryManager:
                 _append_log(
                     action_log, site_url, library_code, "library_not_found",
                     "library does not exist on the site — nothing to rename; "
-                    "its Auto groups are still emptied, and its navigation link removed",
+                    "its Auto groups are still emptied",
                 )
                 # Its link would otherwise stay, as nothing else removes it.
                 # A library's URL is its code, so the link is found by that.
