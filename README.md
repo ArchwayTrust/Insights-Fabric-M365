@@ -531,7 +531,7 @@ Test-ServicePrincipalAuthorization -Identity $objectId -Resource "reports@contos
 Test-ServicePrincipalAuthorization -Identity $objectId -Resource "someone.else@contoso.com" | Format-Table
 ```
 
-To cover several mailboxes, use a filter such as `MemberOfGroup -eq '<distinguished name of a mail-enabled security group>'` and add the mailboxes to the group.
+To cover several mailboxes, use a filter such as `MemberOfGroup -eq '<distinguished name of a mail-enabled security group>'` and add the mailboxes to the group. Only direct members are in scope: a mailbox in a group nested inside that group isn't, so add each mailbox to the group itself.
 
 `Test-ServicePrincipalAuthorization` reflects changes immediately, but Graph can take from 30 minutes to 2 hours to apply them.
 
