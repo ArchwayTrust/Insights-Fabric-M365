@@ -456,14 +456,15 @@ def in_seconds(seconds):
     ("7", 7, 0),
     ("2.5", 2.5, 0),
     ("-5", 0, 0),
-    # An HTTP date has whole seconds, so up to a second of the wait is lost
-    (in_seconds(7), 6.5, 0.5),
+    # Built when the test runs, not when it's collected. An HTTP date has whole seconds, so up to a second is lost
+    (lambda: in_seconds(7), 6.5, 0.5),
     ("Mon, 01 Jan 2001 00:00:00 GMT", 0, 0),  # in the past
-])
+], ids=["seconds", "fraction", "negative", "date", "past date"])
 def test_retry_after_in_seconds_or_as_a_date_is_waited_out(
     fake_notebookutils, sleeps, retry_after, expected, tolerance,
 ):
     fake = FakeAzure()
+    retry_after = retry_after() if callable(retry_after) else retry_after
     with fail_first(fake, "token", throttled(retry_after=retry_after)):
         make_credential().get_token("a")
 
