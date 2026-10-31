@@ -237,7 +237,9 @@ def _run_parallel(
     r"""Run *func(\*item, action_log=action_log)* over *items* sequentially or in parallel.
 
     Both paths have identical failure semantics: an unhandled exception in one
-    item is logged as an 'error' row and the remaining items still run.
+    item is logged as an 'error' row and the remaining items still run.  An
+    interrupt, such as cancelling the notebook cell, stops both: the items
+    already running finish, and the rest are never started.
     """
     if max_workers <= 1:
         for item in items:
@@ -249,12 +251,19 @@ def _run_parallel(
     else:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {}
-            for item in items:
-                future = executor.submit(func, *item, action_log=action_log)
-                futures[future] = item
-            for future in as_completed(futures):
-                exc = future.exception()
-                if exc:
-                    item = futures[future]
-                    logger.error("Unhandled error: %s — %s", item, exc)
-                    _append_log(action_log, "", "", "error", str(exc))
+            try:
+                for item in items:
+                    future = executor.submit(func, *item, action_log=action_log)
+                    futures[future] = item
+                for future in as_completed(futures):
+                    exc = future.exception()
+                    if exc:
+                        item = futures[future]
+                        logger.error("Unhandled error: %s — %s", item, exc)
+                        _append_log(action_log, "", "", "error", str(exc))
+            except BaseException:
+                # Leaving the with block would wait for every queued item, so a
+                # cancelled cell would carry on changing the tenant
+                logger.warning("Interrupted — the items already running finish, the rest are skipped")
+                executor.shutdown(wait=True, cancel_futures=True)
+                raise

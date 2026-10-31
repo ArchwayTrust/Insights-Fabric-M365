@@ -126,6 +126,36 @@ def test_run_parallel_logs_failures_and_carries_on(max_workers):
     assert [(r["action"], r["status"]) for r in log.to_list()] == [("error", "boom")]
 
 
+@pytest.mark.parametrize("cancelled_while", ["waiting", "submitting"])
+def test_cancelling_a_parallel_run_drops_the_queued_items(monkeypatch, cancelled_while):
+    started = []
+    release = threading.Event()
+
+    def work(number, *, action_log):
+        started.append(number)
+        release.wait(5)
+
+    def cancel():
+        # The cell is cancelled while two items run and the rest are queued
+        while len(started) < 2:
+            time.sleep(0.01)
+        threading.Timer(0.2, release.set).start()
+        raise KeyboardInterrupt
+
+    def items():
+        yield from ((number,) for number in range(10))
+        if cancelled_while == "submitting":
+            cancel()
+
+    if cancelled_while == "waiting":
+        monkeypatch.setattr(_common, "as_completed", lambda futures: cancel())
+
+    with pytest.raises(KeyboardInterrupt):
+        _common._run_parallel(work, items(), 2, _common._ThreadSafeLog())
+
+    assert sorted(started) == [0, 1]
+
+
 def test_empty_action_log_has_the_standard_columns():
     df = _common._action_log_to_dataframe(_common._ThreadSafeLog())
 
