@@ -1,0 +1,11 @@
+# Opens a pull request when an action the workflows use has a new version, such as a major version that moves to
+# a newer Node.js runtime. Grouped, so one pull request covers every action.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]
