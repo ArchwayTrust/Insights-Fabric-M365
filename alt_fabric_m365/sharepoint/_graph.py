@@ -73,16 +73,25 @@ def _list_existing_lists(token: str, site_id: str) -> dict[str, dict]:
     return lists_by_key
 
 
-def _find_title_conflict(existing: dict[str, dict], library_code: str) -> dict | None:
-    """Return another library already titled *library_code*, if any.
+def _find_title_conflict(existing: dict[str, dict], library_code: str, title: str | None = None) -> dict | None:
+    """Return another list already titled *title*, if any.
 
-    A new library is created with its code as the title (which sets the URL
-    slug), and SharePoint list titles are unique per site, so such a library
-    would make the create fail on every run.
+    SharePoint list titles are unique per site, so creating a library with a
+    title another list has, or renaming it to one, fails on every run.
+
+    Args:
+        existing: The site's lists, from _list_existing_lists.
+        library_code: The library's code. The library with this URL slug never conflicts with itself.
+        title: Optional. The title to look for. Defaults to library_code, the title a new library is
+            created with (which sets its URL slug).
+
+    Returns:
+        The other list, or None if no other list has the title.
     """
     key = library_code.lower()
+    wanted = (title or library_code).lower()
     for slug, lst in existing.items():
-        if slug != key and (lst.get("displayName") or "").lower() == key:
+        if slug != key and (lst.get("displayName") or "").lower() == wanted:
             return lst
     return None
 
@@ -122,17 +131,17 @@ def _create_document_library(token: str, site_id: str, library_name: str) -> dic
 
 
 def _ensure_document_library(
-    token: str, site_id: str, library_code: str, display_name: str | None = None,
+    token: str, site_id: str, library_code: str,
     existing: dict[str, dict] | None = None,
 ) -> dict:
     """Ensure a document library exists, creating it if needed.
 
     Returns the Graph list resource (``id``, ``webUrl``, …).
 
-    The library is created with *library_code* as the display name (which sets
-    the URL slug).  If *display_name* is provided and differs, the display
-    name is updated to *display_name* after creation so the URL stays short
-    while the UI shows the friendly name.
+    The library is created with *library_code* as its title, which sets the
+    URL slug.  Its display name is left to the caller (_set_library_display_name),
+    after its permissions are set: renaming can fail when another list has
+    the name, and a new library still inherits the site's permissions.
 
     If *existing* is provided, uses it instead of fetching the list of lists.
     """
@@ -143,17 +152,10 @@ def _ensure_document_library(
     if key in existing:
         lib = existing[key]
         logger.info("Document library '%s' already exists (id=%s)", library_code, lib["id"])
-        # If a display_name is provided, ensure it matches
-        if display_name and lib["displayName"] != display_name:
-            _set_library_display_name(token, site_id, lib["id"], display_name)
         return lib
 
     # Create with the code — this becomes the URL slug
-    lib = _create_document_library(token, site_id, library_code)
-    # Set the friendly display name if different from the code
-    if display_name and display_name != library_code:
-        _set_library_display_name(token, site_id, lib["id"], display_name)
-    return lib
+    return _create_document_library(token, site_id, library_code)
 
 
 def _set_library_display_name(

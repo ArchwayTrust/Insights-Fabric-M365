@@ -315,7 +315,7 @@ class SharePointLibraryManager:
         logger.info("Creating library '%s' (%s) on site '%s' …", library_display_name, library_code, site_url)
 
         try:
-            # Step 1: Ensure the library exists (created with code, display name set after)
+            # Step 1: Ensure the library exists (created with code, display name set in step 7)
             if library_code.lower() not in existing_lists:
                 conflict = _find_title_conflict(existing_lists, library_code)
                 if conflict is not None:
@@ -337,7 +337,7 @@ class SharePointLibraryManager:
                 lib_web_url = None
                 logger.info("[DRY RUN] Would ensure library '%s' (%s)", library_display_name, library_code)
             else:
-                lib = _ensure_document_library(self._graph_token, site_id, library_code, library_display_name, existing=existing_lists)
+                lib = _ensure_document_library(self._graph_token, site_id, library_code, existing=existing_lists)
                 list_id = lib["id"]
                 lib_web_url = lib.get("webUrl", "")
 
@@ -485,7 +485,31 @@ class SharePointLibraryManager:
                         group=group_display_name, permission=role_key,
                     )
 
-            # Step 7: Ensure the library is linked in site navigation under
+            # Step 7: Set the display name.  After the permissions on purpose:
+            # if renaming fails, the library already has its own permissions
+            # and groups rather than still inheriting the site's.  A new
+            # library is titled with its code until then.
+            current_title = existing_list["displayName"] if existing_list is not None else library_code
+            if library_display_name and library_display_name != current_title:
+                title_conflict = _find_title_conflict(existing_lists, library_code, title=library_display_name)
+                if title_conflict is not None and not dry_run:
+                    # The lists were read before this run's renames, and the
+                    # other list may have given up the title since
+                    title_conflict = _find_title_conflict(
+                        _list_existing_lists(self._graph_token, site_id), library_code, title=library_display_name,
+                    )
+                if title_conflict is not None:
+                    # Titles are unique per site, so the rename would fail on every run
+                    _append_log(
+                        action_log, site_url, library_code, "library_name_conflict",
+                        f"another list ({title_conflict.get('webUrl')}) is already titled "
+                        f"'{library_display_name}' — the library keeps the title '{current_title}' "
+                        f"until that list is renamed",
+                    )
+                elif not dry_run:
+                    _set_library_display_name(self._graph_token, site_id, list_id, library_display_name)
+
+            # Step 8: Ensure the library is linked in site navigation under
             # the label.  Last on purpose: a navigation failure is logged as
             # an error but never blocks the permissions work above.
             if nav is not None:

@@ -234,11 +234,17 @@ class FakeTenant:
                     next_link = f"{GRAPH}/sites/{site.id}/lists?$skiptoken={skip + self.list_page_size}"
                     return response(200, {"value": page, "@odata.nextLink": next_link})
                 return response(200, {"value": values[skip:]})
+            # SharePoint list titles are unique per site, ignoring case
+            taken = {lst["displayName"].lower(): lst["id"] for lst in site.lists.values()}
             if method == "POST" and m.group(2) is None:
                 assert body["list"] == {"template": "documentLibrary"}
+                if body["displayName"].lower() in taken:
+                    return graph_error(409, "nameAlreadyExists", "A list with this name already exists")
                 lst = site.add_list(body["displayName"])
                 return response(201, {"id": lst["id"], "displayName": lst["displayName"], "webUrl": site.web_url(lst)})
             if method == "PATCH":
+                if taken.get(body["displayName"].lower(), m.group(2)) != m.group(2):
+                    return graph_error(409, "nameAlreadyExists", "A list with this name already exists")
                 site.lists[m.group(2)]["displayName"] = body["displayName"]
                 return response(200, {})
 
