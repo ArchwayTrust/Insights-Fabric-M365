@@ -367,6 +367,15 @@ def test_notebook_only_uses_the_public_package_api():
     assert "def _request_with_retry" not in source
 
 
+# A pipeline parameter of type String reaches the notebook as text, and "False" is true
+@pytest.mark.parametrize("flag", ["RUN_SMOKE_TEST", "ENFORCE_SITE_SHARING_LOCKDOWN", "MANAGE_SLT_LIBRARY"])
+def test_a_flag_passed_as_text_stops_the_run_before_anything_runs(tenant, run_notebook, spark, flag):
+    with pytest.raises(TypeError, match=f"{flag} must be True or False, not 'False'"):
+        run_notebook(spark, **{flag: "False"})
+
+    assert tenant.calls == []
+
+
 # Spark SQL reads 'O''X' as 'OX', and a backslash escapes the next character, so neither can be put in a literal
 @pytest.mark.parametrize("parameters", [
     {"ACADEMY_FILTER": "BAA,O'X"},
