@@ -5,6 +5,7 @@ valid Python.
 import ast
 import importlib
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -62,6 +63,31 @@ def test_public_names_are_exported(module_name):
     assert len(module.__all__) == len(set(module.__all__))
     for name in module.__all__:
         assert getattr(module, name) is not None
+
+
+def test_source_distribution_has_what_its_tests_need(tmp_path, monkeypatch):
+    import tarfile
+    from setuptools import build_meta
+
+    # Build from a clean copy, as setuptools adds the files listed by an earlier build's egg-info
+    source = tmp_path / "source"
+    shutil.copytree(ROOT, source, ignore=shutil.ignore_patterns(
+        ".git", "*.egg-info", "build", "dist", "__pycache__", ".pytest_cache",
+    ))
+    monkeypatch.chdir(source)
+
+    sdist = tmp_path / build_meta.build_sdist(str(tmp_path))
+
+    with tarfile.open(sdist) as tar:
+        shipped = {name.split("/", 1)[1] for name in tar.getnames() if "/" in name}
+    # Every test module, fixture and fake, and the example notebook test_faculty_notebook runs
+    needed = {path.relative_to(ROOT).as_posix() for path in (ROOT / "tests").glob("*.py")}
+    needed |= {
+        path.relative_to(ROOT).as_posix() for path in (ROOT / "examples").rglob("*")
+        # MANIFEST.in leaves out compiled files, which running the example locally can leave behind
+        if path.is_file() and "__pycache__" not in path.parts and path.suffix not in (".pyc", ".pyo")
+    }
+    assert needed - shipped == set()
 
 
 def test_graph_api_was_removed_in_1_0():

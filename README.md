@@ -1389,7 +1389,7 @@ python -m twine check dist/*
 This creates two files in `dist/`:
 
 - `alt_fabric_m365-1.2.0-py3-none-any.whl`, the wheel
-- `alt_fabric_m365-1.2.0.tar.gz`, the source distribution
+- `alt_fabric_m365-1.2.0.tar.gz`, the source distribution, which also has the tests and what they need ([`MANIFEST.in`](https://github.com/ArchwayTrust/Insights-Fabric-M365/blob/main/MANIFEST.in)), so they run from it
 
 `twine check` confirms the package metadata and this README will render on PyPI. Clearing `dist/` first stops old versions being uploaded by mistake.
 
