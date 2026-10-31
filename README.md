@@ -1568,6 +1568,8 @@ If the Python versions in `tests.yml` change, update the required checks to matc
 
 Dependabot ([`.github/dependabot.yml`](https://github.com/ArchwayTrust/Insights-Fabric-M365/blob/main/.github/dependabot.yml)) checks each week for new versions of the actions the workflows use, and opens one pull request to update them. Review and merge it like any other, once the tests pass.
 
+The workflows name each action by the commit it was released at, with its version in a comment, as in `uses: actions/checkout@<40-character commit SHA>  # v7.0.1`. A tag can be moved to other code by whoever controls the action, and the release workflow can publish to PyPI, so a pinned commit means only reviewed code runs there. Dependabot updates the commit and the comment together. Pin a new action the same way, or `test_packaging.py` fails.
+
 What they cover:
 
 | File | Covers |
@@ -1579,7 +1581,7 @@ What they cover:
 | `test_sharepoint_manager.py` | Every `SharePointLibraryManager` operation end to end, including re-runs, dry runs, guardrails and failures, and authenticating with `KeyVaultCertificateCredential` |
 | `test_readme_flow.py` | Runs the [recommended flow](#recommended-flow) example against the suggested input tables (a dry run, a live run, a re-run and a deletion), and again with the [setting-specific steps](#adding-setting-specific-steps) inserted |
 | `test_faculty_notebook.py` | Runs the [example notebook](#example-notebook) cell by cell, with Spark SQL on SQLite and the real `KeyVaultCertificateCredential` |
-| `test_packaging.py` | The version, public names, that removed names stay removed, what the source distribution ships and its licence metadata, and that the README's examples are valid Python |
+| `test_packaging.py` | The version, public names, that removed names stay removed, what the source distribution ships and its licence metadata, that the README's examples are valid Python, and that the workflows pin each action to a commit |
 
 The SharePoint tests run against `tests/sharepoint_fake.py`, an in-memory fake of the Graph and SharePoint endpoints the manager calls, which keeps state so a test can check what an operation changed. Add `--cov=alt_fabric_m365` to see coverage.
 
