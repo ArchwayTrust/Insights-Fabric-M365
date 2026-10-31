@@ -1355,7 +1355,7 @@ The tests can't show that the real services accept the requests, so test a new v
 
 ### Versioning
 
-The version number is only set in `alt_fabric_m365/__init__.py`, as `__version__="1.2.0"`. `setup.py` reads it from there, so there's nothing else to keep in sync. Check it with `python setup.py --version`.
+The version number is set in `alt_fabric_m365/__init__.py`, as `__version__="1.2.0"`, and `setup.py` reads it from there. Check it with `python setup.py --version`. This README's examples show it too: installing from PyPI, TestPyPI or a wheel, the names of the files a build makes, and the release tag. `test_packaging.py` fails until they match `__version__`, so update them in the same change.
 
 Versions follow [semantic versioning](https://semver.org/):
 
@@ -1465,7 +1465,7 @@ Update the version in each Fabric environment that uses the package (**Public li
 ### Release checklist
 
 1. Update `__version__` in `alt_fabric_m365/__init__.py`.
-2. Update this README, including the version history under [Installation](#installation), and an upgrading section for a new major version.
+2. Update this README: the version in its examples (see [Versioning](#versioning)), the version history under [Installation](#installation), and an upgrading section for a new major version.
 3. Build, run the tests and `twine check`, and test the wheel in Fabric.
 4. Merge into `main` through a pull request, once the Tests workflow passes.
 5. Publish a GitHub release tagged `v<version>`.
