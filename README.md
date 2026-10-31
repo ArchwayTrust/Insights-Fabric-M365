@@ -1336,11 +1336,13 @@ On its own, the Tests workflow only reports a result: GitHub still lets a pull r
 1. On GitHub, go to **Settings** > **Rules** > **Rulesets** > **New ruleset** > **New branch ruleset**.
 2. Name it, for example `Protect main`, and set **Enforcement status** to **Active**.
 3. Under **Target branches**, select **Add target** > **Include default branch**.
-4. Turn on **Require a pull request before merging**. Under it, turn on **Require review from Code Owners**, so changes need a review from the teams in [`.github/CODEOWNERS`](https://github.com/ArchwayTrust/Insights-Fabric-M365/blob/main/.github/CODEOWNERS): Insights for the package, and IT Approvers for the SharePoint library manager, as it changes the tenant's libraries, permissions and groups.
+4. Turn on **Require a pull request before merging**. Under it, turn on **Require review from Code Owners**, so changes need a review from the teams in [`.github/CODEOWNERS`](https://github.com/ArchwayTrust/Insights-Fabric-M365/blob/main/.github/CODEOWNERS): Insights for the package, and IT Approvers for the SharePoint library manager, the example notebook that runs it and their tests, as they change the tenant's libraries, permissions and groups.
 5. Turn on **Require status checks to pass**, select **Add checks**, and add `test (3.10)`, `test (3.11)` and `test (3.12)`.
 6. Turn on **Block force pushes**, then select **Create**.
 
 If the Python versions in `tests.yml` change, update the required checks to match, or pull requests will wait for a check that never runs.
+
+Dependabot ([`.github/dependabot.yml`](https://github.com/ArchwayTrust/Insights-Fabric-M365/blob/main/.github/dependabot.yml)) checks each week for new versions of the actions the workflows use, and opens one pull request to update them. Review and merge it like any other, once the tests pass.
 
 What they cover:
 
@@ -1416,10 +1418,11 @@ Or add it to an environment under **Custom libraries** > **Upload**.
 This is the normal route. Merging to `main` never publishes anything; only publishing a GitHub release does. The [Release workflow](https://github.com/ArchwayTrust/Insights-Fabric-M365/blob/main/.github/workflows/release.yml) then:
 
 1. Runs the tests.
-2. Checks the release tag matches `__version__` (tag `v1.2.0` for `__version__="1.2.0"`), and stops if it doesn't.
-3. Builds the package and runs `twine check`.
-4. Publishes it to PyPI.
-5. Attaches the wheel and source distribution to the GitHub release.
+2. Checks the tagged commit is on `main`, and stops if it isn't, so an unmerged commit isn't released by mistake. The workflow runs as it is at the tagged commit, so this doesn't stop someone who removes the check on purpose: the tag ruleset and reviewers under [Trusted Publishing setup](#trusted-publishing-setup) do.
+3. Checks the release tag matches `__version__` (tag `v1.2.0` for `__version__="1.2.0"`), and stops if it doesn't.
+4. Builds the package and runs `twine check`.
+5. Publishes it to PyPI.
+6. Attaches the wheel and source distribution to the GitHub release.
 
 To release:
 
@@ -1433,7 +1436,7 @@ If a step fails, nothing after it runs. PyPI never accepts the same version twic
 
 How to recover depends on where the run failed. Check the **Publish to PyPI** step in the run, and whether the version is on [PyPI](https://pypi.org/project/alt-fabric-m365/#history):
 
-- **Before publishing** (tests, tag check or build failed, nothing on PyPI): delete the GitHub release and its tag, fix the problem, and publish the release again.
+- **Before publishing** (tests, tag checks or build failed, nothing on PyPI): delete the GitHub release and its tag, fix the problem, and publish the release again.
 - **After publishing** (the version is on PyPI, but attaching files to the release failed): don't delete the release, as publishing it again would fail at the PyPI step. Open the run under **Actions** and select **Re-run failed jobs**. Only the failed job runs again, using the files already built.
 - **A published version is broken:** it can't be replaced. Fix it, increase the patch version (for example 1.0.1 to 1.0.2) and release that. Optionally [yank](https://pypi.org/help/#yanked) the broken version on PyPI so pip stops choosing it.
 
@@ -1443,8 +1446,8 @@ The workflow uploads to PyPI with [Trusted Publishing](https://docs.pypi.org/tru
 
 1. On PyPI, open the `alt-fabric-m365` project, then **Manage** > **Publishing** > **Add a new publisher** > **GitHub**. Enter owner `ArchwayTrust`, repository `Insights-Fabric-M365`, workflow `release.yml` and environment `pypi`. If the repository is renamed, add a publisher with the new name here before the next release, as PyPI rejects uploads from any other repository; remove the old one once a release has succeeded.
 2. On GitHub, go to **Settings** > **Environments** > **New environment** and create `pypi`. Then, in the environment:
-   - Under **Deployment branches and tags**, choose **Selected branches and tags**, select **Add deployment branch or tag rule**, set **Ref type** to **Tag** and enter the pattern `v*`. Only release tags can then publish, even if the workflow is started some other way.
-   - Optionally, turn on **Required reviewers** and add the people who can approve a release, so each upload to PyPI waits for one of them.
+   - Under **Deployment branches and tags**, choose **Selected branches and tags**, select **Add deployment branch or tag rule**, set **Ref type** to **Tag** and enter the pattern `v*`. Only release tags can then publish, even if the workflow is started some other way. Anyone who can push to the repository can still create or move a `v*` tag, on a commit whose `release.yml` has had its checks removed, so also limit who can release. Add a tag ruleset: **Settings** > **Rules** > **Rulesets** > **New ruleset** > **New tag ruleset**, set **Enforcement status** to **Active**, target `v*`, turn on **Restrict creations**, **Restrict updates** and **Restrict deletions**, and add the people who release to the bypass list.
+   - Turn on **Required reviewers** and add the people who can approve a release, so each upload to PyPI waits for one of them. With the tag ruleset, this is what stops a release no one approved.
 
 ### Publishing to PyPI manually
 

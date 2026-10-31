@@ -9,3 +9,10 @@
 /alt_fabric_m365/sharepoint/        @ArchwayTrust/it-approvers
 /tests/sharepoint_fake.py           @ArchwayTrust/it-approvers
 /tests/test_sharepoint_*.py         @ArchwayTrust/it-approvers
+
+# The example notebook decides what the manager does in the tenant (dry runs, the removal limit, the rollout scope
+# and which groups get access), so it, its write-up and the tests that run it and the README's flow go to IT too
+/examples/                          @ArchwayTrust/it-approvers
+/docs/faculty-sharepoint-notebook.md @ArchwayTrust/it-approvers
+/tests/test_faculty_notebook.py     @ArchwayTrust/it-approvers
+/tests/test_readme_flow.py          @ArchwayTrust/it-approvers

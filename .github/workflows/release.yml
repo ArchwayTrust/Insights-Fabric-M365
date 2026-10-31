@@ -20,6 +20,19 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
+      with:
+        # All history and branches, to check the tagged commit is on main
+        fetch-depth: 0
+
+    # A release can be tagged on any commit, so this stops an unreviewed commit being published by mistake. It isn't
+    # a security control: a release runs this file as it is at the tagged commit, which could have the check removed.
+    # The tag ruleset and the pypi environment's reviewers, which the README describes, are what stop that.
+    - name: Check the tagged commit is on main
+      run: |
+        if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+          echo "::error::Release tag $GITHUB_REF_NAME is on commit $GITHUB_SHA, which isn't on main. Only commits merged into main can be released."
+          exit 1
+        fi
 
     - name: Set up Python
       uses: actions/setup-python@v5

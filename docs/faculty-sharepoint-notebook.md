@@ -16,11 +16,15 @@ The notebook's final state is [`examples/Manage Faculty Sharepoint Libraries.Not
 
 1. **Release version 0.6.0** of the package (see [Publishing to PyPI with a GitHub release](../README.md#publishing-to-pypi-with-a-github-release)), or upload the wheel to test it first (see [Testing a wheel in Fabric](../README.md#testing-a-wheel-in-fabric-before-publishing)).
 2. **Add the package to the notebook's environment.** In the Fabric environment the notebook and its pipeline use, add `alt-fabric-m365` version `0.6.0` under **Public libraries** and publish the environment. The current notebook has no environment attached (`"environment": {}` in its metadata), so attach one under **Environment** in the notebook toolbar. Its dependencies, including `pandas`, are already in the Fabric runtime.
-3. **Put the app's certificate in Key Vault.** The notebook now authenticates with the package's `KeyVaultCertificateCredential`: Key Vault signs each request with the certificate's private key, which never leaves the key vault, instead of the notebook reading the key from two secrets. For the existing app registration (`CLIENT_ID`), follow steps 2 to 4 of [Setting up a certificate](../README.md#setting-up-a-certificate): create a certificate in the `KEY_VAULT` key vault, upload it to the app registration with `--append` (so the current certificate keeps working until you remove it), and give the identity that runs the notebook, interactively and in the pipeline, **Get** on the certificate and **Sign** on its key. Then set the `CERTIFICATE_NAME` parameter to the certificate's name if it isn't `Systems-SPLibrary-Cert`.
-4. **Replace the notebook's content** with the example file. With Git integration, copy it over the notebook's `notebook-content.py` and commit; otherwise make the edits listed in [What changed in the notebook](#what-changed-in-the-notebook) by hand. Nothing else (tables, the pipeline, the app registration's API permissions) needs to change.
+3. **Put the app's certificate in Key Vault.** The notebook now authenticates with the package's `KeyVaultCertificateCredential`: Key Vault signs each request with the certificate's private key, which never leaves the key vault, instead of the notebook reading the key from two secrets. For the existing app registration (`CLIENT_ID`), follow steps 2 to 4 of [Setting up a certificate](../README.md#setting-up-a-certificate): create a certificate in the `KEY_VAULT` key vault, upload it to the app registration with `--append` (so the current certificate keeps working until you remove it), and give the identity that runs the notebook, interactively and in the pipeline, **Get** on the certificate and **Sign** on its key. Then set the `CERTIFICATE_NAME` parameter to the certificate's name.
+4. **Replace the notebook's content** with the example file. With Git integration, copy it over the notebook's `notebook-content.py` and commit; otherwise make the edits listed in [What changed in the notebook](#what-changed-in-the-notebook) by hand. The example has placeholders where the tenant's values go, so fill them in:
+   - In the parameters cell, set `CLIENT_ID`, `SHAREPOINT_HOSTNAME` and `CERTIFICATE_NAME`, or have the pipeline pass them as parameters, as it passes `DRY_RUN`.
+   - In the smoke test cells, set `SMOKE_SITE_URL` to the site with the demo library, and replace the four `<test-user-…-upn>` values with the UPNs of the people to add to it.
+
+   Nothing else (tables, the app registration's API permissions) needs to change.
 5. **Dry run it.** Run the notebook with `DRY_RUN = True` and `RUN_SMOKE_TEST = True`. The imports cell prints the package version. Compare the action log rows for this run (in `it.sharepoint_action_log`, by `run_id`) with those of a recent dry run from the old notebook: they should match, apart from the [behaviour changes](#what-changed-in-behaviour). Membership sync's dry run reads each Auto group's owners: `group_owner_added (dry run)` rows are ownerless groups (how the notebook created them), which the live run adopts automatically, and `group_not_owned` rows are groups with an owner who isn't the app. Add the app's service principal as a co-owner of those, or the live run will leave them alone. Manual groups are checked the same way when their faculty next goes through the create pass, or all at once with [Adopting the existing Manual groups](#adopting-the-existing-manual-groups).
 6. **Let the pipeline run it** as before. The pipeline passes `DRY_RUN = False`.
-7. **Retire the old certificate.** Once the pipeline has run successfully, remove the old certificate from the app registration and delete the `Systems-SPLibrary-Cert-Thumbprint` and `Systems-SPLibrary-Cert-Private-Key` secrets.
+7. **Retire the old certificate.** Once the pipeline has run successfully, remove the old certificate from the app registration and delete the two Key Vault secrets that held its thumbprint and private key.
 
 To roll back, restore the previous notebook content; it works for as long as the old certificate is on the app registration and its two secrets exist, so keep them until step 7. The package doesn't change any state the old notebook relies on: group names, library URLs, property bag keys and the watermark are all the same.
 
@@ -132,12 +136,12 @@ mgr = SharePointLibraryManager(
 )
 ```
 
-**Run context.** `FATAL_ACTIONS` and `WARNING_ACTIONS` are imported rather than defined here, as the package defines the action names. They hold the same values. `SLT_CODE_KEY` uses the now public `sanitise_for_group_name`. `FACULTY_CODE_FILTER` is now quote-escaped before it goes into the SQL, as `ACADEMY_FILTER` already was.
+**Run context.** `FATAL_ACTIONS` and `WARNING_ACTIONS` are imported rather than defined here, as the package defines the action names. They hold the same values. `SLT_CODE_KEY` uses the now public `sanitise_for_group_name`. `ACADEMY_FILTER` and `FACULTY_CODE_FILTER` go into the SQL as literals, and Spark SQL doesn't read a doubled `''` as an escaped quote, so the notebook no longer tries to escape them. Instead they can only contain letters, digits, spaces, `-`, `_` and `.`, plus `%` in `FACULTY_CODE_FILTER`, and any other character stops the run before any SQL runs.
 
 **Watermark.** Two fixes from review, each covered by a notebook test:
 
 - The create, unlink and retire passes each read the faculty list separately. A row landing between two reads could be missed by an earlier pass, yet still be covered by the watermark advanced from a later pass. The watermark cell now reads the newest `last_changed_ts` once, as `HIGH_WATERMARK`, and all three passes only take rows up to it. Rows newer than that are left for the next run.
-- The watermark key contains the rollout filters, so a `'` in a filter broke the watermark's lookup and its `MERGE`. Both now use `SYNC_PROCESS_LITERAL`, the quote-escaped key.
+- The watermark key contains the rollout filters, so a `'` in a filter broke the watermark's lookup and its `MERGE`. The filters can no longer contain one (see **Run context**).
 
 **Smoke test.** The navigation and sharing checks read the site through the manager instead of calling private functions with its token:
 
@@ -226,7 +230,7 @@ The notebook test's scenarios, against a pilot scope of `BAA` and `MATH%`:
 - **Dry run.** Makes no writes to SharePoint or Entra ID and leaves the watermark alone.
 - **Authentication.** The certificate named by `CERTIFICATE_NAME` is read from the key vault and signs the assertions, and the run uses one Graph and one SharePoint token.
 - **Rows landing mid-run.** A new faculty and a newer move added after the create read are both left for the next run, which picks them up.
-- **Quoted scope values.** A `'` in `ACADEMY_FILTER` reaches the watermark lookup and `MERGE` safely.
+- **Scope values.** A `'` or `\` in `ACADEMY_FILTER` or `FACULTY_CODE_FILTER` stops the run before any SQL or SharePoint write, and spaces, `-`, `.` and `_` work.
 - **Failed run.** A failed member addition makes the run outcome cell raise, and the watermark isn't advanced.
 - **Widened scope.** Changing the filters starts a new watermark and replays events for the newly in-scope faculties, and the faculty coded `SLT` is reported and skipped.
 
