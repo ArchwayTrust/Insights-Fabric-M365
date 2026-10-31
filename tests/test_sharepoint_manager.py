@@ -194,9 +194,10 @@ def test_create_library_with_groups_metadata_and_navigation(make_manager, tenant
 
     assert list(results.columns) == ACTION_LOG_COLUMNS
     assert actions(results) == sorted([
-        "navigation_label_created", "metadata_set", "metadata_set", "group_assigned", "group_assigned",
-        "manual_read_group_ensured", "manual_contribute_group_ensured", "navigation_link_added",
+        "navigation_label_created", "library_created", "metadata_set", "metadata_set", "group_assigned",
+        "group_assigned", "manual_read_group_ensured", "manual_contribute_group_ensured", "navigation_link_added",
     ])
+    assert rows(results, "library_created")["status"].tolist() == [f"created at {site.url}/MATH"]
 
     lib = site.list_by_slug("MATH")
     assert (lib["displayName"], lib["unique"]) == ("Maths", True)
@@ -231,6 +232,7 @@ def test_create_library_again_changes_nothing(make_manager, tenant, site):
 
     assert "navigation_label_created" not in actions(results)
     assert "navigation_link_added" not in actions(results)
+    assert not {"library_created", "library_renamed"} & set(actions(results))
     assert actions(results).count("already_assigned") == 3
     assert created(tenant, "/web/ensureuser") == [] and created(tenant, "addroleassignment") == []
     assert created(tenant, "/groups") == []
@@ -248,6 +250,19 @@ def test_create_library_renames_display_name_and_navigation_link(make_manager, s
     assert site.list_by_slug("MATH")["displayName"] == "Mathematics"
     assert site.nav[0]["Children"][0]["Title"] == "Mathematics"
     assert "navigation_link_renamed" in actions(results)
+    assert rows(results, "library_renamed")["status"].tolist() == ["display name set to 'Mathematics'"]
+
+
+def test_create_dry_run_reports_a_new_display_name(make_manager, tenant, site):
+    make_manager().create_libraries(libraries_df(site, "MATH", library_display_name="Maths"))
+    tenant.calls.clear()
+
+    results = make_manager(dry_run=True).create_libraries(
+        libraries_df(site, "MATH", library_display_name="Mathematics"),
+    )
+
+    assert tenant.writes() == []
+    assert "rename_library (dry run)" in actions(results) and "library_created (dry run)" not in actions(results)
 
 
 @pytest.mark.parametrize("dry_run", [False, True])
@@ -335,6 +350,7 @@ def test_create_dry_run_makes_no_writes(make_manager, tenant, site):
     assert tenant.writes() == []
     assert site.lists == {}
     assert actions(results) == sorted([
+        "navigation_label_created (dry run)", "library_created (dry run)",
         "metadata_set (dry run)", "metadata_set (dry run)", "ensure_group (dry run)", "ensure_group (dry run)",
         "ensure_manual_read_group (dry run)", "ensure_manual_contribute_group (dry run)",
         "ensure_navigation_link (dry run)",
@@ -1041,7 +1057,7 @@ def test_navigation_label_failure_does_not_block_permissions(make_manager, tenan
 
     results = make_manager(add_to_navigation=True).create_libraries(libraries_df(site, "MATH"))
 
-    assert actions(results) == ["error", "group_assigned", "group_assigned"]
+    assert actions(results) == ["error", "group_assigned", "group_assigned", "library_created"]
     assert site.nav == []
 
 
@@ -1200,9 +1216,12 @@ def test_group_creation_is_not_repeated_after_a_server_error(make_manager, tenan
 
     results = make_manager().create_libraries(libraries_df(site, "MATH"))
 
-    assert actions(results) == ["error"]
+    assert actions(results) == ["error", "library_created"]
     assert len(created(tenant, "/v1.0/groups")) == 1  # not retried, so no duplicate can be created
-    assert actions(make_manager().create_libraries(libraries_df(site, "MATH"))) == ["group_assigned"] * 2
+    # The failure stopped the first run before it set the display name, so the re-run sets it
+    assert actions(make_manager().create_libraries(libraries_df(site, "MATH"))) == [
+        "group_assigned", "group_assigned", "library_renamed",
+    ]
 
 
 def test_unlinking_a_library_that_never_existed_is_a_warning(make_manager, tenant, site):
@@ -1436,6 +1455,7 @@ def test_create_dry_run_reports_ownership_without_changing_it(make_manager, tena
     assert tenant.writes() == []
     assert legacy["owners"] == set()
     assert results[["group", "action"]].values.tolist() == [
+        ["", "library_created (dry run)"],
         ["BAA-Sharepoint-MATH-Manual-Read", "group_owner_added (dry run)"],
         ["BAA-Sharepoint-MATH-Manual-Read", "ensure_manual_read_group (dry run)"],
         ["BAA-Sharepoint-MATH-Manual-Contribute", "group_not_owned"],
