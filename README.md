@@ -660,7 +660,7 @@ mailbox.send_email(
 )
 ```
 
-The email is sent from the mailbox as plain text and saved in its Sent Items. This needs the `Application Mail.Send` role. Use `shared_mailbox_email` to send from a different mailbox.
+The email is sent from the mailbox as plain text and saved in its Sent Items. `email_addresses` can also be one address as a string. This needs the `Application Mail.Send` role. Use `shared_mailbox_email` to send from a different mailbox.
 
 ### Full example
 

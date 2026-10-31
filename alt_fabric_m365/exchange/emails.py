@@ -331,7 +331,7 @@ class Emails:
             raise Exception(_error_message("Failed to delete email", response))
 
     def send_email(
-        self, subject: str, content: str, email_addresses: list[str], shared_mailbox_email: str | None = None,
+        self, subject: str, content: str, email_addresses: list[str] | str, shared_mailbox_email: str | None = None,
     ) -> None:
         """Sends an email from the mailbox using the Microsoft Graph API.
 
@@ -340,13 +340,20 @@ class Emails:
         Args:
             subject: Email subject.
             content: Email content, as plain text.
-            email_addresses: A list of recipient email addresses.
+            email_addresses: A list of recipient email addresses, or one address as a string.
             shared_mailbox_email: Optional. The email address of a different mailbox to send from.
 
         Raises:
+            ValueError: If there are no recipients.
             Exception: If Graph doesn't accept the email. The message includes Graph's error code.
         """
         url = f'{self._mailbox_url(shared_mailbox_email)}/sendMail'
+
+        # A string is one address: iterating it would make a recipient of each character
+        if isinstance(email_addresses, str):
+            email_addresses = [email_addresses] if email_addresses.strip() else []
+        if not email_addresses:
+            raise ValueError("send_email needs at least one recipient in email_addresses.")
 
         # Produce recipients section in correct format.
         recipients = []

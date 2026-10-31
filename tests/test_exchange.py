@@ -228,6 +228,23 @@ def test_send_email(emails):
     assert [r["emailAddress"]["address"] for r in message["toRecipients"]] == ["a@contoso.com", "b@contoso.com"]
 
 
+def test_send_email_to_one_address_given_as_a_string(emails):
+    with mock.patch.object(emails_module.requests, "post", return_value=make_response(202)) as post:
+        emails.send_email("Subject", "Body", "a@contoso.com")
+
+    message = json.loads(post.call_args.kwargs["data"])["message"]
+    assert message["toRecipients"] == [{"emailAddress": {"address": "a@contoso.com"}}]
+
+
+@pytest.mark.parametrize("email_addresses", [[], ""])
+def test_send_email_with_no_recipients_raises_before_any_request(emails, email_addresses):
+    with mock.patch.object(emails_module.requests, "post") as post:
+        with pytest.raises(ValueError, match="at least one recipient"):
+            emails.send_email("Subject", "Body", email_addresses)
+
+    assert not post.called
+
+
 def test_send_failure_raises(emails):
     with mock.patch.object(emails_module.requests, "post", return_value=make_response(403)):
         with pytest.raises(Exception, match="Status code: 403"):
