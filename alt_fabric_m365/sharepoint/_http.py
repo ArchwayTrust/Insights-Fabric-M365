@@ -3,10 +3,12 @@ Resilient HTTP wrapper used for every Microsoft Graph and SharePoint call.
 """
 import email.utils
 import functools
+import http.cookiejar
 import logging
 import math
 import random
 import re
+import threading
 import time
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -131,7 +133,7 @@ def _with_current_token(kwargs: dict) -> None:
     """Replace a renewable Authorization header in a request's keyword arguments with a current one.
 
     Args:
-        kwargs: The keyword arguments for requests.request. Its headers are copied rather than changed, as
+        kwargs: The keyword arguments for requests.Session.request. Its headers are copied rather than changed, as
             the caller may reuse them.
     """
     headers = kwargs.get("headers")
@@ -225,6 +227,53 @@ def _raise_for_status(resp: requests.Response) -> None:
     raise requests.HTTPError(f"Status code: {resp.status_code}, {detail}", response=resp)
 
 
+# Each thread keeps its own session, as requests doesn't say a Session is safe to share between threads
+_THREAD_STATE = threading.local()
+
+
+def _thread_session() -> requests.Session:
+    """Returns this thread's session, so the thread's requests reuse its connections.
+
+    A new connection costs a TCP and TLS handshake, which would otherwise limit
+    how many requests a second a run can make.
+
+    Returns:
+        The session, created on the thread's first request.
+    """
+    session = getattr(_THREAD_STATE, "session", None)
+    if session is None:
+        session = requests.Session()
+        # Every manager and Emails on the thread shares the session, whatever
+        # its credential, so a cookie a response sets mustn't go with later
+        # requests: each authenticates with its own bearer token instead
+        session.cookies.set_policy(http.cookiejar.DefaultCookiePolicy(allowed_domains=[]))
+        _THREAD_STATE.session = session
+    return session
+
+
+def _send(method: str, url: str, idempotent: bool, **kwargs: Any) -> requests.Response:
+    """Sends one request, on one of this thread's connections unless it mustn't run twice.
+
+    A request sent on a connection the server has just closed fails as a
+    dropped connection, which can't be told apart from one dropped after the
+    server acted.  A request that mustn't run twice isn't retried after that,
+    so it gets a new connection rather than one that has been idle.
+
+    Args:
+        method: HTTP method.
+        url: Request URL.
+        idempotent: False for a request that must not be repeated.
+        **kwargs: Passed through to requests.Session.request().
+
+    Returns:
+        The response.
+    """
+    if not idempotent:
+        with requests.Session() as session:
+            return session.request(method, url, **kwargs)
+    return _thread_session().request(method, url, **kwargs)
+
+
 def _has_ambiguous_host(url: str) -> bool:
     """Return whether requests might send a request for *url* to a host other than urlparse's hostname.
 
@@ -288,7 +337,7 @@ def _request_with_retry(
         max_delay:   Optional. Cap on the backoff delay in seconds, before up to 25% jitter is added. Defaults to
                      DEFAULT_MAX_DELAY. A Retry-After header is honoured up to RETRY_AFTER_MAX_DELAY instead.
         idempotent:  Optional. False for requests that must not be repeated, see above. Defaults to True.
-        **kwargs:    Passed through to requests.request().
+        **kwargs:    Passed through to requests.Session.request().
 
     Returns:
         The last response, for the caller to check: a success, a 4xx other
@@ -323,7 +372,7 @@ def _request_with_retry(
     for attempt in range(max_retries + 1):
         _with_current_token(kwargs)
         try:
-            resp = requests.request(method, url, **kwargs)
+            resp = _send(method, url, idempotent, **kwargs)
 
             # Handle redirects — re-issue with the same method to the new
             # Location.  Redirects to a different host, or from https to
@@ -364,7 +413,7 @@ def _request_with_retry(
                 # Retries after this go to Location too.
                 kwargs.pop("params", None)
                 # Don't count the redirect as a retry — just re-issue
-                resp = requests.request(method, url, **kwargs)
+                resp = _send(method, url, idempotent, **kwargs)
 
             # A redirect that wasn't followed (no Location, or a 303 for a
             # write) is a failure: raise_for_status() lets 3xx through, so

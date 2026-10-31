@@ -1,14 +1,20 @@
 """
-The retry wrapper every Graph and SharePoint call goes through: throttling, server errors, connection errors
-and redirects.
+The retry wrapper every Graph and SharePoint call goes through: throttling, server errors, connection errors,
+redirects, and the connections requests are sent on.
 """
+import http.client
+import io
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
+from types import SimpleNamespace
 from unittest import mock
 
 import pytest
 import requests
+import urllib3
 
 import alt_fabric_m365
 from alt_fabric_m365.sharepoint import _http
@@ -27,7 +33,7 @@ def sleeps(monkeypatch):
 
 
 def patch_request(return_value=None, side_effect=None):
-    """Patches requests.request to give return_value, or each of side_effect in turn (raising exceptions).
+    """Patches requests.Session.request to give return_value, or each of side_effect in turn (raising exceptions).
 
     Each response gets the URL it was requested from, with params encoded, as requests gives it.
     """
@@ -40,7 +46,8 @@ def patch_request(return_value=None, side_effect=None):
         if isinstance(result, requests.Response):
             result.url = requests.Request(method, url, params=kwargs.get("params")).prepare().url
         return result
-    return mock.patch.object(_http.requests, "request", side_effect=request)
+    # A mock on the class isn't bound, so it's called as request(method, url, **kwargs)
+    return mock.patch.object(requests.Session, "request", side_effect=request)
 
 
 # Retry-After
@@ -417,3 +424,64 @@ def test_organisations_with_letters_digits_spaces_and_dots_are_used(organisation
 def test_organisations_a_user_agent_cant_hold_are_refused(organisation):
     with pytest.raises(ValueError, match="organisation"):
         _http._user_agent(organisation)
+
+
+# Connections
+
+@pytest.fixture
+def sessions(monkeypatch):
+    """Records the session each request is sent on, starting every thread without one."""
+    monkeypatch.setattr(_http, "_THREAD_STATE", threading.local())
+    used = []
+
+    def request(session, method, url, **kwargs):
+        used.append(session)
+        return response(200, {})
+    monkeypatch.setattr(requests.Session, "request", request)
+    return used
+
+
+def test_a_threads_requests_share_its_session_and_other_threads_have_their_own(sessions):
+    def two_requests():
+        _request_with_retry("GET", URL)
+        _request_with_retry("GET", URL)
+
+    two_requests()
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        executor.submit(two_requests).result()
+
+    assert sessions[0] is sessions[1] and sessions[2] is sessions[3]
+    assert sessions[0] is not sessions[2]
+
+
+def test_a_request_that_mustnt_run_twice_gets_a_new_connection(sessions):
+    _request_with_retry("GET", URL)
+    _request_with_retry("POST", URL, idempotent=False)
+    _request_with_retry("POST", URL, idempotent=False)
+    _request_with_retry("GET", URL)
+
+    assert len({id(session) for session in sessions[:3]}) == 3
+    assert sessions[3] is sessions[0]
+
+
+# A thread's session is shared by every manager and Emails on it, whatever their credentials
+def test_a_cookie_a_response_sets_isnt_sent_with_later_requests(monkeypatch):
+    monkeypatch.setattr(_http, "_THREAD_STATE", threading.local())
+    sent = []
+
+    def send(adapter, request, **kwargs):
+        sent.append(request)
+        message = http.client.HTTPMessage()
+        message["Set-Cookie"] = "FedAuth=secret; Path=/; Secure"
+        raw = urllib3.HTTPResponse(
+            body=io.BytesIO(b"{}"), headers=dict(message), status=200, preload_content=False,
+            original_response=SimpleNamespace(msg=message, isclosed=lambda: True, close=lambda: None),
+        )
+        return adapter.build_response(request, raw)
+    # Below Session.request, so requests' own cookie handling runs
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, "send", send)
+
+    _request_with_retry("GET", URL)
+    _request_with_retry("GET", URL)
+
+    assert len(sent) == 2 and "Cookie" not in sent[1].headers

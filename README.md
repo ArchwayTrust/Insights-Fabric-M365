@@ -1074,6 +1074,7 @@ A dry run logs these in place of the changes it would make. Anything it finds by
 - **Permission levels are found by type**, not by name, so sites in another language, or with renamed levels, work too.
 - **Tokens only go to your tenant.** Every `site_url` must be `https://` on `sharepoint_hostname`, with no user name and no backslash before its path (which some URL parsers read as part of the host and others don't), and redirects to another host or to plain http are refused. A redirect that can't be followed is an error, never a success.
 - **Throttling and transient errors are retried,** honouring `Retry-After`, with exponential backoff. Each attempt gets a current token from the credential, so a request retried for several minutes doesn't fail because its token expired while it waited. Every request's User-Agent starts `NONISV|ArchwayTrust|alt-fabric-m365/<version>`, in the form Microsoft's SharePoint throttling guidance asks for, as SharePoint serves traffic that says where it's from ahead of traffic that doesn't. To name your own organisation instead, pass `organisation`, for example `SharePointLibraryManager(credential, hostname, organisation="Contoso")`, or the same to `Emails`. It can contain letters, digits, spaces, `.`, `-` and `_`.
+- **Connections are reused.** Each thread keeps its connections to Graph and SharePoint open between requests, rather than making a new one, with its handshakes, for every request. Cookies are never kept, so each request is authenticated only by its own token. A request that mustn't run twice, such as creating a group, still gets a new connection: one the server closed while it sat idle would fail it in a way that can't be safely retried.
 
 ### Adopting groups created by earlier versions
 
@@ -1459,7 +1460,7 @@ What they cover:
 | --- | --- |
 | `test_auth.py` | `KeyVaultCertificateCredential`: token requests and caching, Key Vault signing, the client assertion, error descriptions |
 | `test_exchange.py` | `Emails`, its retries and reading Graph errors |
-| `test_sharepoint_http.py` | The retry wrapper: throttling, `Retry-After`, server and connection errors, redirects, a current token for each attempt |
+| `test_sharepoint_http.py` | The retry wrapper: throttling, `Retry-After`, server and connection errors, redirects, a current token for each attempt, and the connections each thread reuses |
 | `test_sharepoint_helpers.py` | Group naming and collisions, input validation, user and group resolution, the property bag, navigation URLs |
 | `test_sharepoint_manager.py` | Every `SharePointLibraryManager` operation end to end, including re-runs, dry runs, guardrails and failures, and authenticating with `KeyVaultCertificateCredential` |
 | `test_readme_flow.py` | Runs the [recommended flow](#recommended-flow) example against the suggested input tables (a dry run, a live run, a re-run and a deletion), and again with the [setting-specific steps](#adding-setting-specific-steps) inserted |

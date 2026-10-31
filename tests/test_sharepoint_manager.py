@@ -18,7 +18,7 @@ import requests
 import alt_fabric_m365
 from alt_fabric_m365.auth import KeyVaultCertificateCredential, Scopes, keyvault
 from alt_fabric_m365.sharepoint import (
-    ACTION_LOG_COLUMNS, FATAL_ACTIONS, WARNING_ACTIONS, SharePointLibraryManager, _common, _http,
+    ACTION_LOG_COLUMNS, FATAL_ACTIONS, WARNING_ACTIONS, SharePointLibraryManager, _common,
 )
 from alt_fabric_m365.sharepoint import manager as manager_module
 
@@ -695,11 +695,11 @@ def _fail_properties_read(tenant, monkeypatch):
 
 
 def _drop_properties_connection(tenant, monkeypatch):
-    def request(method, url, **kwargs):
+    def request(session, method, url, **kwargs):
         if "/sites/BAA/" in url and url.endswith("/rootfolder/properties"):
             raise requests.ConnectionError("Connection reset by peer")
         return tenant.request(method, url, **kwargs)
-    monkeypatch.setattr(_http.requests, "request", request)
+    monkeypatch.setattr(requests.Session, "request", request)
 
 
 # Unset values are None too, so a row that couldn't be read must say so rather than look unset
@@ -2077,10 +2077,10 @@ def test_one_worker_makes_every_request_in_turn_including_user_lookups(
         tenant.add_user(f"{name}@contoso.com")
     threads = set()
 
-    def request(method, url, **kwargs):
+    def request(session, method, url, **kwargs):
         threads.add(threading.get_ident())
         return tenant.request(method, url, **kwargs)
-    monkeypatch.setattr(_http.requests, "request", request)
+    monkeypatch.setattr(requests.Session, "request", request)
 
     getattr(make_manager(max_workers=1), operation)(memberships_df(site, [
         ("MATH", f"{name}@contoso.com", "read") for name in ("jo", "sam", "ali")
@@ -2108,11 +2108,11 @@ def test_a_removal_that_cannot_reach_graph_is_logged_against_its_group_and_membe
     stale = tenant.add_user("left@contoso.com")
     tenant.group_named("BAA-Sharepoint-MATH-Auto-Contribute")["members"][stale["id"]] = stale
 
-    def request(method, url, **kwargs):
+    def request(session, method, url, **kwargs):
         if method == "DELETE":
             raise requests.ConnectionError("Connection reset by peer")
         return tenant.request(method, url, **kwargs)
-    monkeypatch.setattr(_http.requests, "request", request)
+    monkeypatch.setattr(requests.Session, "request", request)
 
     results = make_manager().update_memberships(
         memberships_df(site, []), libraries_df=libraries_df(site, "MATH"),
@@ -2407,15 +2407,15 @@ def fail_group_creates(tenant, monkeypatch, failure, times=1):
         tenant.fail("POST", r"/groups$", failures[failure](), times=times)
         return
     exception = {"connection reset": requests.ConnectionError, "connect timeout": requests.ConnectTimeout}[failure]
-    real_request = _http.requests.request
+    real_request = requests.Session.request
     failed = []
 
-    def fail_group_create(method, url, **kwargs):
+    def fail_group_create(session, method, url, **kwargs):
         if method == "POST" and url.endswith("/groups") and len(failed) < times:
             failed.append(url)
             raise exception(failure)
-        return real_request(method, url, **kwargs)
-    monkeypatch.setattr(_http.requests, "request", fail_group_create)
+        return real_request(session, method, url, **kwargs)
+    monkeypatch.setattr(requests.Session, "request", fail_group_create)
 
 
 def make_failed_create_visible_only_by_id(tenant, name):
