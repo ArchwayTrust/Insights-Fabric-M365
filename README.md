@@ -2,7 +2,7 @@
 
 Python helpers for automation in Microsoft Fabric notebooks, from Archway Learning Trust (ALT).
 
-Up to 0.5.0 this package was called `fabric_python_helper`. If you're upgrading from a 0.x version, see [Upgrading to 1.0.0](#upgrading-to-100).
+Up to 0.5.0 this package was called `fabric_python_helper`. If you're upgrading from a 0.x version, see [Upgrading to 1.0.0](#upgrading-to-100), and from 1.x, see [Upgrading to 2.0.0](#upgrading-to-200).
 
 The package has a module for each Microsoft 365 service, plus `auth`, which they share:
 
@@ -62,13 +62,13 @@ The package is published on PyPI as [`alt-fabric-m365`](https://pypi.org/project
 **In a Fabric environment** (use this for scheduled notebooks and pipelines):
 
 1. Open the environment your notebooks use.
-2. In the **External repositories** tab, select **Add library** > **Add library from public repository**, choose **PyPI**, enter `alt-fabric-m365` and choose a version, for example `1.3.0`. Choose **Full** publish mode, which Microsoft recommends for pipelines and production notebooks.
+2. In the **External repositories** tab, select **Add library** > **Add library from public repository**, choose **PyPI**, enter `alt-fabric-m365` and choose a version, for example `2.0.0`. Choose **Full** publish mode, which Microsoft recommends for pipelines and production notebooks.
 3. Save and publish the environment. Notebooks pick up the new version when their next session starts.
 
 **In a single notebook session** (useful for testing a new version):
 
 ```python
-%pip install alt-fabric-m365==1.3.0
+%pip install alt-fabric-m365==2.0.0
 ```
 
 Always pin a version. 1.0.0 removes the old names that 0.x versions kept working with a warning, see [Upgrading to 1.0.0](#upgrading-to-100). 1.0.1 only updates the documentation. 1.0.2 stops `update_memberships` emptying an Auto group the app doesn't own, adopts ownerless Auto groups it has no members to add to, and makes dry runs of `create_libraries` report group ownership. 1.1.0 fixes problems found in a review of 1.0.2:
@@ -117,7 +117,16 @@ Always pin a version. 1.0.0 removes the old names that 0.x versions kept working
   - lets `send_email` take one address as a string.
 - `KeyVaultCertificateCredential` retries throttled and failed requests to Key Vault and Entra ID, and quotes the certificate name, version and tenant in URLs.
 
-From 1.0.0, only a new major version (2.0.0) can break existing notebooks, see [Versioning](#versioning). The history of the 0.x versions is in the [0.7.2 README](https://github.com/ArchwayTrust/Insights-Fabric-M365/blob/v0.7.2/README.md#installation).
+2.0.0 renames dry-run actions, which can break a notebook that reads them by name: see [Upgrading to 2.0.0](#upgrading-to-200). If you're upgrading from 1.1.0 or 1.2.0, that section also says where the notebook needs a change for `get_library_metadata`'s `status` column, which 1.3.0 added.
+
+- Each dry-run action is named after the action a live run logs, followed by ` (dry run)`, such as `added_to_group (dry run)` rather than `add_to_group (dry run)`, so removing the suffix gives the live action.
+- Each thread keeps its connections to Graph and SharePoint open between requests, rather than making a new one for every request. A request that mustn't run twice, such as creating a group, still gets a new one.
+- Group lookups read each group's owners, so checking the app owns a group takes no request of its own.
+- A redirect gets a current token, as each retry already did.
+- `SharePointLibraryManager` no longer needs `GroupMember.ReadWrite.All`, as `Group.ReadWrite.All` covers member changes. [Giving the app access](#giving-the-app-access) says how to remove it.
+- The example notebook takes a lease in its sync-state table before a live run changes anything, so a second live run stops rather than syncing the same groups at the same time. It has a new parameter, `LEASE_MINUTES`.
+
+From 1.0.0, only a new major version can break existing notebooks, as 2.0.0 does: see [Versioning](#versioning). The history of the 0.x versions is in the [0.7.2 README](https://github.com/ArchwayTrust/Insights-Fabric-M365/blob/v0.7.2/README.md#installation).
 
 ## Quick start
 
@@ -1592,7 +1601,7 @@ The tests can't show that the real services accept the requests, so test a new v
 
 ### Versioning
 
-The version number is set in `alt_fabric_m365/__init__.py`, as `__version__="1.3.0"`, and `setup.py` reads it from there. Check it with `python setup.py --version`. This README's examples show it too: installing from PyPI, TestPyPI or a wheel, the names of the files a build makes, and the release tag. `test_packaging.py` fails until they match `__version__`, so update them in the same change.
+The version number is set in `alt_fabric_m365/__init__.py`, as `__version__="2.0.0"`, and `setup.py` reads it from there. Check it with `python setup.py --version`. This README's examples show it too: installing from PyPI, TestPyPI or a wheel, the names of the files a build makes, and the release tag. `test_packaging.py` fails until they match `__version__`, so update them in the same change.
 
 Versions follow [semantic versioning](https://semver.org/):
 
@@ -1617,8 +1626,8 @@ python -m twine check --strict dist/*
 
 This creates two files in `dist/`:
 
-- `alt_fabric_m365-1.3.0-py3-none-any.whl`, the wheel
-- `alt_fabric_m365-1.3.0.tar.gz`, the source distribution, which also has the tests and what they need ([`MANIFEST.in`](https://github.com/ArchwayTrust/Insights-Fabric-M365/blob/main/MANIFEST.in)), so they run from it
+- `alt_fabric_m365-2.0.0-py3-none-any.whl`, the wheel
+- `alt_fabric_m365-2.0.0.tar.gz`, the source distribution, which also has the tests and what they need ([`MANIFEST.in`](https://github.com/ArchwayTrust/Insights-Fabric-M365/blob/main/MANIFEST.in)), so they run from it
 
 `twine check` confirms the package metadata and this README will render on PyPI. Clearing `dist/` first stops old versions being uploaded by mistake.
 
@@ -1635,7 +1644,7 @@ trusted-host = files.pythonhosted.org
 Upload the `.whl` file to a lakehouse's `Files` folder, then in a notebook attached to that lakehouse:
 
 ```python
-%pip install /lakehouse/default/Files/alt_fabric_m365-1.3.0-py3-none-any.whl
+%pip install /lakehouse/default/Files/alt_fabric_m365-2.0.0-py3-none-any.whl
 ```
 
 Or add it to an environment: on its **Custom** libraries page, select **Upload**.
@@ -1646,7 +1655,7 @@ This is the normal route. Merging to `main` never publishes anything; only publi
 
 1. Runs the tests.
 2. Checks the tagged commit is on `main`, and stops if it isn't, so an unmerged commit isn't released by mistake. The workflow runs as it is at the tagged commit, so this doesn't stop someone who removes the check on purpose: the tag ruleset and reviewers under [Trusted Publishing setup](#trusted-publishing-setup) do.
-3. Checks the release tag matches `__version__` (tag `v1.3.0` for `__version__="1.3.0"`), and stops if it doesn't.
+3. Checks the release tag matches `__version__` (tag `v2.0.0` for `__version__="2.0.0"`), and stops if it doesn't.
 4. Builds the package and runs `twine check`.
 5. Publishes it to PyPI.
 6. Attaches the wheel and source distribution to the GitHub release.
@@ -1655,7 +1664,7 @@ To release:
 
 1. Update `__version__` in `alt_fabric_m365/__init__.py`, merge it into `main` through a pull request.
 2. On GitHub, go to **Releases** > **Draft a new release**.
-3. Create a tag matching the version, for example `v1.3.0`, targeting `main`.
+3. Create a tag matching the version, for example `v2.0.0`, targeting `main`.
 4. Add release notes, then select **Publish release**.
 5. Check the workflow run under **Actions**, and that the new version appears on [PyPI](https://pypi.org/project/alt-fabric-m365/).
 
@@ -1693,7 +1702,7 @@ python -m twine upload --repository testpypi dist/*
 ```
 
 ```python
-%pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ alt-fabric-m365==1.3.0
+%pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ alt-fabric-m365==2.0.0
 ```
 
 ### After publishing
