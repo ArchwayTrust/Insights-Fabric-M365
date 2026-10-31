@@ -296,6 +296,39 @@ def test_adding_to_an_existing_group_does_not_wait(tenant, error):
         _groups._add_group_member(TOKEN, "missing-group", "user")
 
 
+@pytest.mark.parametrize("read, path", [
+    (_groups._get_group_members, "members"), (_groups._get_group_owner_ids, "owners"),
+])
+def test_reading_a_new_group_waits_for_replication(tenant, monkeypatch, read, path):
+    sleeps = []
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+    group = tenant.add_group("SP-ENG-Auto-Read", owners={"app"})
+    tenant.fail("GET", rf"/{path}\?", graph_error(404, "Request_ResourceNotFound"), times=2)
+
+    assert read(TOKEN, group["id"], is_new_group=True) == ({} if path == "members" else {"app"})
+    assert sleeps == [5.0, 10.0]
+
+
+@pytest.mark.parametrize("read, path", [
+    (_groups._get_group_members, "members"), (_groups._get_group_owner_ids, "owners"),
+])
+def test_reading_an_existing_group_does_not_wait(tenant, read, path):
+    tenant.fail("GET", rf"/{path}\?", graph_error(404, "Request_ResourceNotFound"))
+    with pytest.raises(requests.HTTPError):
+        read(TOKEN, "missing-group")
+
+
+def test_adopting_a_new_group_waits_for_replication(tenant, monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+    group = tenant.add_group("SP-ENG-Auto-Read")
+    tenant.fail("POST", r"/owners/\$ref$", graph_error(404, "Request_ResourceNotFound"))
+
+    assert _groups._ensure_app_owns_group(TOKEN, group["id"], "app", is_new_group=True) == "adopted"
+    assert group["owners"] == {"app"}
+    assert sleeps == [5.0]
+
+
 def test_emptying_a_group_removes_every_kind_of_member(tenant):
     group = tenant.add_group("SP-ENG-Auto-Read")
     user = tenant.add_user("jo@contoso.com")
