@@ -1427,6 +1427,14 @@ def test_lockdown_without_a_member_group(make_manager, tenant, site):
 
 # Read-only helpers
 
+@pytest.mark.parametrize("code", ["MATH#notes", "MATH?x=1", "D&T"])
+def test_get_navigation_link_refuses_a_code_sharepoint_cant_use_as_a_url(make_manager, tenant, site, code):
+    with pytest.raises(ValueError, match="library_code"):
+        make_manager().get_navigation_link(site.url, code)
+
+    assert tenant.calls == []
+
+
 def test_get_navigation_link(make_manager, site):
     manager = make_manager(add_to_navigation=True)
     assert manager.get_navigation_link(site.url, "MATH") is None

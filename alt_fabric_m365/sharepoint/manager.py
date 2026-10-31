@@ -14,7 +14,7 @@ from ..auth import Scopes
 from ._common import (
     ALL_GROUP_SUFFIXES, AUTO_GROUP_SUFFIXES, METADATA_PROPERTY_KEYS, REPLICATION_BASE_DELAY, VALID_ROLES,
     _action_log_to_dataframe, _append_log, _blank_nulls, _check_option, _fill_flag_columns, _run_parallel, _ThreadSafeLog,
-    _validate_required_columns, _validate_site_urls,
+    _validate_library_codes, _validate_required_columns, _validate_site_urls,
 )
 from ._graph import (
     _create_onedrive_shortcut, _ensure_document_library, _find_library_shortcut, _find_title_conflict,
@@ -3062,9 +3062,17 @@ class SharePointLibraryManager:
         Returns:
             The navigation node (``Id``, ``Title``, ``Url``, …), or None when
             the label or the link does not exist.
+
+        Raises:
+            ValueError: If the site URL isn't on the SharePoint host, or the
+                code isn't one SharePoint keeps as a library's URL (see
+                _validate_library_codes): the link is found by the library's
+                URL, which is the site URL and the code.
         """
         (navigation_label_,) = self._resolve_config(navigation_label=navigation_label)
         _validate_site_urls([site_url], self.sharepoint_hostname)
+        # A '#' or '?' in the code would cut the URL short and look up another path
+        _validate_library_codes([library_code])
         found = _find_nav_label(self._sp_token, site_url, navigation_label_)
         if found is None:
             return None
