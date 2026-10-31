@@ -7,6 +7,7 @@ import importlib
 import re
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -15,7 +16,14 @@ import alt_fabric_m365
 
 ROOT = Path(__file__).resolve().parent.parent
 README = (ROOT / "README.md").read_text(encoding="utf-8")
-PYTHON_BLOCKS = re.findall(r"^```python\n(.*?)^```", README, re.S | re.M)
+
+
+def python_blocks(markdown):
+    """Returns the code of each python fenced block. A fence in a list item is indented, and so is its code."""
+    return [textwrap.dedent(block) for _, block in re.findall(r"^([ \t]*)```python\n(.*?)^\1```", markdown, re.S | re.M)]
+
+
+PYTHON_BLOCKS = python_blocks(README)
 
 
 def test_setup_reads_the_package_version():
@@ -37,6 +45,12 @@ def test_graph_api_was_removed_in_1_0():
 
 def test_readme_has_python_examples():
     assert len(PYTHON_BLOCKS) > 10
+
+
+def test_examples_in_list_items_are_found():
+    markdown = "1. Import it:\n\n   ```python\n   import a\n   if a:\n       b()\n   ```\n\n```python\nc()\n```\n"
+
+    assert python_blocks(markdown) == ["import a\nif a:\n    b()\n", "c()\n"]
 
 
 @pytest.mark.parametrize("block", [b for b in PYTHON_BLOCKS if not b.lstrip().startswith("%")])
