@@ -1409,6 +1409,45 @@ class SharePointLibraryManager:
             )
             _append_log(action_log, site_url, library_code, "error", str(exc))
 
+    def _replacement_problem(
+        self, site_url: str, lists: dict[str, dict], library_code: str, group_prefix: str, include_site_name: bool,
+    ) -> str | None:
+        """Return why a moved library's copy on its new site isn't working yet, or None if it is.
+
+        Retiring removes the old library's access, so the new one must exist,
+        have its own permissions, and give at least one of its groups a role.
+        A library whose create failed part-way, or the {code}_MOVED leftover of
+        an earlier move back, can exist without them.
+
+        Args:
+            site_url: The new site's URL.
+            lists: The new site's lists, from _list_existing_lists.
+            library_code: The library's code.
+            group_prefix: Prefix of the library's group names.
+            include_site_name: Whether group names include the site name.
+
+        Returns:
+            The reason, to follow "the library", or None.
+        """
+        library = lists.get(library_code.lower())
+        if library is None:
+            return f"isn't on its new site ({site_url}) yet"
+        try:
+            if not _has_unique_permissions(self._sp_token, site_url, library["id"]):
+                return f"on its new site ({site_url}) still inherits the site's permissions"
+            roles = _get_library_group_roles(self._sp_token, site_url, library["id"])
+            groups_by_name = _find_groups_by_name_prefix(
+                self._graph_token,
+                build_group_name(group_prefix, site_url, library_code, "", include_site_name=include_site_name),
+            )
+        except (requests.RequestException, ValueError, KeyError) as exc:
+            return f"on its new site ({site_url}) couldn't be checked: {exc}"
+        for suffix in ALL_GROUP_SUFFIXES:
+            name = build_group_name(group_prefix, site_url, library_code, suffix, include_site_name=include_site_name)
+            if any(_group_claims(group["id"]).lower() in roles for group in groups_by_name.get(name.lower(), [])):
+                return None
+        return f"on its new site ({site_url}) gives none of its groups access yet"
+
     def retire_moved_libraries(
         self,
         df: pd.DataFrame,
@@ -1442,10 +1481,12 @@ class SharePointLibraryManager:
 
         Optional DataFrame columns:
           - new_site_url:   The site the library moved to.  When given, the
-                            old library is only retired once the library
-                            exists there, so a failed create on the new site
-                            never leaves the faculty without a working
-                            library; until then the row is logged as
+                            old library is only retired once the library is
+                            working there (it exists, has its own permissions
+                            and gives one of its groups a role), so a failed
+                            create on the new site never leaves the faculty
+                            without a working library; until then the row is
+                            logged as
                             ``retire_deferred`` (a warning).  Leave it null
                             for a library deleted at source, whose leftover
                             should be retired anyway.  Not checked in a dry
@@ -1517,18 +1558,18 @@ class SharePointLibraryManager:
                     f"its new site ({new_site_url}) is the same site, so it hasn't moved — left as it is",
                 )
                 continue
-            if (
-                not dry_run_ and pd.notna(new_site_url)
-                and row["library_code"].lower() not in new_sites.get(new_site_url, {}).get("lists", {})
-            ):
-                logger.warning(
-                    "Not retiring '%s' on '%s': no library on its new site %s yet",
-                    row["library_code"], site_url, new_site_url,
+            problem = None
+            if not dry_run_ and pd.notna(new_site_url):
+                problem = self._replacement_problem(
+                    new_site_url, new_sites.get(new_site_url, {}).get("lists", {}),
+                    row["library_code"], row["group_prefix"], include_site_name_,
                 )
+            if problem is not None:
+                logger.warning("Not retiring '%s' on '%s': the library %s", row["library_code"], site_url, problem)
                 _append_log(
                     action_log, site_url, row["library_code"], "retire_deferred",
-                    f"the library isn't on its new site ({new_site_url}) yet, so the old one keeps "
-                    f"its access — retire it once the new library has been created",
+                    f"the library {problem}, so the old one keeps its access — "
+                    f"retire it once the new library has been set up",
                 )
                 continue
             items.append((

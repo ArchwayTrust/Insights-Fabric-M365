@@ -1546,6 +1546,24 @@ def test_retire_waits_for_the_library_on_the_new_site(make_manager, tenant, site
     assert site.list_by_slug("MATH")["displayName"] == "MATH_MOVED"
 
 
+@pytest.mark.parametrize("replacement", ["still inherits", "move-back leftover"])
+def test_retire_waits_for_a_working_replacement(make_manager, tenant, site, replacement):
+    new_site = tenant.add_site("/sites/BAANew")
+    make_manager().create_libraries(libraries_df(site, "MATH"))
+    if replacement == "still inherits":
+        new_site.add_list("MATH")  # its create failed after the library was made
+    else:
+        new_site.add_list("MATH_MOVED", slug="MATH", unique=True)  # retired by an earlier move, no group access
+    tenant.calls.clear()
+
+    results = make_manager().retire_moved_libraries(libraries_df(site, "MATH").assign(new_site_url=new_site.url))
+
+    assert actions(results) == ["retire_deferred"]
+    assert tenant.writes() == []
+    library = site.list_by_slug("MATH")
+    assert (library["displayName"], len(library["role_assignments"])) == ("MATH Faculty", 2)
+
+
 def test_retire_without_a_new_site_retires_anyway(make_manager, tenant, site):
     make_manager().create_libraries(libraries_df(site, "MATH"))
 
