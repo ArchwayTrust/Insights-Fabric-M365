@@ -117,6 +117,27 @@ def test_works_with_key_vault_certificate_credential(fake_notebookutils, tenant,
     assert all(group["owners"] == {APP_ID} for group in tenant.groups.values())
 
 
+def test_a_request_retried_after_a_long_throttle_sends_a_current_token(tenant, site):
+    from types import SimpleNamespace
+    from sharepoint_fake import response
+
+    class RenewingCredential:
+        """Hands out a new token whenever time passes, as a credential does near a token's expiry."""
+
+        def get_token(self, *scopes):
+            return SimpleNamespace(token=f"token-{len(tenant.sleeps)}", expires_on=0)
+
+    tenant.fail("POST", r"/ensureuser", response(429, headers={"Retry-After": "300"}))
+    manager = SharePointLibraryManager(RenewingCredential(), HOST, include_site_name=False, service_principal_id=APP_ID)
+
+    results = manager.create_libraries(libraries_df(site, "MATH"))
+
+    throttled_at = tenant.sleeps.index(300.0)
+    sent = [call[2]["headers"]["Authorization"] for call in tenant.calls if call[1].endswith("/ensureuser")]
+    assert sent[:2] == [f"Bearer token-{throttled_at}", f"Bearer token-{throttled_at + 1}"]
+    assert rows(results, "error").empty
+
+
 def test_constructor_fails_fast_on_bad_credentials():
     class Broken:
         def get_token(self, *scopes, **kwargs):

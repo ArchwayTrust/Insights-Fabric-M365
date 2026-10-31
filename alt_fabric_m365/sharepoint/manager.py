@@ -21,6 +21,7 @@ from ._graph import (
     _get_library_display_name, _get_list_id, _get_onedrive_root_items,
     _get_site_id, _list_existing_lists, _set_library_display_name,
 )
+from ._http import _RenewableToken
 from ._groups import (
     GroupResolutionError, UserResolutionError, _add_group_member, _create_security_group, _empty_group_members,
     _ensure_app_owns_group, _find_existing_library_collisions, _find_group_by_name,
@@ -131,9 +132,11 @@ class SharePointLibraryManager:
         self._created_groups: dict[str, tuple[dict, bool]] = {}
         self._created_groups_lock = threading.Lock()
 
-        # Tokens are requested per use via the properties below.  The
+        # Tokens are requested per use via the properties below, and again
+        # before each attempt of a request (see _RenewableToken).  The
         # credential caches them and requests new ones near expiry, so runs
-        # longer than a token lifetime (~60-90 min) keep working.
+        # longer than a token lifetime (~60-90 min), and requests retried for
+        # minutes while throttled, keep working.
         self.credential = credential
         self.sharepoint_hostname = sharepoint_hostname
         self._graph_scope = Scopes.GRAPH
@@ -216,11 +219,11 @@ class SharePointLibraryManager:
 
     @property
     def _graph_token(self) -> str:
-        return self.credential.get_token(self._graph_scope).token
+        return _RenewableToken(lambda: self.credential.get_token(self._graph_scope).token)
 
     @property
     def _sp_token(self) -> str:
-        return self.credential.get_token(self._sp_scope).token
+        return _RenewableToken(lambda: self.credential.get_token(self._sp_scope).token)
 
     def _resolve_config(self, **overrides) -> tuple:
         """Resolve per-call overrides against instance defaults.

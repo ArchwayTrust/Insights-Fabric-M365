@@ -5,7 +5,7 @@ import logging
 from urllib.parse import unquote, urlparse
 
 from ._common import GRAPH_BASE_URL
-from ._http import _request_with_retry
+from ._http import _bearer, _request_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 def _graph_headers(token: str) -> dict:
     """Return standard headers for Graph API calls."""
     return {
-        "Authorization": f"Bearer {token}",
+        "Authorization": _bearer(token),
         "Content-Type": "application/json",
     }
 

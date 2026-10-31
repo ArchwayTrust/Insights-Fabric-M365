@@ -226,3 +226,31 @@ def test_non_idempotent_request_is_retried_when_it_certainly_did_not_arrive(slee
         assert _request_with_retry("POST", URL, idempotent=False).status_code == 201
 
     assert request.call_count == 2
+
+
+# Tokens
+
+def clock_token(sleeps):
+    """A token that changes whenever time passes, as a credential's does when it renews one near expiry."""
+    return _http._RenewableToken(lambda: f"token-{len(sleeps)}")
+
+
+@pytest.mark.parametrize("first", [
+    response(429, headers={"Retry-After": "300"}), response(503), requests.ConnectionError("reset"),
+], ids=["throttled", "server error", "connection error"])
+def test_each_attempt_sends_a_current_token(sleeps, first):
+    headers = {"Authorization": _http._bearer(clock_token(sleeps)), "Accept": "application/json"}
+    with patch_request(side_effect=[first, response(200, {})]) as request:
+        _request_with_retry("GET", URL, headers=headers)
+
+    sent = [call.kwargs["headers"] for call in request.call_args_list]
+    assert [h["Authorization"] for h in sent] == ["Bearer token-0", "Bearer token-1"]
+    assert all(h["Accept"] == "application/json" for h in sent)
+    assert headers["Authorization"] == "Bearer token-0"  # the caller's headers are left alone
+
+
+def test_a_plain_token_is_sent_as_given(sleeps):
+    with patch_request(side_effect=[response(503), response(200, {})]) as request:
+        _request_with_retry("GET", URL, headers={"Authorization": _http._bearer("abc")})
+
+    assert [call.kwargs["headers"]["Authorization"] for call in request.call_args_list] == ["Bearer abc"] * 2

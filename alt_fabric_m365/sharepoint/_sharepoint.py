@@ -11,7 +11,7 @@ from ._common import (
     METADATA_PROPERTY_KEYS, REPLICATION_BASE_DELAY, REPLICATION_MAX_ATTEMPTS, VALID_ROLES,
     _append_log, _ThreadSafeLog,
 )
-from ._http import _request_with_retry
+from ._http import _bearer, _request_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ def _get_sharepoint_rest_url(site_url: str) -> str:
 def _sharepoint_headers(token: str) -> dict:
     """Return headers for SharePoint REST API calls."""
     return {
-        "Authorization": f"Bearer {token}",
+        "Authorization": _bearer(token),
         "Accept": "application/json;odata=verbose",
         "Content-Type": "application/json;odata=verbose",
     }
@@ -350,7 +350,7 @@ def _set_library_properties(
 
     url = f"{site_url.rstrip('/')}/_vti_bin/client.svc/ProcessQuery"
     headers = {
-        "Authorization": f"Bearer {token}",
+        "Authorization": _bearer(token),
         "Content-Type": "text/xml",
         "X-RequestDigest": "0",
     }
