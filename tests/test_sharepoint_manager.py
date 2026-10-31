@@ -464,7 +464,22 @@ def test_retire_skips_a_site_or_library_that_is_gone(make_manager, tenant, site)
     assert tenant.writes() == []
 
 
-# update_memberships
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("spelling", ["lower case", "trailing slash"])
+def test_retire_leaves_a_library_whose_new_site_is_the_same_site(make_manager, tenant, site, spelling, dry_run):
+    make_manager(add_to_navigation=True).create_libraries(libraries_df(site, "MATH"))
+    tenant.calls.clear()
+    # Graph resolves both to the same site, so the library hasn't moved
+    same_site = site.url.lower() if spelling == "lower case" else f"{site.url}/"
+
+    results = make_manager(add_to_navigation=True, dry_run=dry_run).retire_moved_libraries(
+        libraries_df(site, "MATH").assign(new_site_url=same_site))
+
+    assert actions(results) == ["retire_skipped"]
+    assert tenant.writes() == []
+    library = site.list_by_slug("MATH")
+    assert (library["displayName"], len(library["role_assignments"])) == ("MATH Faculty", 2)
+
 
 @pytest.fixture
 def library(make_manager, site):
