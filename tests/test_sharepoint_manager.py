@@ -924,6 +924,69 @@ def test_retire_leaves_a_library_whose_new_site_is_the_same_site(make_manager, t
     assert (library["displayName"], len(library["role_assignments"])) == ("MATH Faculty", 2)
 
 
+# Bringing a library back: restored after an unlink, moved back to its first site, or deleted by hand
+
+def test_a_restored_library_gets_its_name_link_access_and_members_back(make_manager, tenant, site):
+    tenant.add_user("jo@contoso.com")
+    manager = make_manager(add_to_navigation=True)
+    df = libraries_df(site, "MATH", manual_read=True)
+    members = memberships_df(site, [("MATH", "jo@contoso.com", "contribute")])
+    manager.create_libraries(df)
+    manager.update_memberships(members)
+    access = dict(site.list_by_slug("MATH")["role_assignments"])
+    manager.unlink_libraries(df)
+
+    manager.create_libraries(df)
+    manager.update_memberships(members)
+
+    library = site.list_by_slug("MATH")
+    assert (library["displayName"], library["role_assignments"]) == ("MATH Faculty", access)
+    assert [(c["Title"], c["Url"]) for c in site.nav[0]["Children"]] == [("MATH Faculty", "/sites/BAA/MATH")]
+    assert tenant.member_upns("BAA-Sharepoint-MATH-Auto-Contribute") == ["jo@contoso.com"]
+    tenant.calls.clear()
+    manager.create_libraries(df)
+    manager.update_memberships(members)
+    assert tenant.writes() == []
+
+
+def test_a_library_moved_away_and_back_works_on_its_first_site_again(make_manager, tenant, site):
+    other = tenant.add_site("/sites/BAA2")
+    manager = make_manager(add_to_navigation=True)
+    on_first, on_other = libraries_df(site, "MATH"), libraries_df(other, "MATH")
+    manager.create_libraries(on_first)
+    access = dict(site.list_by_slug("MATH")["role_assignments"])
+    manager.create_libraries(on_other)
+    manager.retire_moved_libraries(on_first.assign(new_site_url=other.url))
+    assert (site.list_by_slug("MATH")["displayName"], site.list_by_slug("MATH")["role_assignments"]) == (
+        "MATH_MOVED", {})
+
+    # Retire removed the groups' access to the first site's copy, so moving back gives it back
+    manager.create_libraries(on_first)
+    results = manager.retire_moved_libraries(on_other.assign(new_site_url=site.url))
+
+    assert "library_retired" in actions(results)
+    first, second = site.list_by_slug("MATH"), other.list_by_slug("MATH")
+    assert (first["displayName"], first["role_assignments"]) == ("MATH Faculty", access)
+    assert (second["displayName"], second["role_assignments"]) == ("MATH_MOVED", {})
+    assert [c["Title"] for c in site.nav[0]["Children"]] == ["MATH Faculty"]
+    assert other.nav[0]["Children"] == []
+
+
+def test_a_library_deleted_by_hand_is_created_again_with_one_link(make_manager, tenant, site):
+    manager = make_manager(add_to_navigation=True)
+    df = libraries_df(site, "MATH")
+    manager.create_libraries(df)
+    del site.lists[site.list_by_slug("MATH")["id"]]
+
+    results = manager.create_libraries(df)
+
+    assert "library_created" in actions(results)
+    library = site.list_by_slug("MATH")
+    assert (library["displayName"], library["unique"], len(library["role_assignments"])) == ("MATH Faculty", True, 2)
+    # Its link was left behind, so the new library's link is the same one rather than a second
+    assert [(c["Title"], c["Url"]) for c in site.nav[0]["Children"]] == [("MATH Faculty", "/sites/BAA/MATH")]
+
+
 @pytest.fixture
 def library(make_manager, site):
     make_manager().create_libraries(libraries_df(site, "MATH"))
