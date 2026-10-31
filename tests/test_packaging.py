@@ -24,9 +24,30 @@ def test_setup_reads_the_package_version():
     assert result.stdout.strip().splitlines()[-1] == alt_fabric_m365.__version__
 
 
-def test_public_names_are_exported():
-    for name in ("KeyVaultCertificateCredential", "Scopes", "Emails", "MessageNotFoundError", "SharePointLibraryManager"):
-        assert hasattr(alt_fabric_m365, name)
+# Every public name, by package. Removing or renaming one breaks notebooks, so needs a major release (see CLAUDE.md);
+# adding one needs a minor release. Either way, change this list deliberately.
+PUBLIC_NAMES = {
+    "alt_fabric_m365": {
+        "KeyVaultCertificateCredential", "Scopes", "Emails", "MessageNotFoundError", "SharePointLibraryManager",
+    },
+    "alt_fabric_m365.auth": {"KeyVaultCertificateCredential", "Scopes"},
+    "alt_fabric_m365.exchange": {"Emails", "MessageNotFoundError"},
+    "alt_fabric_m365.sharepoint": {
+        "SharePointLibraryManager", "UserResolutionError", "GroupResolutionError", "build_group_name",
+        "sanitise_for_group_name", "ACTION_LOG_COLUMNS", "ALL_GROUP_SUFFIXES", "AUTO_GROUP_SUFFIXES",
+        "MANUAL_GROUP_SUFFIXES", "VALID_ROLES", "FATAL_ACTIONS", "WARNING_ACTIONS",
+    },
+}
+
+
+@pytest.mark.parametrize("module_name", PUBLIC_NAMES)
+def test_public_names_are_exported(module_name):
+    module = importlib.import_module(module_name)
+
+    assert set(module.__all__) == PUBLIC_NAMES[module_name]
+    assert len(module.__all__) == len(set(module.__all__))
+    for name in module.__all__:
+        assert getattr(module, name) is not None
 
 
 def test_graph_api_was_removed_in_1_0():
