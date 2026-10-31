@@ -143,10 +143,20 @@ def test_readme_dry_run_table_lists_every_dry_run_action():
     section = README.split("#### Dry-run actions", 1)[1].split("\n### ", 1)[0]
     listed = set(re.findall(r"^\| `([a-z_]+ \(dry run\))` \|", section, re.M))
     source = "".join(path.read_text(encoding="utf-8") for path in (ROOT / "alt_fabric_m365").rglob("*.py"))
-    # Names built from a group's suffix, such as ensure_manual_read_group (dry run), aren't literals, so aren't checked
+    # Names built from the live action, such as manual_read_group_ensured (dry run), aren't literals, so aren't checked
     used = set(re.findall(r'"([a-z_]+ \(dry run\))"', source))
 
     assert used and used - listed == set()
+
+
+# From 2.0.0, so removing the suffix gives the action a live run logs
+def test_each_dry_run_action_is_a_live_action_followed_by_dry_run():
+    reference = README.split("#### Action reference", 1)[1].split("#### Dry-run actions", 1)[0]
+    live = set(re.findall(r"^\| `([a-z_]+)` \|", reference, re.M))
+    section = README.split("#### Dry-run actions", 1)[1].split("\n### ", 1)[0]
+    dry = re.findall(r"^\| `([a-z_]+) \(dry run\)` \| `([a-z_]+)`", section, re.M)
+
+    assert dry and all(name in live and first_live == name for name, first_live in dry), dry
 
 
 def test_graph_api_was_removed_in_1_0():

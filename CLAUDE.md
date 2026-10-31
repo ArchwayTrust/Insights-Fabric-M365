@@ -72,7 +72,7 @@ CI also runs `python -m build` and `python -m twine check --strict dist/*`.
 - Error messages include the status code and the service's error code and message, never request data, tokens or full response bodies from auth endpoints. See `_describe_error`.
 - Only send a token to the host it's for. `KeyVaultCertificateCredential` checks the Key Vault URL, and the key identifier Key Vault returns, before sending its token.
 - Escape values put into OData filters (`_odata_escape`, or doubling single quotes). Pass query string values with `params=` rather than formatting them into the URL, and quote values put into a URL path (`requests.utils.quote(value, safe='')`).
-- `SharePointLibraryManager` operations take a DataFrame of desired state and return an action-log DataFrame. They must be safe to run again (a re-run changes nothing), and a dry run must make no writes.
+- `SharePointLibraryManager` operations take a DataFrame of desired state and return an action-log DataFrame. They must be safe to run again (a re-run changes nothing), and a dry run must make no writes. A dry run logs each change it would make as the action a live run logs, followed by ` (dry run)`.
 
 ## Tests
 

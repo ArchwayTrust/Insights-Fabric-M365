@@ -367,7 +367,7 @@ def test_create_dry_run_reports_a_new_display_name(make_manager, tenant, site):
     )
 
     assert tenant.writes() == []
-    assert "rename_library (dry run)" in actions(results) and "library_created (dry run)" not in actions(results)
+    assert "library_renamed (dry run)" in actions(results) and "library_created (dry run)" not in actions(results)
 
 
 def test_renaming_a_library_keeps_group_names_and_updates_descriptions(make_manager, tenant, site):
@@ -505,9 +505,9 @@ def test_create_dry_run_makes_no_writes(make_manager, tenant, site):
     assert site.lists == {}
     assert actions(results) == sorted([
         "navigation_label_created (dry run)", "library_created (dry run)",
-        "metadata_set (dry run)", "metadata_set (dry run)", "ensure_group (dry run)", "ensure_group (dry run)",
-        "ensure_manual_read_group (dry run)", "ensure_manual_contribute_group (dry run)",
-        "ensure_navigation_link (dry run)",
+        "metadata_set (dry run)", "metadata_set (dry run)", "group_assigned (dry run)", "group_assigned (dry run)",
+        "manual_read_group_ensured (dry run)", "manual_contribute_group_ensured (dry run)",
+        "navigation_link_added (dry run)",
     ])
 
 
@@ -822,7 +822,7 @@ def test_rename_dry_run_makes_no_writes(make_manager, tenant, site):
     results = make_manager(dry_run=True).rename_libraries(libraries_df(site, "MATH", library_display_name="X"))
 
     assert tenant.writes() == []
-    assert actions(results) == ["rename_library (dry run)"]
+    assert actions(results) == ["library_renamed (dry run)"]
 
 
 # unlink_libraries
@@ -894,7 +894,7 @@ def test_unlink_dry_run_makes_no_writes(make_manager, tenant, site):
     results = make_manager(dry_run=True, add_to_navigation=True).unlink_libraries(libraries_df(site, "MATH"))
 
     assert tenant.writes() == []
-    assert "empty_group (dry run)" in actions(results)
+    assert "group_emptied (dry run)" in actions(results)
 
 
 @pytest.mark.parametrize("dry_run", [False, True])
@@ -1016,7 +1016,7 @@ def test_unlinking_or_retiring_again_writes_nothing(make_manager, tenant, site, 
     assert done in actions(results)
     assert not {
         "library_unlinked", "library_retired", "group_access_removed",
-        "unlink_library (dry run)", "retire_library (dry run)", "remove_group_access (dry run)",
+        "library_unlinked (dry run)", "library_retired (dry run)", "group_access_removed (dry run)",
     } & set(actions(results))
     assert tenant.writes() == []
     # Retire no longer registers each group on the old site to find it has no access to remove
@@ -1102,8 +1102,8 @@ def test_retire_dry_run_makes_no_writes(make_manager, tenant, site):
 
     assert tenant.writes() == []
     assert actions(results) == sorted([
-        "retire_library (dry run)", "remove_group_access (dry run)", "remove_group_access (dry run)",
-        "remove_navigation_link (dry run)",
+        "library_retired (dry run)", "group_access_removed (dry run)", "group_access_removed (dry run)",
+        "navigation_link_removed (dry run)",
     ])
 
 
@@ -1324,7 +1324,7 @@ def test_removals_across_the_run_above_the_limit_are_all_skipped(
 
     [row] = rows(results, "removal_guardrail_triggered").itertuples()
     assert "6 member(s) from 2 group(s)" in row.status
-    assert not {"removed_from_group", "remove_from_group (dry run)"} & set(actions(results))
+    assert not {"removed_from_group", "removed_from_group (dry run)"} & set(actions(results))
     assert tenant.writes() == []
     assert [len(group["members"]) for group in two_libraries_with_stale_members] == [3, 3]
 
@@ -1530,8 +1530,8 @@ def test_memberships_dry_run_shows_the_adds_and_removals_a_live_run_makes(make_m
 
     assert tenant.writes() == []
     assert sorted(dry[["action", "user"]].values.tolist()) == [
-        ["add_to_group (dry run)", "ali@contoso.com"], ["already_assigned", ""],
-        ["already_member", "jo@contoso.com"], ["remove_from_group (dry run)", "sam@contoso.com"],
+        ["added_to_group (dry run)", "ali@contoso.com"], ["already_assigned", ""],
+        ["already_member", "jo@contoso.com"], ["removed_from_group (dry run)", "sam@contoso.com"],
     ]
 
     live = make_manager().update_memberships(df)
@@ -1556,7 +1556,7 @@ def test_memberships_dry_run_shows_the_removal_guardrail(make_manager, tenant, s
 
     assert tenant.writes() == []
     assert actions(results) == (
-        ["remove_from_group (dry run)"] * 11 if allow_mass_removal else ["removal_guardrail_triggered"]
+        ["removed_from_group (dry run)"] * 11 if allow_mass_removal else ["removal_guardrail_triggered"]
     )
 
 
@@ -1582,7 +1582,7 @@ def test_memberships_dry_run_makes_no_writes(make_manager, tenant, site, library
     )
 
     assert tenant.writes() == []
-    assert "add_to_group (dry run)" in actions(results)
+    assert "added_to_group (dry run)" in actions(results)
 
 
 def test_memberships_dry_run_lists_new_groups_shortcuts_and_nested_groups(make_manager, tenant, site, library):
@@ -1600,8 +1600,8 @@ def test_memberships_dry_run_lists_new_groups_shortcuts_and_nested_groups(make_m
 
     assert tenant.writes() == []
     assert actions(results) == sorted([
-        "ensure_group (dry run)", "add_to_group (dry run)", "onedrive_shortcut (dry run)",  # owner, a new group
-        "already_assigned", "add_to_group (dry run)",  # read, nested group
+        "group_assigned (dry run)", "added_to_group (dry run)", "onedrive_shortcut_created (dry run)",  # owner, a new group
+        "already_assigned", "added_to_group (dry run)",  # read, nested group
     ])  # contribute exists, but has no members to remove
 
 
@@ -1674,7 +1674,7 @@ def test_ensure_onedrive_shortcuts_dry_run_makes_no_writes(make_manager, tenant,
         memberships_df(site, [("MATH", "jo@contoso.com", "read")]),
     )
 
-    assert actions(results) == ["onedrive_shortcut (dry run)"]
+    assert actions(results) == ["onedrive_shortcut_created (dry run)"]
     assert tenant.writes() == []
 
 
@@ -1816,7 +1816,7 @@ def test_grant_dry_run_reports_what_a_live_run_does(make_manager, tenant, site, 
 
     assert tenant.writes() == []
     assert actions(dry) == sorted([
-        "already_assigned", "grant_group_access (dry run)", "group_not_found", "library_not_found", "error",
+        "already_assigned", "group_access_granted (dry run)", "group_not_found", "library_not_found", "error",
     ])
 
     live = make_manager().grant_group_access(df)
@@ -1929,7 +1929,7 @@ def test_lockdown_dry_run_makes_no_writes(make_manager, tenant, site):
     results = make_manager(dry_run=True).enforce_site_sharing_lockdown([site.url])
 
     assert tenant.writes() == []
-    assert actions(results) == ["site_sharing_lockdown (dry run)"]
+    assert actions(results) == ["site_sharing_disabled (dry run)"]
 
 
 def test_lockdown_that_does_not_stick_is_an_error(make_manager, site):
@@ -2621,7 +2621,7 @@ def test_a_group_made_earlier_in_the_run_is_synced_from_its_members_while_it_rep
 
     for log in (preview, results):
         assert rows(log, "error").empty
-    assert list(rows(preview, "remove_from_group (dry run)")["user"]) == ["jo@contoso.com"]
+    assert list(rows(preview, "removed_from_group (dry run)")["user"]) == ["jo@contoso.com"]
     assert list(rows(results, "removed_from_group")["user"]) == ["jo@contoso.com"]
     assert tenant.member_upns("BAA-Sharepoint-MATH-Auto-Contribute") == contribute
     assert tenant.member_upns("BAA-Sharepoint-MATH-Auto-Read") == read
@@ -2834,7 +2834,7 @@ def test_dry_run_reports_ownership_without_changing_it(make_manager, tenant, sit
     assert legacy["owners"] == set()
     assert results[["document_library", "action"]].values.tolist() == [
         ["MATH", "group_owner_added (dry run)"], ["MATH", "group_assigned (dry run)"],
-        ["MATH", "add_to_group (dry run)"], ["ENG", "group_not_owned"],
+        ["MATH", "added_to_group (dry run)"], ["ENG", "group_not_owned"],
     ]
 
 
@@ -2853,7 +2853,7 @@ def test_create_dry_run_reports_ownership_without_changing_it(make_manager, tena
     assert results[["group", "action"]].values.tolist() == [
         ["", "library_created (dry run)"],
         ["BAA-Sharepoint-MATH-Manual-Read", "group_owner_added (dry run)"],
-        ["BAA-Sharepoint-MATH-Manual-Read", "ensure_manual_read_group (dry run)"],
+        ["BAA-Sharepoint-MATH-Manual-Read", "manual_read_group_ensured (dry run)"],
         # Adopting it also gives it the description a live run sets
         ["BAA-Sharepoint-MATH-Manual-Read", "group_description_updated (dry run)"],
         ["BAA-Sharepoint-MATH-Manual-Contribute", "group_not_owned"],
@@ -2873,4 +2873,4 @@ def test_dry_run_reports_adopting_a_group_it_would_empty(make_manager, tenant, s
 
     assert tenant.writes() == []
     assert legacy["owners"] == set()
-    assert results["action"].tolist() == ["group_owner_added (dry run)", "remove_from_group (dry run)"]
+    assert results["action"].tolist() == ["group_owner_added (dry run)", "removed_from_group (dry run)"]
