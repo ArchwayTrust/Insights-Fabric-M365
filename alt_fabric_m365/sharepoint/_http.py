@@ -317,8 +317,8 @@ def _request_with_retry(
     retry won't fix.
 
     An Authorization header built with _bearer from a _RenewableToken is
-    renewed before every attempt, so a long wait doesn't leave a retry with
-    an expired token.  Requests are sent with that header's User-Agent, the
+    renewed before every attempt and every redirect it follows, so a long
+    wait doesn't leave a retry with an expired token.  Requests are sent with that header's User-Agent, the
     organisation it was made for (see _user_agent), or the default
     organisation's for any other request, unless the caller's headers set
     one.
@@ -412,7 +412,9 @@ def _request_with_retry(
                 # again, and OData refuses a repeated $filter or $select.
                 # Retries after this go to Location too.
                 kwargs.pop("params", None)
-                # Don't count the redirect as a retry — just re-issue
+                # Don't count the redirect as a retry — just re-issue, with a
+                # current token, as the last response may have been slow
+                _with_current_token(kwargs)
                 resp = _send(method, url, idempotent, **kwargs)
 
             # A redirect that wasn't followed (no Location, or a 303 for a
