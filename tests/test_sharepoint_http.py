@@ -143,6 +143,18 @@ def test_post_redirect_is_followed_with_the_same_method(sleeps):
     assert second.kwargs["allow_redirects"] is False
 
 
+def test_a_redirect_is_followed_without_sending_the_query_again(sleeps):
+    location = "https://graph.microsoft.com/v1.0/groups/?%24filter=displayName+eq+%27x%27"
+    responses = [response(301, headers={"Location": location}), response(503), response(200, {})]
+    with patch_request(side_effect=responses) as request:
+        _request_with_retry("GET", "https://graph.microsoft.com/v1.0/groups", params={"$filter": "displayName eq 'x'"})
+
+    first, after_redirect, retry = request.call_args_list
+    assert first.kwargs["params"] == {"$filter": "displayName eq 'x'"}
+    # The redirect, and the retry after it, ask for Location as it is
+    assert [(call.args[1], "params" in call.kwargs) for call in (after_redirect, retry)] == [(location, False)] * 2
+
+
 def test_cross_host_redirect_is_refused():
     with patch_request(return_value=response(307, headers={"Location": "https://evil.example.com/steal"})):
         with pytest.raises(requests.HTTPError, match="Refusing cross-host"):

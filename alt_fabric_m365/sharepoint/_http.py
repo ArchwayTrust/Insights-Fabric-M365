@@ -231,6 +231,10 @@ def _request_with_retry(
                 )
                 url = redirect_url
                 hops += 1
+                # Location already carries the query, so params would add it
+                # again, and OData refuses a repeated $filter or $select.
+                # Retries after this go to Location too.
+                kwargs.pop("params", None)
                 # Don't count the redirect as a retry — just re-issue
                 resp = requests.request(method, url, **kwargs)
 
