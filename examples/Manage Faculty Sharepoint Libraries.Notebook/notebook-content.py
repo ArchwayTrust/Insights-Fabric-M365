@@ -104,9 +104,11 @@ RUN_SMOKE_TEST = False
 # certificate in the KEY_VAULT key vault. Key Vault signs with the
 # certificate's private key, which never leaves the key vault; the identity
 # running the notebook needs Get on the certificate and Sign on its key.
-CLIENT_ID = "0706df24-bce9-48c9-a2c4-862df4ba4a6c"
-SHAREPOINT_HOSTNAME = "archwaylearningtrust.sharepoint.com"
-CERTIFICATE_NAME = "Systems-SPLibrary-Cert"
+# Replace these placeholders with your tenant's values, or pass them as
+# pipeline parameters.
+CLIENT_ID = "<app-registration-client-id>"
+SHAREPOINT_HOSTNAME = "<tenant>.sharepoint.com"
+CERTIFICATE_NAME = "<certificate-name>"
 
 # METADATA ********************
 
@@ -337,7 +339,7 @@ def eligible(alias: str, *, reserved_code: bool = False) -> str:
 
 # CELL ********************
 
-SMOKE_SITE_URL = "https://archwaylearningtrust.sharepoint.com/sites/ArchwayLearningTrustIT"
+SMOKE_SITE_URL = "https://<tenant>.sharepoint.com/sites/<smoke-test-site>"
 SMOKE_LIBRARY_CODE = "DEMO_LIB"
 SMOKE_DISPLAY_NAME = "Demo Library & Link Test"   # & exercises URL normalisation
 
@@ -451,10 +453,11 @@ if RUN_SMOKE_TEST:
 if RUN_SMOKE_TEST:
     pdf_test_memberships = pd.DataFrame({
         "user_principal_name": [
-            "bdobbs@archwaytrust.co.uk",
-            "sclewlow@archwaytrust.co.uk",
-            "apotts@archwaytrust.co.uk",
-            "mbinns@archwaytrust.co.uk",
+            # Placeholders: the UPNs of a few people to add to the demo library
+            "<test-user-1-upn>",
+            "<test-user-2-upn>",
+            "<test-user-3-upn>",
+            "<test-user-4-upn>",
         ],
     }).assign(
         site_url=SMOKE_SITE_URL,
