@@ -22,7 +22,7 @@ from ._graph import (
 )
 from ._groups import (
     GroupResolutionError, UserResolutionError, _add_group_member, _create_security_group, _empty_group_members,
-    _ensure_app_owns_group, _ensure_security_group, _find_existing_library_collisions, _find_group_by_name,
+    _ensure_app_owns_group, _find_existing_library_collisions, _find_group_by_name,
     _find_group_name_collisions, _find_groups_by_name_prefix, _get_group_members, _get_unique_group,
     _log_group_name_collisions, _remove_group_member, _resolve_nestable_group,
     _resolve_user_with_fallback, _set_group_description, _token_object_id, build_group_name,
@@ -116,10 +116,11 @@ class SharePointLibraryManager:
         self.add_to_navigation = _check_option("add_to_navigation", add_to_navigation)
         self.navigation_label = _check_option("navigation_label", navigation_label)
         self._service_principal_id = service_principal_id
-        # Groups this manager has created, by lower-case name: Graph's name
-        # lookups can miss a group for a while after it's created, and creating
-        # it again would make a duplicate that blocks its library.
-        self._created_groups: dict[str, dict] = {}
+        # Groups this manager has created, by lower-case name, with whether
+        # the app was made their owner: Graph's name lookups can miss a group
+        # for a while after it's created, and creating it again would make a
+        # duplicate that blocks its library.
+        self._created_groups: dict[str, tuple[dict, bool]] = {}
         self._created_groups_lock = threading.Lock()
 
         # Tokens are requested per use via the properties below.  The
@@ -142,41 +143,46 @@ class SharePointLibraryManager:
             self._service_principal_id = _token_object_id(self._graph_token)
         return self._service_principal_id
 
-    def _remember_created_group(self, name: str, group: dict) -> None:
+    def _remember_created_group(self, name: str, group: dict, *, app_owned: bool) -> None:
         """Record a group this manager created, so a lagging name lookup can't lead to a duplicate.
 
         Args:
             name: The group's display name.
             group: The group resource Graph returned when creating it.
+            app_owned: Whether the group was created with the app as its owner.
         """
         with self._created_groups_lock:
-            self._created_groups[name.lower()] = group
+            self._created_groups[name.lower()] = (group, app_owned)
 
-    def _created_group(self, name: str) -> dict | None:
+    def _created_group(self, name: str) -> tuple[dict, bool] | None:
         """Return the group this manager created with *name*, if any (see _remember_created_group).
+
+        Only for when a name lookup misses the group: once the lookup finds it,
+        the group is checked like any other existing group.
 
         Args:
             name: The group's display name.
 
         Returns:
-            The group resource, or None.
+            The group resource and whether it was created with the app as its owner, or None.
         """
         with self._created_groups_lock:
             return self._created_groups.get(name.lower())
 
     def _check_group_owner(
         self, group_id: str, group_name: str, site_url: str, library_code: str,
-        permission: str, action_log: _ThreadSafeLog, *, dry_run: bool = False,
+        permission: str, action_log: _ThreadSafeLog, *, dry_run: bool = False, is_new_group: bool = False,
     ) -> bool:
         """Return whether an existing group may be granted access or synced.
 
         Group names are predictable, so a same-named group someone else
         created must not be adopted (see _ensure_app_owns_group).  A group
         with no owner gets the app added as owner and is logged.  A dry run
-        only reads the owners, so it reports what a live run would do.
+        only reads the owners, so it reports what a live run would do.  With
+        *is_new_group*, a 404 while the group replicates is waited out.
         """
         outcome = _ensure_app_owns_group(
-            self._graph_token, group_id, self.service_principal_id, dry_run=dry_run,
+            self._graph_token, group_id, self.service_principal_id, dry_run=dry_run, is_new_group=is_new_group,
         )
         if outcome == "adopted":
             _append_log(
@@ -458,18 +464,30 @@ class SharePointLibraryManager:
                         group=group_display_name, permission=role_key,
                     )
                 else:
-                    group = self._created_group(group_display_name)
-                    if group is not None:
-                        # Made earlier in this run, so still treated as new:
-                        # it may not have replicated yet
-                        is_new = True
-                    else:
-                        group, is_new = _ensure_security_group(
+                    group = _find_group_by_name(self._graph_token, group_display_name)
+                    created = None if group else self._created_group(group_display_name)
+                    if created is not None:
+                        # Made earlier in the run and not yet found by name, so
+                        # still replicating.  The app owns it if it was made
+                        # its owner; otherwise it's checked, as a group found
+                        # by name would be.  Its description is checked once
+                        # the lookup finds it.
+                        (group, created_app_owned), is_new = created, True
+                        if app_owned and not created_app_owned and not self._check_group_owner(
+                            group["id"], group_display_name, site_url, library_code, role_key, action_log,
+                            is_new_group=True,
+                        ):
+                            continue
+                    elif group is None:
+                        group = _create_security_group(
                             self._graph_token, group_display_name, group_description,
                             self.service_principal_id if app_owned else None,
                         )
-                        if is_new:
-                            self._remember_created_group(group_display_name, group)
+                        self._remember_created_group(group_display_name, group, app_owned=app_owned)
+                        is_new = True
+                    else:
+                        logger.info("Security group '%s' already exists (id=%s)", group_display_name, group["id"])
+                        is_new = False
                     group_id = group["id"]
                     if app_owned and not is_new:
                         if not self._check_group_owner(
@@ -1756,7 +1774,10 @@ class SharePointLibraryManager:
             created_role_groups: list[tuple[str, str, str | None, bool, set[str], dict[str, str], bool]] = []
             # Each entry: (role, group_display_name, group_id, is_new_group,
             #              desired_upns, desired_groups, assign_needed).
-            # group_id is None for a group a dry run would create.
+            # group_id is None for a group a dry run would create, and
+            # is_new_group is True for a group that may still be replicating.
+            # Groups created by this call have no members yet.
+            created_here: set[str] = set()
 
             for role in VALID_ROLES:
                 desired_upns = real_desired_by_role.get(role, set())
@@ -1772,18 +1793,26 @@ class SharePointLibraryManager:
                 )
 
                 existing_group = _get_unique_group(existing_groups_by_name, group_display_name)
+                replicating = known_owned = False
+                created = None if existing_group else self._created_group(group_display_name)
+                if created is not None:
+                    # Made earlier in the run and missing from the lookup while
+                    # it replicates.  It's synced like a group found by name,
+                    # as an earlier operation may have added members.
+                    (existing_group, known_owned), replicating = created, True
                 # Auto groups are the automation's own: never add members to,
                 # grant, or empty a same-named group it doesn't own.  A dry
                 # run only reads the owners, so it shows groups a live run
-                # would refuse or adopt.
-                if existing_group and not self._check_group_owner(
+                # would refuse or adopt.  A group this manager created with
+                # the app as owner is known to be the app's.
+                if existing_group and not known_owned and not self._check_group_owner(
                     existing_group["id"], group_display_name, site_url, library_code,
-                    role, action_log, dry_run=dry_run,
+                    role, action_log, dry_run=dry_run, is_new_group=replicating,
                 ):
                     continue
                 if desired_upns or desired_groups:
                     if existing_group:
-                        group_id, is_new_group = existing_group["id"], False
+                        group_id, is_new_group = existing_group["id"], replicating
                     elif dry_run:
                         logger.info("[DRY RUN] Would create group '%s'", group_display_name)
                         _append_log(
@@ -1793,24 +1822,21 @@ class SharePointLibraryManager:
                             group=group_display_name, permission=role,
                         )
                         group_id, is_new_group = None, True
-                    elif self._created_group(group_display_name) is not None:
-                        # Made earlier in this run, and maybe still missing from
-                        # the lookup above while it replicates
-                        group_id, is_new_group = self._created_group(group_display_name)["id"], True
                     else:
                         group = _create_security_group(
                             self._graph_token, group_display_name, group_description,
                             self.service_principal_id,
                         )
-                        self._remember_created_group(group_display_name, group)
+                        self._remember_created_group(group_display_name, group, app_owned=True)
                         group_id, is_new_group = group["id"], True
+                        created_here.add(group_id)
                     created_role_groups.append(
                         (role, group_display_name, group_id, is_new_group,
                          desired_upns, desired_groups, True)
                     )
                 elif existing_group:
                     created_role_groups.append(
-                        (role, group_display_name, existing_group["id"], False,
+                        (role, group_display_name, existing_group["id"], replicating,
                          desired_upns, desired_groups, False)
                     )
 
@@ -1829,7 +1855,10 @@ class SharePointLibraryManager:
             # library's group bindings are read once so only missing ones are
             # written — this runs as a full pass, so most already exist.
             existing_roles: dict[str, set[int]] = {}
-            if any(assign and not is_new for _, _, _, is_new, _, _, assign in created_role_groups):
+            if any(
+                assign and group_id is not None and group_id not in created_here
+                for _, _, group_id, _, _, _, assign in created_role_groups
+            ):
                 existing_roles = _get_library_group_roles(self._sp_token, site_url, list_id)
 
             # Track users who already received a OneDrive shortcut for this
@@ -1840,7 +1869,7 @@ class SharePointLibraryManager:
                  desired_upns, desired_groups, assign_needed) in created_role_groups:
                 if assign_needed and dry_run:
                     # A group the dry run would create was logged as ensure_group above
-                    if not is_new_group:
+                    if group_id is not None:
                         held = role_def_ids[role] in existing_roles.get(_group_claims(group_id).lower(), set())
                         _append_log(
                             action_log, site_url, library_code,
@@ -1861,10 +1890,13 @@ class SharePointLibraryManager:
                         group=group_display_name, permission=role,
                     )
 
-                # Sync group membership.  A group created this run has no
+                # Sync group membership.  A group created by this call has no
                 # members, and reading them straight away can 404 while it
                 # replicates.
-                current_members = {} if is_new_group else _get_group_members(self._graph_token, group_id)
+                current_members = (
+                    {} if group_id is None or group_id in created_here
+                    else _get_group_members(self._graph_token, group_id, is_new_group=is_new_group)
+                )
 
                 # Add users who should be in the group (UPNs are already
                 # resolved to canonical form; OIDs are in upn_to_oid).

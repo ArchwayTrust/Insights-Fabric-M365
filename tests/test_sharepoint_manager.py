@@ -1200,6 +1200,87 @@ def test_a_group_made_earlier_in_the_run_is_not_made_again_while_it_replicates(m
     assert len(tenant.groups) == 2
 
 
+def test_a_group_made_earlier_in_the_run_is_checked_for_duplicates_once_found_by_name(make_manager, tenant, site):
+    manager = make_manager()
+    manager.create_libraries(libraries_df(site, "MATH"))
+    # Since replicated, alongside a group someone else gave the same name
+    tenant.add_group("BAA-Sharepoint-MATH-Auto-Contribute", owners={"someone-else"})
+
+    results = manager.create_libraries(libraries_df(site, "MATH"))
+
+    assert "Multiple Entra groups share displayName" in rows(results, "error")["status"].iloc[0]
+
+
+def test_a_group_made_earlier_in_the_run_follows_a_rename_once_found_by_name(make_manager, tenant, site):
+    manager = make_manager()
+    manager.create_libraries(libraries_df(site, "MATH"))
+
+    results = manager.create_libraries(libraries_df(site, "MATH", library_display_name="Mathematics"))
+
+    assert len(rows(results, "group_description_updated")) == 2
+    assert "'Mathematics'" in tenant.group_named("BAA-Sharepoint-MATH-Auto-Contribute")["description"]
+
+
+@pytest.mark.parametrize("owners, action", [(set(), "group_owner_added"), ({"someone-else"}, "group_not_owned")])
+@pytest.mark.parametrize("operation", ["update_memberships", "create_libraries"])
+def test_a_group_made_earlier_without_the_app_as_owner_is_checked_while_it_replicates(
+    make_manager, tenant, site, operation, owners, action,
+):
+    from sharepoint_fake import graph_error
+    manager = make_manager()
+    manager.create_libraries(libraries_df(site, "MATH", app_owned=False))
+    group = tenant.group_named("BAA-Sharepoint-MATH-Auto-Contribute")
+    group["owners"] = set(owners)
+    tenant.replicating.update(tenant.groups)
+    # Reading a group by ID can also miss it for a moment
+    tenant.fail("GET", rf"/groups/{group['id']}/owners\?", graph_error(404, "Request_ResourceNotFound"))
+    tenant.add_user("jo@contoso.com")
+
+    if operation == "update_memberships":
+        results = manager.update_memberships(memberships_df(site, [("MATH", "jo@contoso.com", "contribute")]))
+        assert tenant.member_upns(group["displayName"]) == ([] if owners else ["jo@contoso.com"])
+    else:
+        results = manager.create_libraries(libraries_df(site, "MATH"))
+
+    assert group["displayName"] in set(rows(results, action)["group"])
+    assert group["owners"] == (owners or {APP_ID})
+    assert rows(results, "error").empty
+    assert len(tenant.groups) == 2
+
+
+@pytest.mark.parametrize("second_run, contribute, read", [
+    ([("MATH", "sam@contoso.com", "contribute")], ["sam@contoso.com"], []),
+    ([("MATH", "jo@contoso.com", "read")], [], ["jo@contoso.com"]),
+], ids=["replaced", "moved"])
+def test_a_group_made_earlier_in_the_run_is_synced_from_its_members_while_it_replicates(
+    make_manager, tenant, site, second_run, contribute, read,
+):
+    from sharepoint_fake import graph_error
+    manager = make_manager()
+    manager.create_libraries(libraries_df(site, "MATH"))
+    tenant.replicating.update(tenant.groups)
+    tenant.add_user("jo@contoso.com")
+    tenant.add_user("sam@contoso.com")
+    manager.update_memberships(memberships_df(site, [("MATH", "jo@contoso.com", "contribute")]))
+    writes = len(tenant.writes())
+
+    preview = manager.update_memberships(memberships_df(site, second_run), dry_run=True)
+    assert len(tenant.writes()) == writes
+    # Reading a group by ID can also miss it for a moment
+    tenant.fail("GET", r"/members\?", graph_error(404, "Request_ResourceNotFound"))
+    results = manager.update_memberships(memberships_df(site, second_run))
+    writes = len(tenant.writes())
+    manager.update_memberships(memberships_df(site, second_run))
+
+    for log in (preview, results):
+        assert rows(log, "error").empty
+    assert list(rows(preview, "remove_from_group (dry run)")["user"]) == ["jo@contoso.com"]
+    assert list(rows(results, "removed_from_group")["user"]) == ["jo@contoso.com"]
+    assert tenant.member_upns("BAA-Sharepoint-MATH-Auto-Contribute") == contribute
+    assert tenant.member_upns("BAA-Sharepoint-MATH-Auto-Read") == read
+    assert len(tenant.writes()) == writes
+
+
 def test_group_differing_only_in_case_is_reused_not_duplicated(make_manager, tenant, site, library):
     tenant.group_named("BAA-Sharepoint-MATH-Auto-Contribute")["displayName"] = "baa-sharepoint-MATH-Auto-Contribute"
     tenant.add_user("jo@contoso.com")

@@ -189,27 +189,6 @@ def _create_security_group(
     return group
 
 
-def _ensure_security_group(
-    token: str, display_name: str, description: str, owner_id: str | None = None,
-) -> tuple[dict, bool]:
-    """Ensure a security group exists, creating it if needed.
-
-    *owner_id* is passed to _create_security_group for a new group.  An
-    existing group is returned as is; callers check its owner and
-    description.
-
-    Returns:
-        (group, newly_created) — the group resource (``id``,
-        ``description``, …), and True when it was just created and
-        downstream callers should allow for Entra ID replication delay.
-    """
-    existing = _find_group_by_name(token, display_name)
-    if existing:
-        logger.info("Security group '%s' already exists (id=%s)", display_name, existing["id"])
-        return existing, False
-    return _create_security_group(token, display_name, description, owner_id), True
-
-
 def _set_group_description(token: str, group_id: str, description: str) -> None:
     """Update a group's description (its name is unchanged)."""
     resp = _request_with_retry(
@@ -219,12 +198,51 @@ def _set_group_description(token: str, group_id: str, description: str) -> None:
     resp.raise_for_status()
 
 
-def _get_group_owner_ids(token: str, group_id: str) -> set[str]:
-    """Return the object IDs of a group's owners."""
+def _request_while_replicating(
+    method: str, url: str, token: str, *, is_new_group: bool, **kwargs,
+) -> requests.Response:
+    """Send a Graph request about a group, waiting out the 404 Graph returns while a new group replicates.
+
+    Args:
+        method: The HTTP method.
+        url: The request URL.
+        token: A Graph access token.
+        is_new_group: Whether the group was created recently enough to still be replicating. When False, a 404 is
+            returned straight away.
+        **kwargs: Passed to _request_with_retry, such as json.
+
+    Returns:
+        The last response, for the caller to check.
+    """
+    max_attempts = REPLICATION_MAX_ATTEMPTS if is_new_group else 1
+    for attempt in range(max_attempts):
+        resp = _request_with_retry(method, url, headers=_graph_headers(token), **kwargs)
+        if resp.status_code != 404 or attempt == max_attempts - 1:
+            return resp
+        delay = REPLICATION_BASE_DELAY * (2 ** attempt)
+        logger.info(
+            "Group not yet replicated (404 from %s) — waiting %.0fs (attempt %d/%d)",
+            url.split("?")[0], delay, attempt + 1, max_attempts,
+        )
+        time.sleep(delay)
+    return resp
+
+
+def _get_group_owner_ids(token: str, group_id: str, *, is_new_group: bool = False) -> set[str]:
+    """Return the object IDs of a group's owners.
+
+    Args:
+        token: A Graph access token.
+        group_id: The group's object ID.
+        is_new_group: Optional. Whether to wait out a 404 while the group replicates. Defaults to False.
+
+    Returns:
+        The owners' object IDs, in lower case.
+    """
     owners: set[str] = set()
     url: str | None = f"{GRAPH_BASE_URL}/groups/{group_id}/owners?$select=id"
     while url:
-        resp = _request_with_retry("GET", url, headers=_graph_headers(token))
+        resp = _request_while_replicating("GET", url, token, is_new_group=is_new_group)
         resp.raise_for_status()
         data = resp.json()
         owners.update(owner["id"].lower() for owner in data.get("value", []))
@@ -232,11 +250,17 @@ def _get_group_owner_ids(token: str, group_id: str) -> set[str]:
     return owners
 
 
-def _add_group_owner(token: str, group_id: str, owner_id: str) -> None:
-    """Add an owner to a group (already being an owner is success)."""
-    resp = _request_with_retry(
-        "POST", f"{GRAPH_BASE_URL}/groups/{group_id}/owners/$ref",
-        headers=_graph_headers(token),
+def _add_group_owner(token: str, group_id: str, owner_id: str, *, is_new_group: bool = False) -> None:
+    """Add an owner to a group (already being an owner is success).
+
+    Args:
+        token: A Graph access token.
+        group_id: The group's object ID.
+        owner_id: The new owner's object ID.
+        is_new_group: Optional. Whether to wait out a 404 while the group replicates. Defaults to False.
+    """
+    resp = _request_while_replicating(
+        "POST", f"{GRAPH_BASE_URL}/groups/{group_id}/owners/$ref", token, is_new_group=is_new_group,
         json={"@odata.id": f"{GRAPH_BASE_URL}/directoryObjects/{owner_id}"},
     )
     if resp.status_code == 400 and "already exist" in resp.text.lower():
@@ -244,7 +268,9 @@ def _add_group_owner(token: str, group_id: str, owner_id: str) -> None:
     resp.raise_for_status()
 
 
-def _ensure_app_owns_group(token: str, group_id: str, app_object_id: str, *, dry_run: bool = False) -> str:
+def _ensure_app_owns_group(
+    token: str, group_id: str, app_object_id: str, *, dry_run: bool = False, is_new_group: bool = False,
+) -> str:
     """Check that the app owns a group before granting it access or syncing it.
 
     Group names are predictable, so a group that already has the name the
@@ -255,16 +281,17 @@ def _ensure_app_owns_group(token: str, group_id: str, app_object_id: str, *, dry
 
     Returns ``"owned"``, ``"adopted"`` (the app was added as owner — or, with
     *dry_run*, would be) or ``"not_owned"`` (someone else owns it, and the
-    app doesn't).
+    app doesn't).  With *is_new_group*, a 404 while the group replicates is
+    waited out.
     """
-    owners = _get_group_owner_ids(token, group_id)
+    owners = _get_group_owner_ids(token, group_id, is_new_group=is_new_group)
     if app_object_id.lower() in owners:
         return "owned"
     if owners:
         return "not_owned"
     if dry_run:
         return "adopted"
-    _add_group_owner(token, group_id, app_object_id)
+    _add_group_owner(token, group_id, app_object_id, is_new_group=is_new_group)
     logger.info("Added the app as owner of ownerless group %s", group_id)
     return "adopted"
 
@@ -290,8 +317,10 @@ def _token_object_id(token: str) -> str:
     return object_id
 
 
-def _get_group_members(token: str, group_id: str) -> dict[str, str]:
+def _get_group_members(token: str, group_id: str, *, is_new_group: bool = False) -> dict[str, str]:
     """Get current (direct) members of a security group.
+
+    With *is_new_group*, a 404 while the group replicates is waited out.
 
     Returns:
         Dict mapping member key -> member object ID.  Users are keyed by
@@ -305,7 +334,7 @@ def _get_group_members(token: str, group_id: str) -> dict[str, str]:
     members: dict[str, str] = {}
     url = f"{GRAPH_BASE_URL}/groups/{group_id}/members?$select=id,userPrincipalName"
     while url:
-        resp = _request_with_retry("GET", url, headers=_graph_headers(token))
+        resp = _request_while_replicating("GET", url, token, is_new_group=is_new_group)
         resp.raise_for_status()
         data = resp.json()
         for member in data.get("value", []):
