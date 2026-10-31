@@ -178,7 +178,12 @@ def test_get_redirect_on_the_same_host_is_followed(status):
     assert request.call_args_list[1].args == ("GET", target)
 
 
-@pytest.mark.parametrize("location", ["https://evil.example.com/x", "http://contoso.sharepoint.com/sites/x"])
+@pytest.mark.parametrize("location", [
+    "https://evil.example.com/x",
+    "http://contoso.sharepoint.com/sites/x",
+    # urlparse reads this as on contoso.sharepoint.com, but requests sends it to evil.example.com
+    "https://evil.example.com\\@contoso.sharepoint.com/sites/x",
+])
 def test_get_redirect_to_another_host_or_to_http_is_refused(location):
     with patch_request(return_value=response(302, headers={"Location": location})) as request:
         with pytest.raises(requests.HTTPError, match="Refusing"):

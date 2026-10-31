@@ -64,6 +64,26 @@ def _parse_retry_after(value: str | None) -> float | None:
     return min(max(delay, 0.0), RETRY_AFTER_MAX_DELAY)
 
 
+def _has_ambiguous_host(url: str) -> bool:
+    """Return whether requests might send a request for *url* to a host other than urlparse's hostname.
+
+    requests (through urllib3) ends the host at a backslash, but urlparse
+    doesn't, so urlparse reads 'https://evil.example\\@contoso.sharepoint.com'
+    as contoso.sharepoint.com while requests connects to evil.example.  Host
+    checks use urlparse, so a backslash before the path, or a user name,
+    which no Graph or SharePoint URL needs, is refused rather than relying
+    on the two parsers agreeing.
+
+    Args:
+        url: The URL a bearer token would be sent to.
+
+    Returns:
+        True if the URL has a backslash before its path or a user name or password.
+    """
+    parsed = urlparse(url)
+    return "\\" in parsed.netloc or parsed.username is not None or parsed.password is not None
+
+
 def _request_with_retry(
     method: str,
     url: str,
@@ -136,7 +156,7 @@ def _request_with_retry(
                         response=resp,
                     )
                 target, current = urlparse(redirect_url), urlparse(url)
-                if target.hostname != current.hostname or (
+                if _has_ambiguous_host(redirect_url) or target.hostname != current.hostname or (
                     current.scheme == "https" and target.scheme != "https"
                 ):
                     raise requests.HTTPError(

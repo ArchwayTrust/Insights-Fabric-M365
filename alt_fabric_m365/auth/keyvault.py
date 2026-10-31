@@ -8,6 +8,7 @@ import requests
 import json
 import base64
 import hashlib
+import re
 import threading
 import time
 import uuid
@@ -133,7 +134,12 @@ class KeyVaultCertificateCredential:
         parsed = urlparse(akv_url)
         host = (parsed.hostname or "").lower()
 
-        if parsed.scheme != "https" or parsed.username or parsed.password or not host.endswith(cls.AKV_DNS_SUFFIX):
+        # Match the whole host, not just its suffix: Key Vault names are letters, digits and hyphens. urlparse keeps
+        # a backslash in the host but requests ends the host there, so https://evil.com\.vault.azure.net/ ends with the
+        # suffix yet is requested from evil.com.
+        is_key_vault_host = re.fullmatch(r"[a-z0-9-]+" + re.escape(cls.AKV_DNS_SUFFIX), host) is not None
+
+        if parsed.scheme != "https" or parsed.username or parsed.password or not is_key_vault_host:
             raise ValueError(
                 f"akv_url must be a Key Vault URL such as https://{{key_vault_name}}.vault.azure.net/, not {akv_url}. "
                 "Only the Azure public cloud is supported."

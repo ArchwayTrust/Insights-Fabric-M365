@@ -265,6 +265,9 @@ def test_key_vault_urls_are_accepted(akv_url):
     "https://evil.com/",
     "https://myvault.vault.azure.net@evil.com/",
     "https://user:password@myvault.vault.azure.net/",
+    # requests ends the host at the backslash, so sends these to evil.com
+    "https://evil.com\\.vault.azure.net/",
+    "https://evil.com\\@myvault.vault.azure.net/",
     # Sovereign clouds aren't supported, as tokens are always requested from the public cloud
     "https://myvault.vault.azure.cn/",
     "https://myvault.vault.usgovcloudapi.net/",
