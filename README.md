@@ -1369,8 +1369,8 @@ The version number is set in `alt_fabric_m365/__init__.py`, as `__version__="1.2
 
 Versions follow [semantic versioning](https://semver.org/):
 
-- **Major** (1.0.0 to 2.0.0) for breaking changes: removing or renaming a public name, changing the arguments a public function or method accepts or what it returns, or changing the columns of an action log.
-- **Minor** (1.0.0 to 1.1.0) for new features that don't break existing code.
+- **Major** (1.0.0 to 2.0.0) for breaking changes: removing or renaming a public name, changing the arguments a public function or method accepts or what it returns, changing the columns of an action log, or renaming or removing an action, or moving one into or out of `FATAL_ACTIONS` or `WARNING_ACTIONS`, as notebooks act on them.
+- **Minor** (1.0.0 to 1.1.0) for new features that don't break existing code, including new actions.
 - **Patch** (1.0.0 to 1.0.1) for fixes and documentation.
 
 Public names are those in each module's `__all__`; names starting with `_` can change in any release. To rename or remove a public name, keep the old name working with a `FutureWarning` in a minor release, and remove it in the next major release.
