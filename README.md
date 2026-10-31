@@ -6,7 +6,7 @@ Up to 0.5.0 this package was called `fabric_python_helper`. If you're upgrading 
 
 The package has a module for each Microsoft 365 service, plus `auth`, which they share:
 
-- **`alt_fabric_m365.auth`** gets app-only access tokens for Microsoft 365 APIs, mainly Microsoft Graph, Exchange and SharePoint, as a service principal, using a certificate held in Azure Key Vault. Key Vault signs each request, so the certificate's private key never leaves the key vault.
+- **`alt_fabric_m365.auth`** gets app-only access tokens for Microsoft 365 APIs, mainly Microsoft Graph, Exchange and SharePoint, as a service principal, using a certificate held in Azure Key Vault. Key Vault signs each token request, so the certificate's private key never leaves the key vault.
 - **`alt_fabric_m365.exchange`** finds emails in an Exchange Online mailbox, downloads their attachments, deletes them and sends emails, using Microsoft Graph.
 - **`alt_fabric_m365.sharepoint`** manages SharePoint document libraries and their permissions through Entra ID security groups: creating libraries, keeping group membership in sync, navigation links and site sharing settings.
 
@@ -206,7 +206,7 @@ Anyone who can sign with the key can act as the app, so treat the Key Vault **Si
 
 ### Setting up a certificate
 
-These steps use the Azure CLI, for example in Azure Cloud Shell. Each step also describes the portal equivalent.
+These steps use the Azure CLI in Bash, for example in Azure Cloud Shell's Bash mode; step 4 uses Bash syntax, so in PowerShell adapt its variables and its `\` line continuations (PowerShell uses a backtick). Each step also describes the portal equivalent.
 
 **1. Create an app registration**
 
@@ -234,7 +234,7 @@ Save this policy as `policy.json`:
 }
 ```
 
-You can use ```code policy.json```
+In Cloud Shell, `code policy.json` opens an editor to paste it into; save it before closing.
 
 Then create the certificate:
 
