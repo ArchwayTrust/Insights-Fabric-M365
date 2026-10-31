@@ -1780,19 +1780,13 @@ TWO_SITE_OPERATIONS = {
 }
 
 
-@pytest.mark.parametrize("operation", TWO_SITE_OPERATIONS)
-def test_sites_are_read_in_parallel_and_their_errors_logged_in_order(make_manager, tenant, monkeypatch, operation):
+def overlap_site_reads(monkeypatch, first, second):
+    """Makes the first site's read end only after the second's, so the two must overlap and finish out of order."""
     import threading
     from alt_fabric_m365.sharepoint import manager as manager_module
-    from sharepoint_fake import graph_error
-    tenant.add_user("jo@contoso.com")
-    tenant.add_group("Staff")
-    first, second = tenant.add_site("/sites/A"), tenant.add_site("/sites/B")
-    tenant.fail("GET", r":/sites/[AB]$", graph_error(403, "accessDenied", "Access denied"), times=2)
     real_get_site_id, second_read = manager_module._get_site_id, threading.Event()
 
     def get_site_id(token, site_url):
-        # The first site's read only ends after the second's, so the reads overlap and finish out of order
         if site_url == first.url:
             assert second_read.wait(timeout=5), "the second site wasn't read while the first was"
         try:
@@ -1802,9 +1796,74 @@ def test_sites_are_read_in_parallel_and_their_errors_logged_in_order(make_manage
                 second_read.set()
     monkeypatch.setattr(manager_module, "_get_site_id", get_site_id)
 
+
+@pytest.mark.parametrize("operation", TWO_SITE_OPERATIONS)
+def test_sites_are_read_in_parallel_and_their_errors_logged_in_order(make_manager, tenant, monkeypatch, operation):
+    from sharepoint_fake import graph_error
+    tenant.add_user("jo@contoso.com")
+    tenant.add_group("Staff")
+    first, second = tenant.add_site("/sites/A"), tenant.add_site("/sites/B")
+    tenant.fail("GET", r":/sites/[AB]$", graph_error(403, "accessDenied", "Access denied"), times=2)
+    overlap_site_reads(monkeypatch, first, second)
+
     results = TWO_SITE_OPERATIONS[operation](make_manager(max_workers=2), first, second)
 
     assert rows(results, "error")["site_url"].tolist() == [first.url, second.url]
+    assert tenant.writes() == []
+
+
+def test_retire_reads_the_new_sites_in_parallel_and_keeps_libraries_it_cant_check(
+    make_manager, tenant, site, monkeypatch,
+):
+    from sharepoint_fake import graph_error
+    make_manager().create_libraries(libraries_df(site, "MATH", "ENG"))
+    first, second = tenant.add_site("/sites/A"), tenant.add_site("/sites/B")
+    tenant.fail("GET", r":/sites/[AB]$", graph_error(403, "accessDenied", "Access denied"), times=2)
+    overlap_site_reads(monkeypatch, first, second)
+    tenant.calls.clear()
+
+    results = make_manager(max_workers=2).retire_moved_libraries(
+        libraries_df(site, "MATH", "ENG").assign(new_site_url=[first.url, second.url]),
+    )
+
+    errors = rows(results, "error")
+    assert errors["document_library"].tolist() == ["MATH", "ENG"]
+    assert all("couldn't be read, so it wasn't retired" in status for status in errors["status"])
+    assert tenant.writes() == []
+    assert [site.list_by_slug(code)["displayName"] for code in ("MATH", "ENG")] == ["MATH Faculty", "ENG Faculty"]
+
+
+def test_cancelling_during_the_site_reads_starts_no_more_of_them(make_manager, tenant, monkeypatch):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from alt_fabric_m365.sharepoint import manager as manager_module
+    sites = [tenant.add_site(f"/sites/{name}") for name in "ABCD"]
+    real_get_site_id, started, lock = manager_module._get_site_id, [], threading.Lock()
+    first_two_running = threading.Barrier(3, timeout=5)  # the two workers and the cancelled cell
+
+    def get_site_id(token, site_url):
+        with lock:
+            started.append(site_url)
+            first_two = len(started) <= 2
+        if first_two:
+            first_two_running.wait()
+            threading.Event().wait(0.5)  # still running when the cell is cancelled
+        return real_get_site_id(token, site_url)
+
+    class CancelledExecutor(ThreadPoolExecutor):
+        """Interrupted, as by cancelling the notebook cell, while the first two reads run."""
+
+        def map(self, fn, *iterables):
+            super().map(fn, *iterables)
+            first_two_running.wait()
+            raise KeyboardInterrupt
+    monkeypatch.setattr(manager_module, "_get_site_id", get_site_id)
+    monkeypatch.setattr(manager_module, "ThreadPoolExecutor", CancelledExecutor)
+
+    with pytest.raises(KeyboardInterrupt):
+        make_manager(max_workers=2).unlink_libraries(pd.concat([libraries_df(s, "MATH") for s in sites]))
+
+    assert sorted(started) == [sites[0].url, sites[1].url]
     assert tenant.writes() == []
 
 
