@@ -21,7 +21,7 @@ CI also runs `python -m build` and `python -m twine check --strict dist/*`.
 | `alt_fabric_m365/auth/` | `KeyVaultCertificateCredential` (`keyvault.py`) and `Scopes` (`scopes.py`) |
 | `alt_fabric_m365/exchange/` | `Emails` and `MessageNotFoundError` (`emails.py`) |
 | `alt_fabric_m365/sharepoint/` | `SharePointLibraryManager` (`manager.py`), with helpers split by the API they call: `_graph.py`, `_sharepoint.py` (REST), `_groups.py`, `_navigation.py`, `_http.py` (retry wrapper), `_common.py` (constants, validation, action log) |
-| `examples/`, `docs/` | The faculty SharePoint notebook and its write-up |
+| `examples/`, `docs/` | The faculty SharePoint notebook and its write-up. `examples/Arbor/` has the notebook that builds its faculty tables from Arbor, and a README saying where each table it reads comes from |
 | `tests/` | See [Tests](#tests) |
 
 - Each subpackage's `__init__.py` has a docstring explaining the area, re-exports the public names, and lists them in `__all__`. The top-level `alt_fabric_m365/__init__.py` re-exports the main classes.
