@@ -1865,7 +1865,11 @@ class SharePointLibraryManager:
         Required DataFrame columns:
           - site_url:       OLD SharePoint site URL (the previous hub)
           - library_code:   Library code (URL slug)
-          - group_prefix:   Prefix for security group names
+          - group_prefix:   Prefix for security group names, the one the
+                            library has now.  The old library's groups are
+                            found under it too, so if the move changed the
+                            prefix, the old groups keep their access to the
+                            retired library: remove it by hand.
 
         Optional DataFrame columns:
           - new_site_url:   The site the library moved to.  When given, the
