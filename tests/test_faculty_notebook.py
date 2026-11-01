@@ -84,6 +84,7 @@ class FakeSpark:
         self.query_time_zones = []  # the session time zone each query ran in
         self.after_query = None  # called with each SELECT, e.g. to add rows mid-run
         self.after_save = None  # called with the name of each table appended to
+        self.lease_merges = 0  # the lease MERGEs run, each a write to the sync-state table in Delta
 
     def sql(self, query):
         self.query_time_zones.append(self.settings.get("spark.sql.session.timeZone"))
@@ -105,6 +106,7 @@ class FakeSpark:
             r"VALUES \((.*)\)\s*", query, re.S,
         )
         if lease:
+            self.lease_merges += 1
             table, process, condition, assignments, columns, values = lease.groups()
             if self.db.execute(f"SELECT 1 FROM {table} WHERE process = ?", (process,)).fetchone():
                 assignments = re.sub(r"\bt\.(\w+)\s*=", r"\1 =", assignments)
@@ -223,7 +225,10 @@ def azure(monkeypatch):
 
 @pytest.fixture
 def run_notebook(monkeypatch, azure):
-    """Returns run(spark, **parameters), which executes the notebook and returns its namespace."""
+    """Returns run(spark, stop_before=None, **parameters), which executes the notebook and returns its namespace.
+
+    With stop_before, it stops before the first cell containing that text.
+    """
     variables = {"STORE_WORKSPACE_NAME": "Store", "CURATED_LH_NAME": "Curated", "BASE_LH_NAME": "Base",
                  "KEY_VAULT": "https://myvault.vault.azure.net/", "TENANT_ID": "tenant"}
     library = types.SimpleNamespace(getVariable=variables.__getitem__)
@@ -232,7 +237,7 @@ def run_notebook(monkeypatch, azure):
     notebookutils.credentials = types.SimpleNamespace(getToken=lambda audience: f"{audience}-token")
     monkeypatch.setitem(sys.modules, "notebookutils", notebookutils)
 
-    def run(spark, **parameters):
+    def run(spark, stop_before=None, **parameters):
         namespace = {"spark": spark, "notebookutils": notebookutils, "display": lambda *args: None,
                      "__name__": "__main__"}
         # Fabric runs an injected cell with the pipeline's parameters straight after the parameters cell
@@ -242,6 +247,8 @@ def run_notebook(monkeypatch, azure):
             "DRY_RUN": False, **parameters,
         }
         for code, is_parameters in cells(NOTEBOOK):
+            if stop_before and stop_before in code:
+                break  # leaves the rest to the test, cell by cell
             exec(compile(code, str(NOTEBOOK), "exec"), namespace)
             if is_parameters:
                 namespace.update(overrides)
@@ -571,7 +578,8 @@ FAR_FUTURE = "2999-01-01 00:00:00.000000"
 
 def test_a_live_run_holds_the_lease_while_it_runs_and_then_releases_it(tenant, run_notebook, spark):
     holders = []
-    spark.after_query = lambda query: holders.append(spark.lease()[0])
+    # From the first query after the lease is taken: take_lease reads it before there's a row
+    spark.after_query = lambda query: spark.lease() and holders.append(spark.lease()[0])
 
     ns = run_notebook(spark)
 
@@ -589,6 +597,8 @@ def test_a_live_run_changes_nothing_while_another_run_holds_the_lease(tenant, ru
     assert tenant.writes() == []
     assert spark.watermark() == {}
     assert spark.lease() == ("other-run", FAR_FUTURE)
+    # Delta rewrites the row's file even for a MERGE that changes nothing, which can fail the holder's renewal
+    assert spark.lease_merges == 0
 
 
 def test_a_lease_left_by_a_crashed_run_is_taken_once_it_expires(tenant, run_notebook, spark):
@@ -659,6 +669,39 @@ def test_a_run_whose_lease_was_taken_after_its_last_pass_doesnt_write_the_waterm
 
     assert spark.saved["sharepoint_unresolved_users"]
     assert spark.watermark() == {}
+
+
+# A cell run again by hand, as after it stopped, mustn't skip the lease check
+def test_a_run_that_lost_its_lease_changes_nothing_when_its_cell_is_run_again(tenant, run_notebook, spark):
+    create = "results = mgr.create_libraries(pdf_library_changes)"
+    ns = run_notebook(spark, stop_before=create)
+    [cell] = [code for code, _ in cells(NOTEBOOK) if create in code]
+    spark.hold_lease("other-run", FAR_FUTURE)  # taken while this run's had expired
+    writes = len(tenant.writes())  # the earlier passes'
+
+    with pytest.raises(RuntimeError, match="expired before it was renewed"):
+        exec(compile(cell, str(NOTEBOOK), "exec"), ns)
+    with pytest.raises(RuntimeError, match="doesn't hold the lease"):
+        exec(compile(cell, str(NOTEBOOK), "exec"), ns)
+
+    assert len(tenant.writes()) == writes
+    assert tenant.sites[HUB.lower()].list_by_slug("MATH") is None
+    assert spark.lease() == ("other-run", FAR_FUTURE)
+
+
+# Running the parameters cell again resets DRY_RUN to True, but the manager created from it still writes
+def test_a_live_run_whose_dry_run_flag_was_reset_changes_nothing(tenant, run_notebook, spark):
+    create = "results = mgr.create_libraries(pdf_library_changes)"
+    ns = run_notebook(spark, stop_before=create)
+    [cell] = [code for code, _ in cells(NOTEBOOK) if create in code]
+    ns["DRY_RUN"] = True
+    writes = len(tenant.writes())
+
+    with pytest.raises(RuntimeError, match="the manager was created with dry_run=False"):
+        exec(compile(cell, str(NOTEBOOK), "exec"), ns)
+
+    assert len(tenant.writes()) == writes
+    assert tenant.sites[HUB.lower()].list_by_slug("MATH") is None
 
 
 @pytest.mark.parametrize("minutes", ["120", 0, True, 1.5])
