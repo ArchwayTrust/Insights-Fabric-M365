@@ -1416,6 +1416,8 @@ Outside Fabric, `KeyVaultCertificateCredential` isn't available (it needs `noteb
 
 [`examples/Manage Faculty Sharepoint Libraries.Notebook`](https://github.com/ArchwayTrust/Insights-Fabric-M365/blob/main/examples/Manage%20Faculty%20Sharepoint%20Libraries.Notebook/notebook-content.py) is a complete notebook, run from a pipeline, that drives every operation from curated lakehouse tables: incremental create, unlink and retire using a watermark, full membership and access passes, an audit table and a run outcome gate. [docs/faculty-sharepoint-notebook.md](https://github.com/ArchwayTrust/Insights-Fabric-M365/blob/main/docs/faculty-sharepoint-notebook.md) describes it cell by cell, and how it was moved onto this package.
 
+[`examples/Arbor`](https://github.com/ArchwayTrust/Insights-Fabric-M365/tree/main/examples/Arbor) has the notebook that builds those curated tables from Arbor MIS data, and says where each table it reads comes from.
+
 ## Troubleshooting
 
 `SharePointLibraryManager`'s failure rows give the status code and the service's error code and message, such as `Status code: 403, Authorization_RequestDenied: Insufficient privileges to complete the operation.`
