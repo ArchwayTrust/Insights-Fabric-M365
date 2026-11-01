@@ -696,11 +696,12 @@ if RUN_SMOKE_TEST:
 # MARKDOWN ********************
 
 # ## Real Data
-# Driven by the curated faculty tables. Create/unlink/retire are incremental:
+# Driven by the curated faculty tables. Create and unlink are incremental:
 # they process rows whose `last_changed_ts` is newer than this notebook's
-# stored watermark (advanced only after a clean, non-dry run). Membership
-# sync, the SLT library and SLT access passes, and the site sharing lockdown
-# are full passes over every live, in-scope faculty/site each run.
+# stored watermark (advanced only after a clean, non-dry run). Retiring moved
+# libraries, membership sync, the SLT library and SLT access passes, and the
+# site sharing lockdown are full passes over every live, in-scope
+# faculty/site each run.
 
 # CELL ********************
 
@@ -1049,12 +1050,15 @@ display(results)
 # MARKDOWN ********************
 
 # ### Retire Moved Libraries
-# Faculties whose hub URL changed since the watermark (site migrations). The
-# create pass above provisions the library on the new site; this pass cleans
-# up the old one — renames it to {code}_MOVED, removes the automation groups'
-# role assignments (the groups are reused on the new site, so without this
-# they would keep granting live access to the leftover copy), and removes the
-# old site's navigation link. Group membership is untouched.
+# Every faculty whose hub URL changed (site migrations), each run. The create
+# pass above provisions the library on the new site; this pass cleans up the
+# old one — renames it to {code}_MOVED, removes the automation groups' role
+# assignments (the groups are reused on the new site, so without this they
+# would keep granting live access to the leftover copy), and removes the old
+# site's navigation link. Group membership is untouched. It's a full pass,
+# not incremental, so a move deferred until its new library works is retired
+# by a later run without its row changing; one already retired changes
+# nothing.
 
 # CELL ********************
 
@@ -1077,7 +1081,7 @@ df_hub_moves = spark.sql(f"""
     WHERE
         f.previous_hub_url IS NOT NULL
         AND f.previous_hub_url <> f.sharepoint_hub_url
-        AND f.last_changed_ts > TIMESTAMP'{WATERMARK_LITERAL}'
+        -- Rows newer than this run's bound aren't created yet, so are left for the next run
         AND f.last_changed_ts <= TIMESTAMP'{HIGH_WATERMARK_LITERAL}'
         AND {eligible('f')}
 """)
@@ -1387,7 +1391,8 @@ if DRY_RUN:
     print("DRY_RUN — watermark not advanced.")
 else:
     processed_ts = [
-        ts for frame in (pdf_library_changes, pdf_deleted_in_source, pdf_hub_moves)
+        # Not the retire pass's moves: it reads every move, so older ones would move the watermark back
+        ts for frame in (pdf_library_changes, pdf_deleted_in_source)
         if not frame.empty
         for ts in [frame["last_changed_ts"].max()]
         if pd.notna(ts)

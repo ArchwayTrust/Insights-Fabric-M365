@@ -992,6 +992,48 @@ def test_retire_waits_for_a_working_replacement(make_manager, tenant, site, repl
     assert (library["displayName"], len(library["role_assignments"])) == ("MATH Faculty", 2)
 
 
+# Graph's name lookups miss a group for a while after it's made, as the create pass just before may have
+def test_retire_finds_the_new_librarys_groups_this_manager_just_created(make_manager, tenant, site):
+    new_site = tenant.add_site("/sites/BAANew")
+    manager = make_manager(include_site_name=True)  # so the library gets new groups on its new site
+    manager.create_libraries(libraries_df(site, "MATH"))
+    before = set(tenant.groups)
+    manager.create_libraries(libraries_df(new_site, "MATH"))
+    tenant.replicating.update(set(tenant.groups) - before)
+
+    results = manager.retire_moved_libraries(libraries_df(site, "MATH").assign(new_site_url=new_site.url))
+
+    assert "library_retired" in actions(results)
+    library = site.list_by_slug("MATH")
+    assert (library["displayName"], library["role_assignments"]) == ("MATH_MOVED", {})
+
+
+def not_json():
+    resp = response(200)
+    resp._content = b"<html>Service unavailable</html>"
+    return resp
+
+
+# A failed check says nothing about the new library, and as a warning the run would count as clean
+@pytest.mark.parametrize("failure", ["server error", "not JSON"])
+def test_a_replacement_that_couldnt_be_checked_is_an_error_not_a_deferral(make_manager, tenant, site, failure):
+    new_site = tenant.add_site("/sites/BAANew")
+    make_manager().create_libraries(libraries_df(site, "MATH"))
+    make_manager().create_libraries(libraries_df(new_site, "MATH"))
+    if failure == "server error":
+        tenant.fail("GET", r"HasUniqueRoleAssignments", response(503), times=6)  # the first try and every retry
+    else:
+        tenant.fail("GET", r"HasUniqueRoleAssignments", not_json())
+    tenant.calls.clear()
+
+    results = make_manager().retire_moved_libraries(libraries_df(site, "MATH").assign(new_site_url=new_site.url))
+
+    [error] = rows(results, "error").itertuples()
+    assert "/sites/BAANew) couldn't be checked, so it wasn't retired" in error.status
+    assert actions(results) == ["error"] and "error" in FATAL_ACTIONS
+    assert tenant.writes() == []
+
+
 def test_retire_without_a_new_site_retires_anyway(make_manager, tenant, site):
     make_manager().create_libraries(libraries_df(site, "MATH"))
 
@@ -2512,6 +2554,69 @@ def test_group_creation_is_not_repeated_after_a_server_error(make_manager, tenan
     assert actions(make_manager().create_libraries(libraries_df(site, "MATH"))) == [
         "group_assigned", "group_assigned", "library_renamed",
     ]
+
+
+# With one worker, cancelling the cell interrupts the thread making the request: while it reads Graph's response, or
+# just after, before the manager has noted the new group
+@pytest.mark.parametrize("cancelled", ["while reading the response", "after the response"])
+def test_a_group_create_interrupted_after_graph_made_it_isnt_made_again(
+    make_manager, tenant, site, monkeypatch, cancelled,
+):
+    serve, interrupted = requests.Session.request, []
+    manager = make_manager(max_workers=1)
+
+    def made_then_interrupted(group_id):
+        interrupted.append(group_id)
+        tenant.replicating.add(group_id)  # so the re-run's name lookup misses it
+        raise KeyboardInterrupt
+
+    if cancelled == "while reading the response":
+        def request(session, method, url, **kwargs):
+            resp = serve(session, method, url, **kwargs)
+            if method == "POST" and url.endswith("/groups") and not interrupted:
+                made_then_interrupted(resp.json()["id"])
+            return resp
+        monkeypatch.setattr(requests.Session, "request", request)
+    else:
+        remember = manager._remember_created_group
+
+        def remember_created_group(name, group, *, app_owned):
+            if not interrupted:
+                made_then_interrupted(group["id"])
+            return remember(name, group, app_owned=app_owned)
+        monkeypatch.setattr(manager, "_remember_created_group", remember_created_group)
+
+    with pytest.raises(KeyboardInterrupt):
+        manager.create_libraries(libraries_df(site, "MATH"))
+    results = manager.create_libraries(libraries_df(site, "MATH"))
+
+    assert [g["displayName"] for g in tenant.groups.values()].count("BAA-Sharepoint-MATH-Auto-Read") == 1
+    [error] = rows(results, "error").itertuples()
+    assert "may have been created by an earlier request this run" in error.status
+    assert "interrupted by KeyboardInterrupt" in error.status
+
+
+# Cancelling while _request_with_retry waits to retry a 429: Graph refused the create, and the retry wasn't sent
+def test_a_group_create_cancelled_while_waiting_to_retry_is_made_on_the_next_try(
+    make_manager, tenant, site, monkeypatch,
+):
+    tenant.fail("POST", r"/groups$", graph_error(429, "TooManyRequests", "Too many requests."))
+    waits = []
+
+    def cancel_the_first_wait(seconds):
+        waits.append(seconds)
+        if len(waits) == 1:
+            raise KeyboardInterrupt
+    monkeypatch.setattr(time, "sleep", cancel_the_first_wait)
+    manager = make_manager(max_workers=1)
+
+    with pytest.raises(KeyboardInterrupt):
+        manager.create_libraries(libraries_df(site, "MATH"))
+    assert not [g for g in tenant.groups.values() if g["displayName"].startswith("BAA-Sharepoint-MATH")]
+    results = manager.create_libraries(libraries_df(site, "MATH"))
+
+    assert "error" not in actions(results)
+    assert [g["displayName"] for g in tenant.groups.values()].count("BAA-Sharepoint-MATH-Auto-Read") == 1
 
 
 def test_a_group_is_created_on_the_next_try_after_its_token_couldnt_be_got(make_manager, tenant, site, monkeypatch):

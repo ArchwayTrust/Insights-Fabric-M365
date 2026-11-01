@@ -4,6 +4,7 @@ SharePointLibraryManager: manages SharePoint document libraries and their permis
 import logging
 import threading
 import time
+import traceback
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -22,7 +23,7 @@ from ._graph import (
     _get_library_display_name, _get_list_id, _get_onedrive_root_items,
     _get_site_id, _list_existing_lists, _set_library_display_name,
 )
-from ._http import DEFAULT_ORGANISATION, _RenewableToken, _user_agent
+from ._http import DEFAULT_ORGANISATION, _RenewableToken, _send, _user_agent
 from ._groups import (
     GroupResolutionError, UserResolutionError, _add_group_member, _create_security_group, _empty_group_members,
     _ensure_app_owns_group, _find_existing_library_collisions, _find_group_by_name,
@@ -55,6 +56,19 @@ def _site_and_code(item: tuple) -> tuple[str, str]:
         The site URL and library code.
     """
     return item[0], item[2]
+
+
+def _interrupted_while_sending(exc: BaseException) -> bool:
+    """Return whether *exc* was raised while a request was being sent, rather than before one was.
+
+    Args:
+        exc: An exception raised from _request_with_retry.
+
+    Returns:
+        True if it was raised inside _send, so the request may have reached the service; False if it was raised
+        while _request_with_retry waited to retry or renewed its token, so the request it was preparing wasn't sent.
+    """
+    return any(frame.f_code is _send.__code__ for frame, _ in traceback.walk_tb(exc.__traceback__))
 
 
 class SharePointLibraryManager:
@@ -250,10 +264,12 @@ class SharePointLibraryManager:
         """Create a security group and remember it (see _remember_created_group).
 
         A create that fails other than with a 4xx or a connect timeout, such
-        as with a 5xx or a dropped connection, may still have made the group,
-        and Graph's name lookups can miss it for a while, so it isn't tried
-        again by this manager: a second one would be a duplicate that blocks
-        the library until removed by hand.
+        as with a 5xx or a dropped connection, or is interrupted, as by
+        cancelling the cell, while it's sent or after Graph made the group,
+        may still have made the group, and Graph's name lookups can miss it
+        for a while, so it isn't tried again by this manager: a second one
+        would be a duplicate that blocks the library until removed by hand.
+        One interrupted while waiting to retry wasn't sent, so is tried again.
 
         Args:
             name: The group's display name.
@@ -270,10 +286,12 @@ class SharePointLibraryManager:
         self._refuse_if_maybe_created(name)
         # Got first, so failing to get a token isn't taken for a create that may have succeeded
         token = self._graph_token
+        group = None
         try:
             group = _create_security_group(
                 token, name, description, self.service_principal_id if app_owned else None,
             )
+            self._remember_created_group(name, group, app_owned=app_owned)
         except requests.RequestException as exc:
             status = exc.response.status_code if exc.response is not None else None
             # Only a refusal (4xx) or a connect timeout certainly didn't make the group. Anything else may have,
@@ -282,7 +300,15 @@ class SharePointLibraryManager:
                 with self._created_groups_lock:
                     self._maybe_created_groups[name.lower()] = str(exc)
             raise
-        self._remember_created_group(name, group, app_owned=app_owned)
+        except BaseException as exc:
+            # Cancelling the cell, which with max_workers=1 interrupts this
+            # thread, while the create is in flight or once Graph has made the
+            # group may leave it made, and a re-run on this manager mustn't make
+            # it again. One cancelled while waiting to retry wasn't sent.
+            if not isinstance(exc, Exception) and (group is not None or _interrupted_while_sending(exc)):
+                with self._created_groups_lock:
+                    self._maybe_created_groups[name.lower()] = f"interrupted by {type(exc).__name__}"
+            raise
         return group
 
     def _created_group(self, name: str) -> tuple[dict, bool] | None:
@@ -1772,6 +1798,11 @@ class SharePointLibraryManager:
 
         Returns:
             The reason, to follow "the library", or None.
+
+        Raises:
+            requests.RequestException: If the new library or its groups couldn't be read, which says nothing
+                about whether it's working.
+            KeyError: If SharePoint's or Graph's response is missing a field it should have.
         """
         library = site.get("lists", {}).get(library_code.lower())
         if library is None:
@@ -1791,10 +1822,16 @@ class SharePointLibraryManager:
                 )
                 # A duplicated name raises ValueError: its library can't be synced, so it isn't working
                 group = _get_unique_group(groups_by_name, name)
+                if group is None:
+                    # This manager may have just made it, while Graph's name lookups still miss it
+                    group = (self._created_group(name) or (None, False))[0]
                 if group is not None and roles.get(_group_claims(group["id"]).lower(), set()) & library_roles:
                     return None
-        except (requests.RequestException, ValueError, KeyError) as exc:
-            return f"on its new site ({site_url}) couldn't be checked: {exc}"
+        except requests.RequestException:
+            # Before ValueError: a response that isn't JSON raises requests' JSONDecodeError, which is both
+            raise
+        except ValueError as exc:
+            return f"on its new site ({site_url}) has groups that can't be told apart: {exc}"
         return f"on its new site ({site_url}) gives none of its groups access yet"
 
     def retire_moved_libraries(
@@ -1938,10 +1975,22 @@ class SharePointLibraryManager:
                 continue
             problem = None
             if not dry_run_ and pd.notna(new_site_url):
-                problem = self._replacement_problem(
-                    new_site_url, new_sites.get(new_site_url, {}),
-                    row["library_code"], row["group_prefix"], include_site_name_,
-                )
+                try:
+                    problem = self._replacement_problem(
+                        new_site_url, new_sites.get(new_site_url, {}),
+                        row["library_code"], row["group_prefix"], include_site_name_,
+                    )
+                except (requests.RequestException, KeyError) as exc:
+                    # Not a deferral: a failed check says nothing about the
+                    # new library, and as an error the run isn't clean, so an
+                    # incremental flow tries the move again
+                    logger.error("Couldn't check '%s' on its new site %s: %s", row["library_code"], new_site_url, exc)
+                    _append_log(
+                        action_log, site_url, row["library_code"], "error",
+                        f"its library on the new site ({new_site_url}) couldn't be checked, so it wasn't retired: "
+                        f"{exc}",
+                    )
+                    continue
             if problem is not None:
                 logger.warning("Not retiring '%s' on '%s': the library %s", row["library_code"], site_url, problem)
                 _append_log(

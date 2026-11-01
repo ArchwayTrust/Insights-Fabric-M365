@@ -82,7 +82,7 @@ Cells are listed in order. **Changed** marks the cells that differ from the prev
 | 25-27 | *SLT Libraries* | One SLT library per hub, with Manual groups only, owned by the headteacher rather than the app (`app_owned=False`). Reports faculties whose code collides with the SLT code, and hubs shared by two academies | **Changed** (cell 26) |
 | 28-30 | *Create/Modify Libraries* | Faculties new or changed since the watermark | **Changed** (bounded by the run's upper watermark) |
 | 31-33 | *Unlink Deleted Faculties* | Faculties deleted at source since the watermark | **Changed** (bounded by the run's upper watermark) |
-| 34-36 | *Retire Moved Libraries* | Faculties whose hub changed since the watermark: retires the copy on the old hub, once the library exists on the new one | **Changed** (bounded by the run's upper watermark; waits for the new library) |
+| 34-36 | *Retire Moved Libraries* | Every faculty whose hub changed, each run: retires the copy on the old hub, once the library works on the new one | **Changed** (a full pass bounded by the run's upper watermark; waits for the new library) |
 | 37-39 | *SLT Access to Faculty Libraries* | Grants each academy's SLT groups Contribute and Read on every faculty library, every run | **Changed** (cell 38) |
 | 40-42 | *Update Memberships* | Full membership sync for every in-scope faculty, including the all-staff nested groups | |
 | 43-44 | *Unresolved Users* | Appends users that couldn't be resolved to the unresolved users table, with academy and subject | |
@@ -158,6 +158,8 @@ The lease cell adds `lease_holder` and `lease_expires_at` to an existing sync st
 - The watermark key contains the rollout filters, so a `'` in a filter broke the watermark's lookup and its `MERGE`. The filters can no longer contain one (see **Run context**).
 - The watermark cell sets Spark's session time zone to UTC, and reads the watermark and the newest `last_changed_ts` with `toPandas()` rather than `collect()`. `toPandas()` and the `TIMESTAMP` literals the watermark is written back as both use the session time zone, while `collect()` uses the Python process's. `last_changed_ts` should be a UTC write time, stamped when the curated row is written.
 - A faculty with no `last_changed_ts` is never between the watermark and `HIGH_WATERMARK`, so no pass would create, unlink or retire it, and nothing said so. The watermark cell now logs each one in scope as a `skip` warning (operation `faculty_list_checks`).
+
+**Retire is a full pass.** It reads every in-scope faculty whose hub changed, not only those changed since the watermark. With `new_site_url`, a move is deferred (`retire_deferred`, a warning) until its library works on the new hub. As an incremental pass, a run that deferred a move still counted as clean and advanced the watermark past it, so no later run tried it again and the old copy kept its groups' access. Now a later run retires it without its row changing. A move already retired changes nothing, and the pass's rows don't count towards the watermark, which only the create and unlink passes advance.
 
 **Smoke test.** The navigation and sharing checks read the site through the manager instead of calling private functions with its token:
 
@@ -248,6 +250,7 @@ The notebook test's scenarios, against a pilot scope of `BAA` and `MATH%`:
 - **Rows landing mid-run.** A new faculty and a newer move added after the create read are both left for the next run, which picks them up.
 - **Scope values.** A `'` or `\` in `ACADEMY_FILTER` or `FACULTY_CODE_FILTER` stops the run before any SQL or SharePoint write, and spaces, `-`, `.` and `_` work.
 - **Failed run.** A failed member addition makes the run outcome cell raise, the watermark isn't advanced, and the lease is released.
+- **Deferred move.** A move deferred because its new library had no group access is retired by a later run once it has, without its row changing, and re-checking older moves doesn't move the watermark back.
 - **Run lease.** A live run holds the lease from before the smoke test until it ends. A live run started while another holds it changes nothing, and doesn't write the lease row. A lease left by a crashed run is taken once it expires. A dry run takes none, so it runs alongside a live one. A run whose lease was taken stops before its next pass, and again if that cell is run by hand, doesn't take the lease back once it's free, and doesn't write the watermark if it lost the lease after its last pass. A `LEASE_MINUTES` that isn't a whole number above 0 stops the run before anything runs.
 - **Widened scope.** Changing the filters starts a new watermark and replays events for the newly in-scope faculties, and the faculty coded `SLT` is reported and skipped.
 
