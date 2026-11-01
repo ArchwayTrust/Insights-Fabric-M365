@@ -360,9 +360,14 @@ def test_second_run_finds_no_new_events_and_changes_no_membership(tenant, run_no
 
     ns = run_notebook(spark)
 
-    assert ns["pdf_library_changes"].empty and ns["pdf_deleted_in_source"].empty and ns["pdf_hub_moves"].empty
+    assert ns["pdf_library_changes"].empty and ns["pdf_deleted_in_source"].empty
     assert not any("/members/$ref" in url for method, url, _ in tenant.calls if method in ("POST", "DELETE"))
     assert not any(url.endswith("/groups") for method, url, _ in tenant.calls if method == "POST")
+    # Retire is a full pass, so the move is checked again, but it's already done. SharePoint REST addresses the old
+    # hub by its path, and Graph by its site ID
+    assert ns["pdf_hub_moves"]["library_code"].tolist() == ["MATHMOVED"]
+    old_hub = ("/sites/BAAOld/", tenant.sites[OLD_HUB.lower()].id)
+    assert not [url for _, url, _ in tenant.writes() if any(part in url for part in old_hub)]
 
 
 def test_dry_run_mutates_nothing_and_keeps_the_watermark(tenant, run_notebook, spark):
@@ -520,6 +525,44 @@ def test_a_moved_faculty_keeps_its_old_library_until_the_new_one_exists(tenant, 
     assert old_hub.list_by_slug("MATHMOVED")["role_assignments"]  # still has its access
     assert spark.watermark() == {}
 
+
+
+def test_a_deferred_move_is_retired_by_a_later_run_without_its_row_changing(tenant, run_notebook, spark):
+    seed_existing_libraries(tenant)
+    new_library, old_library = tenant.sites[HUB.lower()], tenant.sites[OLD_HUB.lower()]
+    access = {}
+
+    # The new library has no group access when retire checks it, so the move is deferred
+    def take_the_new_librarys_access(query):
+        if "previous_hub_url AS site_url" in query and not access:
+            access.update(new_library.list_by_slug("MATHMOVED")["role_assignments"])
+            new_library.list_by_slug("MATHMOVED")["role_assignments"].clear()
+    spark.after_query = take_the_new_librarys_access
+
+    ns = run_notebook(spark)
+
+    assert "retire_deferred" in ns["all_results"]["action"].tolist()
+    assert old_library.list_by_slug("MATHMOVED")["displayName"] == "MATHMOVED"
+    assert spark.watermark() == {"faculty_sharepoint_sync|BAA|MATH%": "2026-10-01 09:00:00.000000"}  # a clean run
+
+    new_library.list_by_slug("MATHMOVED")["role_assignments"].update(access)  # its groups get their access
+    run_notebook(spark)
+
+    assert old_library.list_by_slug("MATHMOVED")["displayName"] == "MATHMOVED_MOVED"
+
+
+# Retire reads every move, however old, so its rows mustn't set the watermark
+def test_rechecking_older_moves_doesnt_move_the_watermark_back(tenant, run_notebook, spark):
+    seed_existing_libraries(tenant)
+    run_notebook(spark)
+    spark.add_faculties([faculty("F7", "MATHNEW", "New Maths", changed="2026-10-03 09:00:00")])
+    run_notebook(spark)
+    assert spark.watermark() == {"faculty_sharepoint_sync|BAA|MATH%": "2026-10-03 09:00:00.000000"}
+
+    ns = run_notebook(spark)
+
+    assert not ns["pdf_hub_moves"].empty  # the 2026-10-01 move, checked again
+    assert spark.watermark() == {"faculty_sharepoint_sync|BAA|MATH%": "2026-10-03 09:00:00.000000"}
 
 # The run lease: only one live run changes the tenant at a time
 

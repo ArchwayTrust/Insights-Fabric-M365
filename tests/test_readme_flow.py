@@ -240,3 +240,32 @@ def test_a_scoped_rerun_reads_the_watermark_it_wrote(setting):
     assert process == f"sharepoint_libraries|{setting.site.url}"
     assert namespace["since"] == datetime(2026, 10, 2)
     assert namespace["changed"].empty
+
+
+def test_readme_flow_retires_a_deferred_move_on_a_later_run(setting, monkeypatch):
+    tenant, site, spark = setting.tenant, setting.site, setting.spark
+    setting.run(dry_run=False)
+    new_site = tenant.add_site("/sites/AcademyNew")
+    libraries = spark.tables["sharepoint_libraries"]
+    libraries.loc[0, ["site_url", "previous_site_url", "last_changed_ts"]] = [
+        new_site.url, site.url, pd.Timestamp("2026-10-05"),
+    ]
+    retire, access = SharePointLibraryManager.retire_moved_libraries, {}
+
+    # The new library has no group access when retire checks it, so the move is deferred
+    def retire_while_the_new_library_has_no_access(manager, df, **options):
+        if not access:
+            access.update(new_site.list_by_slug("MATH")["role_assignments"])
+            new_site.list_by_slug("MATH")["role_assignments"].clear()
+        return retire(manager, df, **options)
+    monkeypatch.setattr(SharePointLibraryManager, "retire_moved_libraries", retire_while_the_new_library_has_no_access)
+
+    setting.run(dry_run=False)
+
+    assert site.list_by_slug("MATH")["displayName"] == "Mathematics"  # deferred
+    assert spark.watermark == datetime(2026, 10, 5)  # a clean run, so the move is no longer "changed"
+
+    new_site.list_by_slug("MATH")["role_assignments"].update(access)  # its groups get their access
+    setting.run(dry_run=False)
+
+    assert site.list_by_slug("MATH")["displayName"] == "MATH_MOVED"

@@ -1218,7 +1218,7 @@ Run the operations in this order, from a pipeline, with a dry run first whenever
 2. **Lock down site sharing** on every live site (full pass). It's independent of the rest, and corrects settings changed by hand.
 3. **Create** changed, not-deleted libraries (incremental). This also applies renames and new metadata. It runs before the grant and membership passes, which need the libraries to exist.
 4. **Unlink** changed, deleted libraries (incremental).
-5. **Retire** libraries whose site changed (incremental, on `previous_site_url`). This runs after the create pass, and with `new_site_url` it only retires a library once its replacement is working on the new site, so a failed create never leaves the library without working access (`retire_deferred` until then).
+5. **Retire** libraries whose site changed (full pass, on `previous_site_url`). This runs after the create pass, and with `new_site_url` it only retires a library once its replacement is working on the new site, so a failed create never leaves the library without working access (`retire_deferred` until then). It's a full pass, not incremental, so a move deferred on one run is retired by a later one without its row changing, and one already retired changes nothing.
 6. **Grant** the extra groups on every live library (full pass). Additive, so it also restores access removed by hand.
 7. **Sync memberships** for every live library (full pass), passing all live libraries as `libraries_df` so a library whose last member left has its groups emptied.
 8. **Save each operation's action log** straight after it runs, so a later failure doesn't lose it.
@@ -1296,8 +1296,12 @@ save("site_sharing_lockdown", mgr.enforce_site_sharing_lockdown(live["site_url"]
 save("create_libraries", mgr.create_libraries(live[live["library_id"].isin(changed["library_id"])]))        # step 3
 save("unlink_libraries", mgr.unlink_libraries(changed[changed["deleted"]]))                                  # step 4
 
-# Step 5: new_site_url makes retire wait until the library exists on its new site (not for deleted ones)
-moved = changed[changed["previous_site_url"].notna() & (changed["previous_site_url"] != changed["site_url"])]
+# Step 5: new_site_url makes retire wait until the library exists on its new site (not for deleted ones). Every
+# move, not only changed ones, so a deferred move is retired once its new library works
+moved = libraries[
+    libraries["previous_site_url"].notna() & (libraries["previous_site_url"] != libraries["site_url"])
+    & (libraries["last_changed_ts"] <= until)
+]
 save("retire_moved_libraries", mgr.retire_moved_libraries(moved.assign(
     site_url=moved["previous_site_url"], new_site_url=moved["site_url"].where(~moved["deleted"]),
 )))
