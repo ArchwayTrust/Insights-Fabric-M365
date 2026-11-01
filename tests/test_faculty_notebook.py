@@ -363,9 +363,11 @@ def test_second_run_finds_no_new_events_and_changes_no_membership(tenant, run_no
     assert ns["pdf_library_changes"].empty and ns["pdf_deleted_in_source"].empty
     assert not any("/members/$ref" in url for method, url, _ in tenant.calls if method in ("POST", "DELETE"))
     assert not any(url.endswith("/groups") for method, url, _ in tenant.calls if method == "POST")
-    # Retire is a full pass, so the move is checked again, but it's already done
+    # Retire is a full pass, so the move is checked again, but it's already done. SharePoint REST addresses the old
+    # hub by its path, and Graph by its site ID
     assert ns["pdf_hub_moves"]["library_code"].tolist() == ["MATHMOVED"]
-    assert not [url for _, url, _ in tenant.writes() if "/sites/BAAOld/" in url]
+    old_hub = ("/sites/BAAOld/", tenant.sites[OLD_HUB.lower()].id)
+    assert not [url for _, url, _ in tenant.writes() if any(part in url for part in old_hub)]
 
 
 def test_dry_run_mutates_nothing_and_keeps_the_watermark(tenant, run_notebook, spark):
